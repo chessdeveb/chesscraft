@@ -1,10 +1,13 @@
 mod db;
 mod engine;
+mod explorer;
 mod game_tree;
 mod pgn;
 
 use engine::EngineHandle;
+use explorer::OpeningMoveStat;
 use game_tree::{GameTree, MoveDto, ShapeDto, TreeDto};
+use pgn::PgnGameSummary;
 use rusqlite::Connection;
 use std::sync::Mutex;
 use tauri::menu::{Menu, MenuItemBuilder, SubmenuBuilder};
@@ -73,9 +76,15 @@ fn save_game(state: State<AppState>) -> Result<i64, String> {
 }
 
 #[tauri::command]
-fn import_pgn(state: State<AppState>, path: String) -> Result<TreeDto, String> {
+fn list_pgn_games(path: String) -> Result<Vec<PgnGameSummary>, String> {
     let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    let parsed = pgn::parse_game(&text)?;
+    pgn::list_games(&text)
+}
+
+#[tauri::command]
+fn import_pgn(state: State<AppState>, path: String, index: u32) -> Result<TreeDto, String> {
+    let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let parsed = pgn::parse_game_at(&text, index)?;
     let mut tree = state.tree.lock().unwrap();
     *tree = parsed;
     Ok(tree.to_dto())
@@ -128,6 +137,12 @@ fn pause_engine(state: State<AppState>) -> Result<(), String> {
         Some(handle) => handle.pause(),
         None => Err("le moteur n'est pas demarre".to_string()),
     }
+}
+
+#[tauri::command]
+fn opening_explorer(state: State<AppState>, moves: Vec<String>) -> Result<Vec<OpeningMoveStat>, String> {
+    let conn = state.db.lock().unwrap();
+    explorer::explore(&conn, &moves)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -202,12 +217,14 @@ pub fn run() {
             set_nags,
             set_shapes,
             save_game,
+            list_pgn_games,
             import_pgn,
             export_pgn,
             start_engine,
             stop_engine,
             analyze_position,
-            pause_engine
+            pause_engine,
+            opening_explorer
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1,13 +1,23 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import type { Color, Dests, Key } from "@lichess-org/chessground/types";
 import { AnnotationPanel } from "./components/AnnotationPanel";
 import { Board } from "./components/Board";
 import { EnginePanel } from "./components/EnginePanel";
 import { Notation } from "./components/Notation";
-import type { EngineInfo, MoveDto, NodeDto, ShapeDto, TreeDto } from "./types";
+import { OpeningExplorer } from "./components/OpeningExplorer";
+import type {
+  EngineInfo,
+  MoveDto,
+  NodeDto,
+  OpeningMoveStat,
+  PgnGameSummary,
+  ShapeDto,
+  TreeDto,
+} from "./types";
 import "@lichess-org/chessground/assets/chessground.base.css";
 import "@lichess-org/chessground/assets/chessground.brown.css";
 import "@lichess-org/chessground/assets/chessground.cburnett.css";
@@ -22,6 +32,17 @@ function buildDests(moves: MoveDto[]): Dests {
     dests.set(from, list);
   }
   return dests;
+}
+
+function pathSans(tree: TreeDto, nodeId: number): string[] {
+  const byId = new Map(tree.nodes.map((n) => [n.id, n]));
+  const sans: string[] = [];
+  let node = byId.get(nodeId);
+  while (node && node.parent !== null) {
+    if (node.san) sans.unshift(node.san);
+    node = byId.get(node.parent);
+  }
+  return sans;
 }
 
 function App() {
@@ -132,14 +153,9 @@ function App() {
     setError(null);
   }, []);
 
-  const handleImport = useCallback(async () => {
+  const importGameAt = useCallback(async (path: string, index: number) => {
     try {
-      const path = await open({
-        multiple: false,
-        filters: [{ name: "PGN", extensions: ["pgn"] }],
-      });
-      if (!path) return;
-      const newTree = await invoke<TreeDto>("import_pgn", { path });
+      const newTree = await invoke<TreeDto>("import_pgn", { path, index });
       setTree(newTree);
       setCurrentNodeId(newTree.root);
       setVariationChoice(null);
@@ -149,6 +165,30 @@ function App() {
       setError(String(e));
     }
   }, []);
+
+  const handleImport = useCallback(async () => {
+    try {
+      const path = await open({
+        multiple: false,
+        filters: [{ name: "PGN", extensions: ["pgn"] }],
+      });
+      if (!path) return;
+      const games = await invoke<PgnGameSummary[]>("list_pgn_games", { path });
+      if (games.length <= 1) {
+        await importGameAt(path, 0);
+        return;
+      }
+      const picker = new WebviewWindow("game-picker", {
+        url: `/?window=game-picker&path=${encodeURIComponent(path)}`,
+        title: "Choisir une partie",
+        width: 720,
+        height: 480,
+      });
+      picker.once("tauri://error", (e) => setError(String(e.payload)));
+    } catch (e) {
+      setError(String(e));
+    }
+  }, [importGameAt]);
 
   const handleExport = useCallback(async () => {
     try {
@@ -242,6 +282,16 @@ function App() {
     };
   }, []);
 
+  // selection faite dans la fenetre separee de choix de partie
+  useEffect(() => {
+    const unlistenPromise = listen<{ path: string; index: number }>("import-game-selected", (event) => {
+      importGameAt(event.payload.path, event.payload.index);
+    });
+    return () => {
+      unlistenPromise.then((unlisten) => unlisten());
+    };
+  }, [importGameAt]);
+
   useEffect(() => {
     if (!engineRunning) return;
     const unlistenPromise = listen<EngineInfo>("engine-info", (event) => {
@@ -264,6 +314,36 @@ function App() {
       (e) => setEngineError(String(e))
     );
   }, [engineRunning, enginePaused, currentNode?.fen, engineDepth, engineMultiPv]);
+
+  // --- Explorateur d'ouvertures ---
+  const [activeTab, setActiveTab] = useState<"notation" | "explorer">("notation");
+  const [explorerStats, setExplorerStats] = useState<OpeningMoveStat[]>([]);
+  const [explorerError, setExplorerError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (activeTab !== "explorer" || !tree) return;
+    const moves = pathSans(tree, currentNodeId);
+    invoke<OpeningMoveStat[]>("opening_explorer", { moves })
+      .then((stats) => {
+        setExplorerStats(stats);
+        setExplorerError(null);
+      })
+      .catch((e) => setExplorerError(String(e)));
+  }, [activeTab, tree, currentNodeId]);
+
+  const handleExplorerMove = useCallback(
+    async (san: string) => {
+      try {
+        const moves = await invoke<MoveDto[]>("legal_moves", { nodeId: currentNodeId });
+        const match = moves.find((m) => m.san === san);
+        if (!match) return;
+        await handleMove(match.from as Key, match.to as Key);
+      } catch (e) {
+        setError(String(e));
+      }
+    },
+    [currentNodeId, handleMove]
+  );
 
   // --- Menus natifs ---
   useEffect(() => {
@@ -372,24 +452,43 @@ function App() {
           onSetComment={handleSetComment}
           onToggleNag={handleToggleNag}
         />
-        <h2>Notation</h2>
-        {variationChoice && (
-          <div className="variation-choice">
-            <p>Continuer avec :</p>
-            <div className="variation-choice-options">
-              {variationChoice.map((option, index) => (
-                <button
-                  key={option.id}
-                  className={index === highlightedIndex ? "variation-choice-highlighted" : ""}
-                  onClick={() => chooseVariation(option.id)}
-                >
-                  {option.san}
-                </button>
-              ))}
-            </div>
-          </div>
+        <div className="tabs">
+          <button
+            className={"tab" + (activeTab === "notation" ? " tab--active" : "")}
+            onClick={() => setActiveTab("notation")}
+          >
+            Notation
+          </button>
+          <button
+            className={"tab" + (activeTab === "explorer" ? " tab--active" : "")}
+            onClick={() => setActiveTab("explorer")}
+          >
+            Explorateur
+          </button>
+        </div>
+        {activeTab === "notation" ? (
+          <>
+            {variationChoice && (
+              <div className="variation-choice">
+                <p>Continuer avec :</p>
+                <div className="variation-choice-options">
+                  {variationChoice.map((option, index) => (
+                    <button
+                      key={option.id}
+                      className={index === highlightedIndex ? "variation-choice-highlighted" : ""}
+                      onClick={() => chooseVariation(option.id)}
+                    >
+                      {option.san}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+            <Notation tree={tree} currentNodeId={currentNodeId} onSelect={handleSelect} />
+          </>
+        ) : (
+          <OpeningExplorer stats={explorerStats} error={explorerError} onSelectMove={handleExplorerMove} />
         )}
-        <Notation tree={tree} currentNodeId={currentNodeId} onSelect={handleSelect} />
         {error && <p className="error">{error}</p>}
       </div>
     </main>

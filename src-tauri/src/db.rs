@@ -72,3 +72,19 @@ pub fn load_latest_game(conn: &Connection) -> Result<Option<String>, String> {
     .optional()
     .map_err(|e| e.to_string())
 }
+
+pub fn all_games_pgn(conn: &Connection) -> Result<Vec<(String, Option<String>)>, String> {
+    let mut stmt = conn
+        .prepare("SELECT pgn_moves, result FROM games")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}

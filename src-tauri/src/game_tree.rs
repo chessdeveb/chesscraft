@@ -143,6 +143,18 @@ impl GameTree {
         self.nodes.get(id as usize)
     }
 
+    /// La suite de coups (SAN) de la ligne principale, du debut a la fin de la partie.
+    pub fn mainline_sans(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut current = self.node(0).and_then(|root| root.children.first().copied());
+        while let Some(id) = current {
+            let node = self.node(id).expect("noeud connu");
+            out.push(node.san.clone().unwrap_or_default());
+            current = node.children.first().copied();
+        }
+        out
+    }
+
     pub fn legal_moves(&self, node_id: u32) -> Result<Vec<MoveDto>, String> {
         let node = self.node(node_id).ok_or_else(|| "noeud introuvable".to_string())?;
         Ok(node

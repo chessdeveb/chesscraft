@@ -38,3 +38,20 @@ export interface EngineInfo {
   scoreMate: number | null;
   pvSan: string[];
 }
+
+export interface PgnGameSummary {
+  index: number;
+  white: string;
+  black: string;
+  date: string;
+  result: string;
+  event: string;
+}
+
+export interface OpeningMoveStat {
+  san: string;
+  games: number;
+  whiteWins: number;
+  draws: number;
+  blackWins: number;
+}

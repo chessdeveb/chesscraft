@@ -1,10 +1,22 @@
 use crate::game_tree::{role_to_str, GameTree, Node, STANDARD_TAGS};
 use pgn_reader::{Nag, RawComment, RawTag, Reader, SanPlus, Skip, Visitor};
+use serde::Serialize;
 use shakmaty::san::San;
 use shakmaty::uci::UciMove;
 use shakmaty::{Chess, Position};
 use std::collections::BTreeMap;
 use std::ops::ControlFlow;
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PgnGameSummary {
+    pub index: u32,
+    pub white: String,
+    pub black: String,
+    pub date: String,
+    pub result: String,
+    pub event: String,
+}
 
 /// Serialise l'arbre de partie en PGN standard (tags + movetext).
 pub fn write_game(tree: &GameTree) -> String {
@@ -101,13 +113,90 @@ fn write_line(tree: &GameTree, start_id: u32, force_number: bool, out: &mut Stri
 
 /// Reconstruit un arbre de partie a partir d'un texte PGN (la premiere partie du fichier).
 pub fn parse_game(pgn_text: &str) -> Result<GameTree, String> {
+    parse_game_at(pgn_text, 0)
+}
+
+/// Reconstruit l'arbre de la partie a l'index donne (0 = premiere partie du fichier).
+pub fn parse_game_at(pgn_text: &str, index: u32) -> Result<GameTree, String> {
     let mut reader = Reader::new(pgn_text.as_bytes());
+    for _ in 0..index {
+        let mut skip_visitor = SummaryVisitor::new();
+        reader
+            .read_game(&mut skip_visitor)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "partie introuvable".to_string())?;
+    }
     let mut visitor = GameVisitor::new();
     reader
         .read_game(&mut visitor)
         .map_err(|e| e.to_string())?
-        .ok_or_else(|| "aucune partie trouvee dans ce fichier".to_string())?;
+        .ok_or_else(|| "partie introuvable".to_string())?;
     Ok(GameTree::from_nodes(visitor.nodes, visitor.tags))
+}
+
+/// Liste legere (tags seulement, sans construire l'arbre) de toutes les
+/// parties d'un fichier PGN, pour proposer un choix a l'import.
+pub fn list_games(pgn_text: &str) -> Result<Vec<PgnGameSummary>, String> {
+    let mut reader = Reader::new(pgn_text.as_bytes());
+    let mut summaries = Vec::new();
+    let mut index = 0u32;
+    while let Some(tags) = {
+        let mut visitor = SummaryVisitor::new();
+        reader.read_game(&mut visitor).map_err(|e| e.to_string())?
+    } {
+        let get = |key: &str, default: &str| tags.get(key).cloned().unwrap_or_else(|| default.to_string());
+        summaries.push(PgnGameSummary {
+            index,
+            white: get("White", "?"),
+            black: get("Black", "?"),
+            date: get("Date", "????.??.??"),
+            result: get("Result", "*"),
+            event: get("Event", "?"),
+        });
+        index += 1;
+    }
+    Ok(summaries)
+}
+
+struct SummaryVisitor {
+    tags: BTreeMap<String, String>,
+}
+
+impl SummaryVisitor {
+    fn new() -> Self {
+        SummaryVisitor { tags: BTreeMap::new() }
+    }
+}
+
+impl Visitor for SummaryVisitor {
+    type Tags = ();
+    type Movetext = ();
+    type Output = BTreeMap<String, String>;
+
+    fn begin_tags(&mut self) -> ControlFlow<Self::Output, Self::Tags> {
+        ControlFlow::Continue(())
+    }
+
+    fn tag(
+        &mut self,
+        _tags: &mut Self::Tags,
+        name: &[u8],
+        value: RawTag<'_>,
+    ) -> ControlFlow<Self::Output> {
+        if let Ok(name) = std::str::from_utf8(name) {
+            self.tags
+                .insert(name.to_string(), value.decode_utf8_lossy().into_owned());
+        }
+        ControlFlow::Continue(())
+    }
+
+    fn begin_movetext(&mut self, _tags: Self::Tags) -> ControlFlow<Self::Output, Self::Movetext> {
+        ControlFlow::Continue(())
+    }
+
+    fn end_game(&mut self, _movetext: Self::Movetext) -> Self::Output {
+        std::mem::take(&mut self.tags)
+    }
 }
 
 struct GameVisitor {
