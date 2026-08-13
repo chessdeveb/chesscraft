@@ -29,6 +29,38 @@
   padding: 24px;
 }
 
+.app-column {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.toolbar {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.toolbar button {
+  cursor: pointer;
+  border: 1px solid rgba(128, 128, 128, 0.4);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  padding: 6px 12px;
+  font: inherit;
+}
+
+.toolbar button:hover {
+  background-color: rgba(100, 108, 255, 0.2);
+}
+
+.status-message {
+  font-size: 0.85em;
+  opacity: 0.75;
+  margin: 0;
+}
+
 .board-wrap .cg-wrap {
   width: 560px;
   height: 560px;

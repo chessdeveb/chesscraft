@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import type { Color, Dests, Key } from "@lichess-org/chessground/types";
 import { AnnotationPanel } from "./components/AnnotationPanel";
 import { Board } from "./components/Board";
@@ -30,7 +31,7 @@ function App() {
   const [highlightedIndex, setHighlightedIndex] = useState(0);
 
   useEffect(() => {
-    invoke<TreeDto>("new_game").then((t) => {
+    invoke<TreeDto>("get_tree").then((t) => {
       setTree(t);
       setCurrentNodeId(t.root);
     });
@@ -119,6 +120,59 @@ function App() {
     [currentNodeId, tree, refreshTree]
   );
 
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
+
+  const handleNewGame = useCallback(async () => {
+    const newTree = await invoke<TreeDto>("new_game");
+    setTree(newTree);
+    setCurrentNodeId(newTree.root);
+    setVariationChoice(null);
+    setStatusMessage(null);
+    setError(null);
+  }, []);
+
+  const handleImport = useCallback(async () => {
+    try {
+      const path = await open({
+        multiple: false,
+        filters: [{ name: "PGN", extensions: ["pgn"] }],
+      });
+      if (!path) return;
+      const newTree = await invoke<TreeDto>("import_pgn", { path });
+      setTree(newTree);
+      setCurrentNodeId(newTree.root);
+      setVariationChoice(null);
+      setStatusMessage(`Partie importée depuis ${path}`);
+      setError(null);
+    } catch (e) {
+      setError(String(e));
+    }
+  }, []);
+
+  const handleExport = useCallback(async () => {
+    try {
+      const path = await save({
+        filters: [{ name: "PGN", extensions: ["pgn"] }],
+      });
+      if (!path) return;
+      await invoke("export_pgn", { path });
+      setStatusMessage(`Partie exportée vers ${path}`);
+      setError(null);
+    } catch (e) {
+      setError(String(e));
+    }
+  }, []);
+
+  const handleSave = useCallback(async () => {
+    try {
+      await invoke<number>("save_game");
+      setStatusMessage("Partie sauvegardée dans la base");
+      setError(null);
+    } catch (e) {
+      setError(String(e));
+    }
+  }, []);
+
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
       if (!tree) return;
@@ -169,14 +223,23 @@ function App() {
 
   return (
     <main className="app-layout">
-      <Board
-        fen={currentNode.fen}
-        turnColor={currentNode.turn as Color}
-        dests={dests}
-        shapes={currentNode.shapes}
-        onMove={handleMove}
-        onShapesChange={handleShapesChange}
-      />
+      <div className="app-column">
+        <div className="toolbar">
+          <button onClick={handleNewGame}>Nouvelle partie</button>
+          <button onClick={handleImport}>Importer PGN</button>
+          <button onClick={handleExport}>Exporter PGN</button>
+          <button onClick={handleSave}>Sauvegarder</button>
+        </div>
+        {statusMessage && <p className="status-message">{statusMessage}</p>}
+        <Board
+          fen={currentNode.fen}
+          turnColor={currentNode.turn as Color}
+          dests={dests}
+          shapes={currentNode.shapes}
+          onMove={handleMove}
+          onShapesChange={handleShapesChange}
+        />
+      </div>
       <div className="side-panel">
         <AnnotationPanel
           node={currentNode}

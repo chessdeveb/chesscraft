@@ -1,11 +1,15 @@
+mod db;
 mod game_tree;
+mod pgn;
 
 use game_tree::{GameTree, MoveDto, ShapeDto, TreeDto};
+use rusqlite::Connection;
 use std::sync::Mutex;
-use tauri::State;
+use tauri::{Manager, State};
 
 struct AppState {
     tree: Mutex<GameTree>,
+    db: Mutex<Connection>,
 }
 
 #[tauri::command]
@@ -56,12 +60,50 @@ fn set_shapes(state: State<AppState>, node_id: u32, shapes: Vec<ShapeDto>) -> Re
     state.tree.lock().unwrap().set_shapes(node_id, shapes)
 }
 
+#[tauri::command]
+fn save_game(state: State<AppState>) -> Result<i64, String> {
+    let tree = state.tree.lock().unwrap();
+    let pgn = pgn::write_game(&tree);
+    let conn = state.db.lock().unwrap();
+    db::save_game(&conn, &pgn, &tree.tags)
+}
+
+#[tauri::command]
+fn import_pgn(state: State<AppState>, path: String) -> Result<TreeDto, String> {
+    let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let parsed = pgn::parse_game(&text)?;
+    let mut tree = state.tree.lock().unwrap();
+    *tree = parsed;
+    Ok(tree.to_dto())
+}
+
+#[tauri::command]
+fn export_pgn(state: State<AppState>, path: String) -> Result<(), String> {
+    let tree = state.tree.lock().unwrap();
+    let pgn = pgn::write_game(&tree);
+    std::fs::write(&path, pgn).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .manage(AppState {
-            tree: Mutex::new(GameTree::new()),
+        .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            let data_dir = app.path().app_data_dir()?;
+            std::fs::create_dir_all(&data_dir)?;
+            let conn = db::open(&data_dir.join("chesscraft.sqlite"))?;
+
+            let tree = match db::load_latest_game(&conn) {
+                Ok(Some(pgn_text)) => pgn::parse_game(&pgn_text).unwrap_or_else(|_| GameTree::new()),
+                _ => GameTree::new(),
+            };
+
+            app.manage(AppState {
+                tree: Mutex::new(tree),
+                db: Mutex::new(conn),
+            });
+            Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             new_game,
@@ -70,7 +112,10 @@ pub fn run() {
             play_move,
             set_comment,
             set_nags,
-            set_shapes
+            set_shapes,
+            save_game,
+            import_pgn,
+            export_pgn
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

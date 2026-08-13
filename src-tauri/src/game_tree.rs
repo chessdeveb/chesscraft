@@ -3,6 +3,7 @@ use shakmaty::fen::Fen;
 use shakmaty::san::San;
 use shakmaty::uci::UciMove;
 use shakmaty::{Chess, EnPassantMode, Position, Role, Square};
+use std::collections::BTreeMap;
 use std::str::FromStr;
 
 pub struct Shape {
@@ -28,6 +29,21 @@ pub struct Node {
 
 pub struct GameTree {
     nodes: Vec<Node>,
+    pub tags: BTreeMap<String, String>,
+}
+
+pub const STANDARD_TAGS: [&str; 7] = ["Event", "Site", "Date", "Round", "White", "Black", "Result"];
+
+fn default_tags() -> BTreeMap<String, String> {
+    let mut tags = BTreeMap::new();
+    tags.insert("Event".to_string(), "?".to_string());
+    tags.insert("Site".to_string(), "?".to_string());
+    tags.insert("Date".to_string(), "????.??.??".to_string());
+    tags.insert("Round".to_string(), "?".to_string());
+    tags.insert("White".to_string(), "?".to_string());
+    tags.insert("Black".to_string(), "?".to_string());
+    tags.insert("Result".to_string(), "*".to_string());
+    tags
 }
 
 #[derive(Serialize, Clone)]
@@ -71,7 +87,7 @@ pub struct TreeDto {
     pub root: u32,
 }
 
-fn role_to_str(role: Role) -> String {
+pub(crate) fn role_to_str(role: Role) -> String {
     match role {
         Role::Pawn => "p",
         Role::Knight => "n",
@@ -113,10 +129,17 @@ impl GameTree {
             nags: Vec::new(),
             shapes: Vec::new(),
         };
-        GameTree { nodes: vec![root] }
+        GameTree {
+            nodes: vec![root],
+            tags: default_tags(),
+        }
     }
 
-    fn node(&self, id: u32) -> Option<&Node> {
+    pub fn from_nodes(nodes: Vec<Node>, tags: BTreeMap<String, String>) -> Self {
+        GameTree { nodes, tags }
+    }
+
+    pub(crate) fn node(&self, id: u32) -> Option<&Node> {
         self.nodes.get(id as usize)
     }
 
