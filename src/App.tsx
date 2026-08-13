@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { Color, Dests, Key } from "@lichess-org/chessground/types";
+import { AnnotationPanel } from "./components/AnnotationPanel";
 import { Board } from "./components/Board";
 import { Notation } from "./components/Notation";
-import type { MoveDto, NodeDto, TreeDto } from "./types";
+import type { MoveDto, NodeDto, ShapeDto, TreeDto } from "./types";
 import "@lichess-org/chessground/assets/chessground.base.css";
 import "@lichess-org/chessground/assets/chessground.brown.css";
 import "@lichess-org/chessground/assets/chessground.cburnett.css";
@@ -75,6 +76,49 @@ function App() {
     setVariationChoice(null);
   }, []);
 
+  const refreshTree = useCallback(async () => {
+    const newTree = await invoke<TreeDto>("get_tree");
+    setTree(newTree);
+  }, []);
+
+  const handleShapesChange = useCallback(
+    async (shapes: ShapeDto[]) => {
+      try {
+        await invoke("set_shapes", { nodeId: currentNodeId, shapes });
+        await refreshTree();
+      } catch (e) {
+        setError(String(e));
+      }
+    },
+    [currentNodeId, refreshTree]
+  );
+
+  const handleSetComment = useCallback(
+    async (before: string, after: string) => {
+      try {
+        await invoke("set_comment", { nodeId: currentNodeId, before, after });
+        await refreshTree();
+      } catch (e) {
+        setError(String(e));
+      }
+    },
+    [currentNodeId, refreshTree]
+  );
+
+  const handleToggleNag = useCallback(
+    async (code: number) => {
+      const node = tree?.nodes.find((n) => n.id === currentNodeId);
+      const isActive = node?.nags[0] === code;
+      try {
+        await invoke("set_nags", { nodeId: currentNodeId, nags: isActive ? [] : [code] });
+        await refreshTree();
+      } catch (e) {
+        setError(String(e));
+      }
+    },
+    [currentNodeId, tree, refreshTree]
+  );
+
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
       if (!tree) return;
@@ -129,9 +173,16 @@ function App() {
         fen={currentNode.fen}
         turnColor={currentNode.turn as Color}
         dests={dests}
+        shapes={currentNode.shapes}
         onMove={handleMove}
+        onShapesChange={handleShapesChange}
       />
       <div className="side-panel">
+        <AnnotationPanel
+          node={currentNode}
+          onSetComment={handleSetComment}
+          onToggleNag={handleToggleNag}
+        />
         <h2>Notation</h2>
         {variationChoice && (
           <div className="variation-choice">

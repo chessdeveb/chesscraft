@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { nagSymbol } from "../nag";
 import type { NodeDto, TreeDto } from "../types";
 
 interface NotationProps {
@@ -25,15 +26,19 @@ export function Notation({ tree, currentNodeId, onSelect }: NotationProps) {
     const isWhite = depth % 2 === 1;
     const moveNumber = Math.ceil(depth / 2);
     const label = isWhite ? `${moveNumber}.` : showEllipsis ? `${moveNumber}...` : "";
+    const nagText = node.nags.map(nagSymbol).join("");
     return (
       <span key={node.id}>
         {label && <span className="move-number">{label} </span>}
+        {node.commentBefore && <span className="comment">{node.commentBefore} </span>}
         <span
           className={"move" + (node.id === currentNodeId ? " move--current" : "")}
           onClick={() => onSelect(node.id)}
         >
           {node.san}
+          {nagText}
         </span>{" "}
+        {node.commentAfter && <span className="comment">{node.commentAfter} </span>}
       </span>
     );
   }

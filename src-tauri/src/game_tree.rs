@@ -1,9 +1,15 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use shakmaty::fen::Fen;
 use shakmaty::san::San;
 use shakmaty::uci::UciMove;
 use shakmaty::{Chess, EnPassantMode, Position, Role, Square};
 use std::str::FromStr;
+
+pub struct Shape {
+    pub orig: String,
+    pub dest: Option<String>,
+    pub brush: String,
+}
 
 pub struct Node {
     pub id: u32,
@@ -14,6 +20,10 @@ pub struct Node {
     pub to: Option<String>,
     pub promotion: Option<String>,
     pub position: Chess,
+    pub comment_before: Option<String>,
+    pub comment_after: Option<String>,
+    pub nags: Vec<u8>,
+    pub shapes: Vec<Shape>,
 }
 
 pub struct GameTree {
@@ -21,6 +31,7 @@ pub struct GameTree {
 }
 
 #[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct MoveDto {
     pub from: String,
     pub to: String,
@@ -28,7 +39,16 @@ pub struct MoveDto {
     pub san: String,
 }
 
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ShapeDto {
+    pub orig: String,
+    pub dest: Option<String>,
+    pub brush: String,
+}
+
 #[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct NodeDto {
     pub id: u32,
     pub parent: Option<u32>,
@@ -38,9 +58,14 @@ pub struct NodeDto {
     pub to: Option<String>,
     pub fen: String,
     pub turn: String,
+    pub comment_before: Option<String>,
+    pub comment_after: Option<String>,
+    pub nags: Vec<u8>,
+    pub shapes: Vec<ShapeDto>,
 }
 
 #[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct TreeDto {
     pub nodes: Vec<NodeDto>,
     pub root: u32,
@@ -83,6 +108,10 @@ impl GameTree {
             to: None,
             promotion: None,
             position: Chess::default(),
+            comment_before: None,
+            comment_after: None,
+            nags: Vec::new(),
+            shapes: Vec::new(),
         };
         GameTree { nodes: vec![root] }
     }
@@ -176,10 +205,54 @@ impl GameTree {
             to: Some(to.to_string()),
             promotion: chosen_promotion,
             position: new_position,
+            comment_before: None,
+            comment_after: None,
+            nags: Vec::new(),
+            shapes: Vec::new(),
         });
         self.nodes[node_id as usize].children.push(new_id);
 
         Ok(new_id)
+    }
+
+    pub fn set_comment(
+        &mut self,
+        node_id: u32,
+        before: Option<String>,
+        after: Option<String>,
+    ) -> Result<(), String> {
+        let node = self
+            .nodes
+            .get_mut(node_id as usize)
+            .ok_or_else(|| "noeud introuvable".to_string())?;
+        node.comment_before = before.filter(|s| !s.is_empty());
+        node.comment_after = after.filter(|s| !s.is_empty());
+        Ok(())
+    }
+
+    pub fn set_nags(&mut self, node_id: u32, nags: Vec<u8>) -> Result<(), String> {
+        let node = self
+            .nodes
+            .get_mut(node_id as usize)
+            .ok_or_else(|| "noeud introuvable".to_string())?;
+        node.nags = nags;
+        Ok(())
+    }
+
+    pub fn set_shapes(&mut self, node_id: u32, shapes: Vec<ShapeDto>) -> Result<(), String> {
+        let node = self
+            .nodes
+            .get_mut(node_id as usize)
+            .ok_or_else(|| "noeud introuvable".to_string())?;
+        node.shapes = shapes
+            .into_iter()
+            .map(|s| Shape {
+                orig: s.orig,
+                dest: s.dest,
+                brush: s.brush,
+            })
+            .collect();
+        Ok(())
     }
 
     pub fn to_dto(&self) -> TreeDto {
@@ -201,6 +274,18 @@ impl GameTree {
                     } else {
                         "black".to_string()
                     },
+                    comment_before: n.comment_before.clone(),
+                    comment_after: n.comment_after.clone(),
+                    nags: n.nags.clone(),
+                    shapes: n
+                        .shapes
+                        .iter()
+                        .map(|s| ShapeDto {
+                            orig: s.orig.clone(),
+                            dest: s.dest.clone(),
+                            brush: s.brush.clone(),
+                        })
+                        .collect(),
                 })
                 .collect(),
         }

@@ -5,6 +5,12 @@ export interface MoveDto {
   san: string;
 }
 
+export interface ShapeDto {
+  orig: string;
+  dest: string | null;
+  brush: string;
+}
+
 export interface NodeDto {
   id: number;
   parent: number | null;
@@ -14,6 +20,10 @@ export interface NodeDto {
   to: string | null;
   fen: string;
   turn: "white" | "black";
+  commentBefore: string | null;
+  commentAfter: string | null;
+  nags: number[];
+  shapes: ShapeDto[];
 }
 
 export interface TreeDto {

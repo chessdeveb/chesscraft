@@ -83,9 +83,70 @@
   font-size: 0.92em;
 }
 
+.comment {
+  font-style: italic;
+  opacity: 0.75;
+  white-space: pre-wrap;
+}
+
 .error {
   color: #d33;
   margin-top: 8px;
+}
+
+.annotation-panel {
+  border: 1px solid rgba(128, 128, 128, 0.3);
+  border-radius: 8px;
+  padding: 10px;
+  margin-bottom: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.nag-picker {
+  display: flex;
+  gap: 4px;
+}
+
+.nag-button {
+  cursor: pointer;
+  border: 1px solid rgba(128, 128, 128, 0.4);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  padding: 4px 8px;
+  font: inherit;
+  min-width: 32px;
+}
+
+.nag-button:hover {
+  background-color: rgba(100, 108, 255, 0.2);
+}
+
+.nag-button--active {
+  background-color: rgba(100, 108, 255, 0.5);
+  border-color: rgba(100, 108, 255, 0.8);
+  font-weight: 600;
+}
+
+.annotation-label {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.85em;
+  opacity: 0.8;
+  gap: 4px;
+}
+
+.annotation-label textarea {
+  font: inherit;
+  font-style: normal;
+  resize: vertical;
+  border-radius: 6px;
+  border: 1px solid rgba(128, 128, 128, 0.4);
+  padding: 4px 6px;
+  background: transparent;
+  color: inherit;
 }
 
 .variation-choice {
