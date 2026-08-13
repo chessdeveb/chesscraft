@@ -1,0 +1,127 @@
+:root {
+  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 400;
+
+  color: #0f0f0f;
+  background-color: #f6f6f6;
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  -webkit-text-size-adjust: 100%;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color: #f6f6f6;
+    background-color: #2f2f2f;
+  }
+}
+
+.app-layout {
+  display: flex;
+  gap: 24px;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 24px;
+}
+
+.board-wrap .cg-wrap {
+  width: 560px;
+  height: 560px;
+}
+
+.side-panel {
+  width: 320px;
+  max-height: 560px;
+  display: flex;
+  flex-direction: column;
+}
+
+.side-panel h2 {
+  margin: 0 0 8px;
+  font-size: 1.1em;
+}
+
+.notation {
+  overflow-y: auto;
+  border: 1px solid rgba(128, 128, 128, 0.3);
+  border-radius: 8px;
+  padding: 10px;
+  line-height: 1.8;
+}
+
+.notation-empty {
+  opacity: 0.6;
+  font-style: italic;
+}
+
+.move-number {
+  opacity: 0.6;
+}
+
+.move {
+  cursor: pointer;
+  padding: 1px 3px;
+  border-radius: 4px;
+}
+
+.move:hover {
+  background-color: rgba(100, 108, 255, 0.2);
+}
+
+.move--current {
+  background-color: rgba(100, 108, 255, 0.5);
+  font-weight: 600;
+}
+
+.variation {
+  opacity: 0.75;
+  font-size: 0.92em;
+}
+
+.error {
+  color: #d33;
+  margin-top: 8px;
+}
+
+.variation-choice {
+  border: 1px solid rgba(100, 108, 255, 0.5);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+}
+
+.variation-choice p {
+  margin: 0 0 6px;
+  font-size: 0.9em;
+  opacity: 0.8;
+}
+
+.variation-choice-options {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.variation-choice-options button {
+  cursor: pointer;
+  border: 1px solid rgba(100, 108, 255, 0.6);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  padding: 4px 10px;
+  font: inherit;
+}
+
+.variation-choice-options button:hover {
+  background-color: rgba(100, 108, 255, 0.2);
+}
+
+.variation-choice-highlighted {
+  background-color: rgba(100, 108, 255, 0.4) !important;
+  font-weight: 600;
+}
