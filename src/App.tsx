@@ -4,6 +4,7 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import type { Color, Dests, Key } from "@lichess-org/chessground/types";
 import { AnnotationPanel } from "./components/AnnotationPanel";
 import { Board } from "./components/Board";
+import { EnginePanel } from "./components/EnginePanel";
 import { Notation } from "./components/Notation";
 import type { MoveDto, NodeDto, ShapeDto, TreeDto } from "./types";
 import "@lichess-org/chessground/assets/chessground.base.css";
@@ -121,6 +122,7 @@ function App() {
   );
 
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [engineOpen, setEngineOpen] = useState(false);
 
   const handleNewGame = useCallback(async () => {
     const newTree = await invoke<TreeDto>("new_game");
@@ -229,6 +231,9 @@ function App() {
           <button onClick={handleImport}>Importer PGN</button>
           <button onClick={handleExport}>Exporter PGN</button>
           <button onClick={handleSave}>Sauvegarder</button>
+          <button onClick={() => setEngineOpen((v) => !v)}>
+            {engineOpen ? "Fermer le moteur" : "Ouvrir le moteur"}
+          </button>
         </div>
         {statusMessage && <p className="status-message">{statusMessage}</p>}
         <Board
@@ -241,6 +246,7 @@ function App() {
         />
       </div>
       <div className="side-panel">
+        {engineOpen && <EnginePanel fen={currentNode.fen} />}
         <AnnotationPanel
           node={currentNode}
           onSetComment={handleSetComment}

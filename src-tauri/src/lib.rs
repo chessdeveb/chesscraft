@@ -1,15 +1,18 @@
 mod db;
+mod engine;
 mod game_tree;
 mod pgn;
 
+use engine::EngineHandle;
 use game_tree::{GameTree, MoveDto, ShapeDto, TreeDto};
 use rusqlite::Connection;
 use std::sync::Mutex;
-use tauri::{Manager, State};
+use tauri::{AppHandle, Manager, State};
 
 struct AppState {
     tree: Mutex<GameTree>,
     db: Mutex<Connection>,
+    engine: Mutex<Option<EngineHandle>>,
 }
 
 #[tauri::command]
@@ -84,6 +87,34 @@ fn export_pgn(state: State<AppState>, path: String) -> Result<(), String> {
     std::fs::write(&path, pgn).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn start_engine(app: AppHandle, state: State<AppState>, path: String) -> Result<(), String> {
+    let mut slot = state.engine.lock().unwrap();
+    if let Some(mut existing) = slot.take() {
+        existing.stop();
+    }
+    *slot = Some(engine::start(app, &path)?);
+    Ok(())
+}
+
+#[tauri::command]
+fn stop_engine(state: State<AppState>) -> Result<(), String> {
+    let mut slot = state.engine.lock().unwrap();
+    if let Some(mut existing) = slot.take() {
+        existing.stop();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn analyze_position(state: State<AppState>, fen: String, depth: u32) -> Result<(), String> {
+    let mut slot = state.engine.lock().unwrap();
+    match slot.as_mut() {
+        Some(handle) => handle.analyze(&fen, depth),
+        None => Err("le moteur n'est pas demarre".to_string()),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -102,6 +133,7 @@ pub fn run() {
             app.manage(AppState {
                 tree: Mutex::new(tree),
                 db: Mutex::new(conn),
+                engine: Mutex::new(None),
             });
             Ok(())
         })
@@ -115,7 +147,10 @@ pub fn run() {
             set_shapes,
             save_game,
             import_pgn,
-            export_pgn
+            export_pgn,
+            start_engine,
+            stop_engine,
+            analyze_position
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

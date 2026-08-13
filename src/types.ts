@@ -30,3 +30,11 @@ export interface TreeDto {
   nodes: NodeDto[];
   root: number;
 }
+
+export interface EngineInfo {
+  depth: number;
+  multipv: number;
+  scoreCp: number | null;
+  scoreMate: number | null;
+  pvSan: string[];
+}

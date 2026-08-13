@@ -126,6 +126,68 @@
   margin-top: 8px;
 }
 
+.engine-panel {
+  border: 1px solid rgba(128, 128, 128, 0.3);
+  border-radius: 8px;
+  padding: 10px;
+  margin-bottom: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.engine-config {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.engine-config input {
+  flex: 1;
+  min-width: 120px;
+  font: inherit;
+  border-radius: 6px;
+  border: 1px solid rgba(128, 128, 128, 0.4);
+  padding: 4px 6px;
+  background: transparent;
+  color: inherit;
+}
+
+.engine-config button,
+.engine-config select {
+  font: inherit;
+  border-radius: 6px;
+  border: 1px solid rgba(128, 128, 128, 0.4);
+  padding: 4px 8px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.engine-result {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.engine-score {
+  font-weight: 700;
+  font-size: 1.1em;
+}
+
+.engine-depth {
+  opacity: 0.6;
+  font-size: 0.85em;
+}
+
+.engine-line {
+  width: 100%;
+  margin: 0;
+  opacity: 0.85;
+}
+
 .annotation-panel {
   border: 1px solid rgba(128, 128, 128, 0.3);
   border-radius: 8px;
