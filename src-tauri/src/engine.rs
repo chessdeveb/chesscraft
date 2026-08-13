@@ -191,11 +191,20 @@ fn wait_for(reader: &mut BufReader<std::process::ChildStdout>, token: &str) -> R
 }
 
 impl EngineHandle {
-    pub fn analyze(&mut self, fen: &str, depth: u32) -> Result<(), String> {
+    pub fn analyze(&mut self, fen: &str, depth: u32, multipv: u32) -> Result<(), String> {
         *self.current_fen.lock().unwrap() = fen.to_string();
         write_line(&mut self.stdin, "stop")?;
+        write_line(
+            &mut self.stdin,
+            &format!("setoption name MultiPV value {multipv}"),
+        )?;
         write_line(&mut self.stdin, &format!("position fen {fen}"))?;
         write_line(&mut self.stdin, &format!("go depth {depth}"))
+    }
+
+    /// Arrete la recherche en cours sans tuer le process (reprise rapide possible).
+    pub fn pause(&mut self) -> Result<(), String> {
+        write_line(&mut self.stdin, "stop")
     }
 
     pub fn stop(&mut self) {

@@ -7,7 +7,8 @@ use engine::EngineHandle;
 use game_tree::{GameTree, MoveDto, ShapeDto, TreeDto};
 use rusqlite::Connection;
 use std::sync::Mutex;
-use tauri::{AppHandle, Manager, State};
+use tauri::menu::{Menu, MenuItemBuilder, SubmenuBuilder};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 struct AppState {
     tree: Mutex<GameTree>,
@@ -107,10 +108,24 @@ fn stop_engine(state: State<AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn analyze_position(state: State<AppState>, fen: String, depth: u32) -> Result<(), String> {
+fn analyze_position(
+    state: State<AppState>,
+    fen: String,
+    depth: u32,
+    multipv: u32,
+) -> Result<(), String> {
     let mut slot = state.engine.lock().unwrap();
     match slot.as_mut() {
-        Some(handle) => handle.analyze(&fen, depth),
+        Some(handle) => handle.analyze(&fen, depth, multipv),
+        None => Err("le moteur n'est pas demarre".to_string()),
+    }
+}
+
+#[tauri::command]
+fn pause_engine(state: State<AppState>) -> Result<(), String> {
+    let mut slot = state.engine.lock().unwrap();
+    match slot.as_mut() {
+        Some(handle) => handle.pause(),
         None => Err("le moteur n'est pas demarre".to_string()),
     }
 }
@@ -135,6 +150,47 @@ pub fn run() {
                 db: Mutex::new(conn),
                 engine: Mutex::new(None),
             });
+
+            let new_game_item = MenuItemBuilder::with_id("new_game", "Nouvelle partie").build(app)?;
+            let import_item = MenuItemBuilder::with_id("import_pgn", "Importer PGN...").build(app)?;
+            let export_item = MenuItemBuilder::with_id("export_pgn", "Exporter PGN...").build(app)?;
+            let save_item = MenuItemBuilder::with_id("save_game", "Sauvegarder")
+                .accelerator("CmdOrCtrl+S")
+                .build(app)?;
+            let file_menu = SubmenuBuilder::new(app, "Fichier")
+                .item(&new_game_item)
+                .separator()
+                .item(&import_item)
+                .item(&export_item)
+                .separator()
+                .item(&save_item)
+                .build()?;
+
+            let start_engine_item =
+                MenuItemBuilder::with_id("start_engine", "Demarrer Stockfish").build(app)?;
+            let stop_engine_item =
+                MenuItemBuilder::with_id("stop_engine", "Arreter Stockfish").build(app)?;
+            let engine_menu = SubmenuBuilder::new(app, "Moteur")
+                .item(&start_engine_item)
+                .item(&stop_engine_item)
+                .build()?;
+
+            let menu = Menu::with_items(app, &[&file_menu, &engine_menu])?;
+            app.set_menu(menu)?;
+
+            app.on_menu_event(move |app_handle, event| {
+                let event_name = match event.id().as_ref() {
+                    "new_game" => "menu-new-game",
+                    "import_pgn" => "menu-import-pgn",
+                    "export_pgn" => "menu-export-pgn",
+                    "save_game" => "menu-save-game",
+                    "start_engine" => "menu-start-engine",
+                    "stop_engine" => "menu-stop-engine",
+                    _ => return,
+                };
+                let _ = app_handle.emit(event_name, ());
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -150,7 +206,8 @@ pub fn run() {
             export_pgn,
             start_engine,
             stop_engine,
-            analyze_position
+            analyze_position,
+            pause_engine
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

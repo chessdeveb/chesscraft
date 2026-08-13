@@ -6,6 +6,9 @@
 
   color: #0f0f0f;
   background-color: #f6f6f6;
+  /* permet aux controles natifs (select, etc.) de rendre correctement leurs
+     couleurs selon le theme clair/sombre au lieu de garder un rendu par defaut */
+  color-scheme: light dark;
 
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -33,26 +36,6 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
-}
-
-.toolbar {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.toolbar button {
-  cursor: pointer;
-  border: 1px solid rgba(128, 128, 128, 0.4);
-  border-radius: 6px;
-  background: transparent;
-  color: inherit;
-  padding: 6px 12px;
-  font: inherit;
-}
-
-.toolbar button:hover {
-  background-color: rgba(100, 108, 255, 0.2);
 }
 
 .status-message {
@@ -154,8 +137,7 @@
   color: inherit;
 }
 
-.engine-config button,
-.engine-config select {
+.engine-config button {
   font: inherit;
   border-radius: 6px;
   border: 1px solid rgba(128, 128, 128, 0.4);
@@ -165,11 +147,42 @@
   cursor: pointer;
 }
 
+.engine-field {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.85em;
+  opacity: 0.85;
+}
+
+.engine-field select {
+  font: inherit;
+  border-radius: 6px;
+  border: 1px solid rgba(128, 128, 128, 0.5);
+  padding: 3px 6px;
+  background-color: Field;
+  color: FieldText;
+  cursor: pointer;
+}
+
+.engine-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
 .engine-result {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   align-items: baseline;
+  border-top: 1px solid rgba(128, 128, 128, 0.2);
+  padding-top: 6px;
+}
+
+.engine-result:first-child {
+  border-top: none;
+  padding-top: 0;
 }
 
 .engine-score {
@@ -186,6 +199,11 @@
   width: 100%;
   margin: 0;
   opacity: 0.85;
+}
+
+.engine-line--paused {
+  font-style: italic;
+  opacity: 0.6;
 }
 
 .annotation-panel {
