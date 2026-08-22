@@ -125,7 +125,7 @@ fn write_line(stdin: &mut ChildStdin, line: &str) -> Result<(), String> {
     stdin.flush().map_err(|e| e.to_string())
 }
 
-pub fn start(app: AppHandle, path: &str) -> Result<EngineHandle, String> {
+pub fn start(app: AppHandle, path: &str, tab_id: u32) -> Result<EngineHandle, String> {
     let mut child = Command::new(path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -146,6 +146,7 @@ pub fn start(app: AppHandle, path: &str) -> Result<EngineHandle, String> {
     let current_fen = Arc::new(Mutex::new(String::new()));
     let thread_fen = current_fen.clone();
 
+    let event_name = format!("engine-info-{tab_id}");
     std::thread::spawn(move || {
         let mut line = String::new();
         loop {
@@ -157,7 +158,7 @@ pub fn start(app: AppHandle, path: &str) -> Result<EngineHandle, String> {
                         let fen = thread_fen.lock().unwrap().clone();
                         if !fen.is_empty() {
                             if let Some(payload) = resolve_line(&fen, &info) {
-                                let _ = app.emit("engine-info", payload);
+                                let _ = app.emit(&event_name, payload);
                             }
                         }
                     }
@@ -191,12 +192,16 @@ fn wait_for(reader: &mut BufReader<std::process::ChildStdout>, token: &str) -> R
 }
 
 impl EngineHandle {
-    pub fn analyze(&mut self, fen: &str, depth: u32, multipv: u32) -> Result<(), String> {
+    pub fn analyze(&mut self, fen: &str, depth: u32, multipv: u32, threads: u32) -> Result<(), String> {
         *self.current_fen.lock().unwrap() = fen.to_string();
         write_line(&mut self.stdin, "stop")?;
         write_line(
             &mut self.stdin,
             &format!("setoption name MultiPV value {multipv}"),
+        )?;
+        write_line(
+            &mut self.stdin,
+            &format!("setoption name Threads value {threads}"),
         )?;
         write_line(&mut self.stdin, &format!("position fen {fen}"))?;
         write_line(&mut self.stdin, &format!("go depth {depth}"))

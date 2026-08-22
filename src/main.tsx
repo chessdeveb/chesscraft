@@ -1,12 +1,21 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+import { BasesWindow } from "./BasesWindow";
 import { GamePickerWindow } from "./GamePickerWindow";
+import { HomeWindow } from "./HomeWindow";
 
-const isGamePicker = new URLSearchParams(window.location.search).get("window") === "game-picker";
+const windowParam = new URLSearchParams(window.location.search).get("window");
+
+function Root() {
+  if (windowParam === "game-picker") return <GamePickerWindow />;
+  if (windowParam === "bases-paths") return <BasesWindow />;
+  if (windowParam === "game") return <App />;
+  return <HomeWindow />;
+}
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    {isGamePicker ? <GamePickerWindow /> : <App />}
+    <Root />
   </React.StrictMode>,
 );

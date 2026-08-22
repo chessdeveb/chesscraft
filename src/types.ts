@@ -29,6 +29,7 @@ export interface NodeDto {
 export interface TreeDto {
   nodes: NodeDto[];
   root: number;
+  tags: Record<string, string>;
 }
 
 export interface EngineInfo {
@@ -54,4 +55,35 @@ export interface OpeningMoveStat {
   whiteWins: number;
   draws: number;
   blackWins: number;
+}
+
+export interface BaseInfo {
+  name: string;
+  path: string;
+  games: number;
+  isReference: boolean;
+  missing: boolean;
+}
+
+export interface GameSummary {
+  id: number;
+  white: string;
+  black: string;
+  date: string;
+  result: string;
+  event: string;
+}
+
+export type SaveResult = { kind: "saved"; id: number } | { kind: "duplicate"; existing: GameSummary };
+
+export interface TabDto {
+  tabId: number;
+  tree: TreeDto;
+}
+
+export interface BulkImportSummary {
+  total: number;
+  imported: number;
+  skippedDuplicates: number;
+  failed: number;
 }

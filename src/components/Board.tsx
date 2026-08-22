@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Chessground } from "@lichess-org/chessground";
 import type { Api } from "@lichess-org/chessground/api";
 import type { Config } from "@lichess-org/chessground/config";
@@ -11,6 +11,7 @@ interface BoardProps {
   turnColor: Color;
   dests: Dests;
   shapes: ShapeDto[];
+  theme: string;
   onMove: (from: Key, to: Key) => void;
   onShapesChange: (shapes: ShapeDto[]) => void;
 }
@@ -31,19 +32,23 @@ function fromDrawShapes(shapes: DrawShape[]): ShapeDto[] {
   }));
 }
 
-export function Board({ fen, turnColor, dests, shapes, onMove, onShapesChange }: BoardProps) {
+export function Board({ fen, turnColor, dests, shapes, theme, onMove, onShapesChange }: BoardProps) {
+  const outerRef = useRef<HTMLDivElement>(null);
   const elRef = useRef<HTMLDivElement>(null);
   const apiRef = useRef<Api | null>(null);
   const onMoveRef = useRef(onMove);
   onMoveRef.current = onMove;
   const onShapesChangeRef = useRef(onShapesChange);
   onShapesChangeRef.current = onShapesChange;
+  const [size, setSize] = useState(480);
 
   useEffect(() => {
     if (!elRef.current) return;
     const config: Config = {
       fen,
       turnColor,
+      coordinates: true,
+      ranksPosition: "right",
       movable: {
         free: false,
         color: turnColor,
@@ -75,9 +80,28 @@ export function Board({ fen, turnColor, dests, shapes, onMove, onShapesChange }:
     });
   }, [fen, turnColor, dests, shapes]);
 
+  // suit la taille du conteneur (panneau dockview redimensionnable) pour
+  // garder un echiquier carre qui occupe tout l'espace disponible
+  useEffect(() => {
+    if (!outerRef.current) return;
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      const { width, height } = entry.contentRect;
+      const next = Math.max(160, Math.floor(Math.min(width, height)));
+      setSize(next);
+    });
+    observer.observe(outerRef.current);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    apiRef.current?.redrawAll();
+  }, [size]);
+
   return (
-    <div className="board-wrap">
-      <div ref={elRef} className="cg-wrap" />
+    <div className={`board-wrap board-theme-${theme}`} ref={outerRef}>
+      <div ref={elRef} className="cg-wrap" style={{ width: size, height: size }} />
     </div>
   );
 }

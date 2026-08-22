@@ -85,6 +85,7 @@ pub struct NodeDto {
 pub struct TreeDto {
     pub nodes: Vec<NodeDto>,
     pub root: u32,
+    pub tags: BTreeMap<String, String>,
 }
 
 pub(crate) fn role_to_str(role: Role) -> String {
@@ -265,6 +266,16 @@ impl GameTree {
         Ok(())
     }
 
+    pub fn set_tags(&mut self, tags: BTreeMap<String, String>) {
+        for (key, value) in tags {
+            if value.is_empty() {
+                self.tags.remove(&key);
+            } else {
+                self.tags.insert(key, value);
+            }
+        }
+    }
+
     pub fn set_nags(&mut self, node_id: u32, nags: Vec<u8>) -> Result<(), String> {
         let node = self
             .nodes
@@ -293,6 +304,7 @@ impl GameTree {
     pub fn to_dto(&self) -> TreeDto {
         TreeDto {
             root: 0,
+            tags: self.tags.clone(),
             nodes: self
                 .nodes
                 .iter()

@@ -117,7 +117,15 @@ pub fn parse_game(pgn_text: &str) -> Result<GameTree, String> {
 }
 
 /// Reconstruit l'arbre de la partie a l'index donne (0 = premiere partie du fichier).
+/// Protege par catch_unwind : du texte PGN inhabituel (notamment issu d'un
+/// import de masse non valide coup par coup) ne doit jamais faire planter
+/// l'application entiere, juste renvoyer une erreur.
 pub fn parse_game_at(pgn_text: &str, index: u32) -> Result<GameTree, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| parse_game_at_inner(pgn_text, index)))
+        .unwrap_or_else(|_| Err("partie mal formee (erreur interne du parseur)".to_string()))
+}
+
+fn parse_game_at_inner(pgn_text: &str, index: u32) -> Result<GameTree, String> {
     let mut reader = Reader::new(pgn_text.as_bytes());
     for _ in 0..index {
         let mut skip_visitor = SummaryVisitor::new();
