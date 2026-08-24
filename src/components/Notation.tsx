@@ -116,14 +116,38 @@ export function Notation({ tree, currentNodeId, onSelect, onSetComment, onToggle
   const activeMoveNag = currentNode?.nags.find((n) => MOVE_NAG_CODES.has(n));
   const activeEvalNag = currentNode?.nags.find((n) => EVAL_NAG_CODES.has(n));
 
+  const elo = (color: "White" | "Black") => {
+    const value = tree.tags[`${color}Elo`];
+    return value && value !== "?" ? ` (${value})` : "";
+  };
+  const white = tree.tags.White ?? "?";
+  const black = tree.tags.Black ?? "?";
+  const event = tree.tags.Event;
+  const date = tree.tags.Date;
+
   return (
     <div className="notation-wrapper">
+      {(white !== "?" || black !== "?" || event || date) && (
+        <div className="notation-header">
+          <div className="notation-header-players">
+            {white}
+            {elo("White")} – {black}
+            {elo("Black")}
+          </div>
+          {(event || date) && (
+            <div className="notation-header-meta">
+              {[event, date].filter(Boolean).join(", ")}
+            </div>
+          )}
+        </div>
+      )}
       <div className="notation">
         {firstMoveId !== undefined ? (
           renderLine(firstMoveId, true)
         ) : (
           <p className="notation-empty">Aucun coup joué</p>
         )}
+        {tree.tags.Result && <span className="notation-result">{tree.tags.Result}</span>}
       </div>
       {currentNode && (
         <div className="annotate-bar">

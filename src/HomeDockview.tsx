@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { ask, open, save } from "@tauri-apps/plugin-dialog";
 import { DockviewReact, type DockviewApi, type DockviewReadyEvent } from "dockview-react";
-import { HomeContext, type HomeActiveSource, type HomeContextValue } from "./HomeContext";
+import { HomeContext, type GamesSort, type GamesSortColumn, type HomeActiveSource, type HomeContextValue } from "./HomeContext";
 import { homeDockviewComponents } from "./HomeDockPanels";
 import type { BaseInfo, GameSummary, PgnGameSummary } from "./types";
 import "dockview-react/dist/styles/dockview.css";
@@ -81,6 +81,7 @@ export function HomeDockview({
   const [gamesPage, setGamesPage] = useState(0);
   const [gamesSearchInput, setGamesSearchInput] = useState("");
   const [gamesSearch, setGamesSearch] = useState("");
+  const [gamesSort, setGamesSort] = useState<GamesSort | null>(null);
 
   const [pgnGames, setPgnGames] = useState<PgnGameSummary[]>([]);
 
@@ -135,12 +136,18 @@ export function HomeDockview({
   const activeBasePath = activeSource?.kind === "base" ? activeSource.base.path : null;
   const activeBaseMissing = activeSource?.kind === "base" ? activeSource.base.missing : false;
 
-  // changer de base reinitialise la recherche/pagination
+  // changer de base reinitialise la recherche/pagination/tri
   useEffect(() => {
     setGamesPage(0);
     setGamesSearchInput("");
     setGamesSearch("");
+    setGamesSort(null);
   }, [activeBasePath]);
+
+  const onGamesSortChange = useCallback((column: GamesSortColumn) => {
+    setGamesSort((prev) => (prev?.column === column ? { column, dir: prev.dir === "asc" ? "desc" : "asc" } : { column, dir: "asc" }));
+    setGamesPage(0);
+  }, []);
 
   useEffect(() => {
     if (!activeBasePath || activeBaseMissing) {
@@ -151,6 +158,8 @@ export function HomeDockview({
     invoke<{ games: GameSummary[]; total: number }>("list_games_in_base", {
       path: activeBasePath,
       search: gamesSearch,
+      sortBy: gamesSort?.column ?? "",
+      sortDir: gamesSort?.dir ?? "",
       offset: gamesPage * GAMES_PAGE_SIZE,
       limit: GAMES_PAGE_SIZE,
     })
@@ -159,7 +168,7 @@ export function HomeDockview({
         setGamesTotal(res.total);
       })
       .catch((e) => setError(String(e)));
-  }, [activeBasePath, activeBaseMissing, gamesSearch, gamesPage]);
+  }, [activeBasePath, activeBaseMissing, gamesSearch, gamesPage, gamesSort]);
 
   const activePgnPath = activeSource?.kind === "pgn" ? activeSource.pgn.path : null;
 
@@ -382,6 +391,8 @@ export function HomeDockview({
     gamesSearchInput,
     onGamesSearchChange: setGamesSearchInput,
     onGamesPageChange: setGamesPage,
+    gamesSort,
+    onGamesSortChange,
     onOpenBaseGame: handleOpenBaseGame,
     onDeleteGame: handleDeleteGame,
     pgnGames,

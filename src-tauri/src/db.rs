@@ -59,7 +59,34 @@ pub fn open(path: &Path) -> Result<Connection, String> {
     )
     .map_err(|e| e.to_string())?;
     migrate_add_columns(&conn)?;
+    migrate_mainline_index(&conn)?;
     Ok(conn)
+}
+
+/// L'explorateur d'ouvertures ne lit que mainline_sans et result : un index
+/// couvrant les deux evite a SQLite de retourner a la table pour chaque ligne
+/// (et l'empeche de preferer a tort un scan complet de idx_games_dedup, plus
+/// large, faute de pouvoir "couvrir" la requete avec un index a une seule
+/// colonne). Recree seulement si absent ou encore dans son ancienne forme a
+/// une colonne, pas a chaque ouverture.
+fn migrate_mainline_index(conn: &Connection) -> Result<(), String> {
+    let sql: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_games_mainline'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let up_to_date = matches!(&sql, Some(s) if s.contains("mainline_sans, result"));
+    if !up_to_date {
+        conn.execute_batch(
+            "DROP INDEX IF EXISTS idx_games_mainline;
+             CREATE INDEX idx_games_mainline ON games(mainline_sans, result);",
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 /// Les bases creees avant l'ajout du support Elo / du cache des coups n'ont
@@ -198,39 +225,59 @@ pub fn count_games(conn: &Connection, search: &str) -> Result<u32, String> {
     Ok(count as u32)
 }
 
-/// Une page de parties (triees par id decroissant), filtrees par Blancs/Noirs
-/// si `search` est non vide. Indispensable sur les grosses bases (des
-/// centaines de milliers de parties) ou charger la table entiere en un coup
-/// n'est pas envisageable.
-pub fn list_games_page(conn: &Connection, search: &str, limit: u32, offset: u32) -> Result<Vec<GameSummary>, String> {
+/// Traduit une paire (colonne, sens) fournie par l'interface en fragment SQL
+/// fixe : `sort_by`/`sort_dir` viennent de l'utilisateur et ne doivent jamais
+/// etre interpoles tels quels dans la requete (injection SQL). Retombe sur le
+/// tri par defaut (le plus recent d'abord) pour toute valeur inconnue.
+fn order_by_clause(sort_by: &str, sort_dir: &str) -> &'static str {
+    let desc = sort_dir != "asc";
+    match (sort_by, desc) {
+        ("white", false) => "ORDER BY white COLLATE NOCASE ASC, id DESC",
+        ("white", true) => "ORDER BY white COLLATE NOCASE DESC, id DESC",
+        ("black", false) => "ORDER BY black COLLATE NOCASE ASC, id DESC",
+        ("black", true) => "ORDER BY black COLLATE NOCASE DESC, id DESC",
+        ("date", false) => "ORDER BY date_played ASC, id DESC",
+        ("date", true) => "ORDER BY date_played DESC, id DESC",
+        _ => "ORDER BY id DESC",
+    }
+}
+
+/// Une page de parties, filtrees par Blancs/Noirs si `search` est non vide et
+/// triees selon `sort_by`/`sort_dir` (voir `order_by_clause`). Indispensable
+/// sur les grosses bases (des centaines de milliers de parties) ou charger la
+/// table entiere en un coup n'est pas envisageable.
+pub fn list_games_page(
+    conn: &Connection,
+    search: &str,
+    sort_by: &str,
+    sort_dir: &str,
+    limit: u32,
+    offset: u32,
+) -> Result<Vec<GameSummary>, String> {
+    let order_by = order_by_clause(sort_by, sort_dir);
     if search.is_empty() {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, white, black, date_played, result, event FROM games
-                 ORDER BY id DESC LIMIT ?1 OFFSET ?2",
-            )
-            .map_err(|e| e.to_string())?;
-        let result = stmt
+        let sql = format!("SELECT id, white, black, date_played, result, event FROM games {order_by} LIMIT ?1 OFFSET ?2");
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let rows = stmt
             .query_map(params![limit, offset], map_game_summary_row)
             .map_err(|e| e.to_string())?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string());
-        result
+        rows
     } else {
         let pattern = format!("%{search}%");
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, white, black, date_played, result, event FROM games
-                 WHERE white LIKE ?1 OR black LIKE ?1
-                 ORDER BY id DESC LIMIT ?2 OFFSET ?3",
-            )
-            .map_err(|e| e.to_string())?;
-        let result = stmt
+        let sql = format!(
+            "SELECT id, white, black, date_played, result, event FROM games
+             WHERE white LIKE ?1 OR black LIKE ?1
+             {order_by} LIMIT ?2 OFFSET ?3"
+        );
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let rows = stmt
             .query_map(params![pattern, limit, offset], map_game_summary_row)
             .map_err(|e| e.to_string())?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string());
-        result
+        rows
     }
 }
 
@@ -282,27 +329,6 @@ pub fn load_game_pgn(conn: &Connection, id: i64) -> Result<Option<String>, Strin
     })
     .optional()
     .map_err(|e| e.to_string())
-}
-
-/// Coups (deja mis en cache a la sauvegarde) et resultat de chaque partie de
-/// la base, pour l'explorateur d'ouvertures. Beaucoup plus leger et rapide
-/// qu'un `SELECT pgn_moves` suivi d'une reparse + revalidation complete de
-/// chaque partie. Les parties enregistrees avant l'ajout du cache
-/// (mainline_sans NULL) sont ignorees.
-pub fn all_games_mainline(conn: &Connection) -> Result<Vec<(String, Option<String>)>, String> {
-    let mut stmt = conn
-        .prepare("SELECT mainline_sans, result FROM games WHERE mainline_sans IS NOT NULL")
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
-        })
-        .map_err(|e| e.to_string())?;
-    let mut out = Vec::new();
-    for row in rows {
-        out.push(row.map_err(|e| e.to_string())?);
-    }
-    Ok(out)
 }
 
 #[cfg(test)]

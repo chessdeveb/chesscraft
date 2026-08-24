@@ -45,6 +45,23 @@ struct AppState {
     sessions: Mutex<HashMap<u32, GameSession>>,
     next_tab_id: Mutex<u32>,
     bulk_import_cancel: Mutex<bool>,
+    // Empeche deux imports en masse simultanes (ex. double-clic) : deux
+    // ecrivains concurrents sur le meme fichier SQLite se marchent dessus
+    // (verrous, transactions qui ne se voient pas mutuellement) et gonflent
+    // artificiellement le compteur d'echecs.
+    bulk_import_running: Mutex<bool>,
+    // Connexion vers la base de reference, reutilisee entre les appels de
+    // l'explorateur d'ouvertures : en rouvrir une a chaque coup joue coute
+    // tres cher sur une base de plusieurs Go (WAL a re-verifier a chaque
+    // fois). Reouverte seulement si la base de reference a change.
+    reference_conn: Mutex<Option<(String, Connection)>>,
+    // Resultats de l'explorateur pour les prefixes deja demandes (position de
+    // depart, "e4", "e4 e5", ...). Sur une base de plusieurs millions de
+    // parties, les premiers coups sont interroges par toutes les parties et
+    // restent couteux a agreger (l'essentiel de la base correspond au
+    // prefixe) : vide seulement quand la base de reference change ou qu'un
+    // import en masse la modifie.
+    explorer_cache: Mutex<HashMap<String, Vec<OpeningMoveStat>>>,
 }
 
 fn allocate_tab_id(state: &AppState) -> u32 {
@@ -168,8 +185,58 @@ fn import_pgn(state: State<AppState>, path: String, index: u32) -> Result<TabDto
     Ok(TabDto { tab_id, tree })
 }
 
+// Journal durable des imports en masse : ecrit independamment de l'etat de
+// l'interface, pour retrouver les chiffres meme si la fenetre de resultat a
+// disparu (ex. rechargement silencieux de la webview sur un tres gros import).
+fn log_bulk_import_result(
+    app: &AppHandle,
+    pgn_path: &str,
+    db_path: &str,
+    result: &Result<bulk_import::BulkImportSummary, String>,
+) {
+    let Ok(dir) = app.path().app_data_dir() else { return };
+    let _ = std::fs::create_dir_all(&dir);
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let entry = match result {
+        Ok(summary) => serde_json::json!({
+            "timestamp": timestamp,
+            "pgnPath": pgn_path,
+            "dbPath": db_path,
+            "total": summary.total,
+            "imported": summary.imported,
+            "skippedDuplicates": summary.skipped_duplicates,
+            "skippedInvalid": summary.skipped_invalid,
+            "failed": summary.failed,
+        }),
+        Err(e) => serde_json::json!({
+            "timestamp": timestamp,
+            "pgnPath": pgn_path,
+            "dbPath": db_path,
+            "error": e,
+        }),
+    };
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("import_log.jsonl"))
+    {
+        use std::io::Write;
+        let _ = writeln!(file, "{entry}");
+    }
+}
+
 #[tauri::command]
-fn bulk_import_pgn(app: AppHandle, state: State<AppState>, db_path: String, pgn_path: String) {
+fn bulk_import_pgn(app: AppHandle, state: State<AppState>, db_path: String, pgn_path: String) -> Result<(), String> {
+    {
+        let mut running = state.bulk_import_running.lock().unwrap();
+        if *running {
+            return Err("un import en masse est deja en cours".to_string());
+        }
+        *running = true;
+    }
     *state.bulk_import_cancel.lock().unwrap() = false;
     std::thread::spawn(move || {
         let progress_app = app.clone();
@@ -187,6 +254,12 @@ fn bulk_import_pgn(app: AppHandle, state: State<AppState>, db_path: String, pgn_
             )
         })();
 
+        log_bulk_import_result(&app, &pgn_path, &db_path, &result);
+        // meme en cas d'echec partiel, des lots ont pu etre commit (voir
+        // bulk_import::BATCH_SIZE) : le cache de l'explorateur pourrait donc
+        // etre perime, on le vide dans tous les cas.
+        app.state::<AppState>().explorer_cache.lock().unwrap().clear();
+
         match result {
             Ok(summary) => {
                 let _ = app.emit("bulk-import-done", summary);
@@ -195,7 +268,9 @@ fn bulk_import_pgn(app: AppHandle, state: State<AppState>, db_path: String, pgn_
                 let _ = app.emit("bulk-import-error", e);
             }
         }
+        *app.state::<AppState>().bulk_import_running.lock().unwrap() = false;
     });
+    Ok(())
 }
 
 #[tauri::command]
@@ -290,14 +365,29 @@ fn pause_engine(state: State<AppState>, tab_id: u32) -> Result<(), String> {
 // L'explorateur s'appuie toujours sur la base marquee "reference", pas sur
 // la base d'origine de la partie affichee (qui peut tres bien ne pas en
 // avoir une, ex. une partie ouverte depuis un fichier PGN).
-fn opening_explorer(app: AppHandle, moves: Vec<String>) -> Result<Vec<OpeningMoveStat>, String> {
+fn opening_explorer(app: AppHandle, state: State<AppState>, moves: Vec<String>) -> Result<Vec<OpeningMoveStat>, String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let reference = bases::list_bases(&dir)
         .into_iter()
         .find(|b| b.is_reference && !b.missing)
         .ok_or_else(|| "aucune base de reference definie (Accueil > clic sur une base > Marquer comme reference)".to_string())?;
-    let conn = db::open(Path::new(&reference.path))?;
-    explorer::explore(&conn, &moves)
+
+    let mut conn_cache = state.reference_conn.lock().unwrap();
+    let needs_reopen = !matches!(conn_cache.as_ref(), Some((path, _)) if *path == reference.path);
+    if needs_reopen {
+        let conn = db::open(Path::new(&reference.path))?;
+        *conn_cache = Some((reference.path.clone(), conn));
+        state.explorer_cache.lock().unwrap().clear();
+    }
+
+    let key = moves.join(" ");
+    if let Some(cached) = state.explorer_cache.lock().unwrap().get(&key) {
+        return Ok(cached.clone());
+    }
+    let conn = &conn_cache.as_ref().unwrap().1;
+    let stats = explorer::explore(conn, &moves)?;
+    state.explorer_cache.lock().unwrap().insert(key, stats.clone());
+    Ok(stats)
 }
 
 #[tauri::command]
@@ -352,10 +442,17 @@ struct GamesPage {
 }
 
 #[tauri::command]
-fn list_games_in_base(path: String, search: String, offset: u32, limit: u32) -> Result<GamesPage, String> {
+fn list_games_in_base(
+    path: String,
+    search: String,
+    sort_by: String,
+    sort_dir: String,
+    offset: u32,
+    limit: u32,
+) -> Result<GamesPage, String> {
     let conn = db::open(Path::new(&path))?;
     let total = db::count_games(&conn, &search)?;
-    let games = db::list_games_page(&conn, &search, limit, offset)?;
+    let games = db::list_games_page(&conn, &search, &sort_by, &sort_dir, limit, offset)?;
     Ok(GamesPage { games, total })
 }
 
@@ -526,6 +623,9 @@ pub fn run() {
                 sessions: Mutex::new(HashMap::new()),
                 next_tab_id: Mutex::new(0),
                 bulk_import_cancel: Mutex::new(false),
+                bulk_import_running: Mutex::new(false),
+                reference_conn: Mutex::new(None),
+                explorer_cache: Mutex::new(HashMap::new()),
             });
 
             // menu unique partage par toutes les fenetres (voir open_game_window) :

@@ -3,6 +3,12 @@ import type { BaseInfo, GameSummary, PgnGameSummary } from "./types";
 
 export type HomeActiveSource = { kind: "base"; base: BaseInfo } | { kind: "pgn"; pgn: BaseInfo } | null;
 
+export type GamesSortColumn = "white" | "black" | "date";
+export interface GamesSort {
+  column: GamesSortColumn;
+  dir: "asc" | "desc";
+}
+
 export interface HomeContextValue {
   error: string | null;
 
@@ -25,6 +31,8 @@ export interface HomeContextValue {
   gamesSearchInput: string;
   onGamesSearchChange: (v: string) => void;
   onGamesPageChange: (p: number) => void;
+  gamesSort: GamesSort | null;
+  onGamesSortChange: (column: GamesSortColumn) => void;
   onOpenBaseGame: (id: number) => void;
   onDeleteGame: (id: number) => void;
 

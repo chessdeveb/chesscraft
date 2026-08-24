@@ -11,6 +11,10 @@ import "./App.css";
 
 type BulkImportResult = { kind: "done"; summary: BulkImportSummary } | { kind: "error"; message: string };
 
+function formatBulkImportSummary(summary: BulkImportSummary): string {
+  return `${summary.total} traitées — ${summary.imported} importées, ${summary.skippedDuplicates} doublons ignorés, ${summary.skippedInvalid} noms manquants ignorés, ${summary.failed} échecs`;
+}
+
 // Creer la fenetre Partie depuis une commande Rust (WebviewWindowBuilder
 // invoque via invoke_handler) plante systematiquement sous Windows, avec ou
 // sans menu attache -- confirme a plusieurs reprises. On la cree donc cote
@@ -110,17 +114,24 @@ export function HomeWindow() {
     }
   }, []);
 
-  const handleBulkImportConfirm = useCallback(async (basePath: string) => {
-    setBulkImportPgnPath((pgnPath) => {
-      if (!pgnPath) return null;
-      setBulkImportProgress({ total: 0, imported: 0, skippedDuplicates: 0, failed: 0 });
+  const handleBulkImportConfirm = useCallback(
+    (basePath: string) => {
+      // Ne jamais mettre d'effet de bord (invoke) dans le callback d'un
+      // setState : en StrictMode (dev), React l'appelle deux fois pour
+      // detecter les impuretes, ce qui declenchait litteralement deux
+      // imports concurrents sur le meme fichier -- source des millions
+      // d'"echecs" observes (verrous SQLite entre les deux ecrivains).
+      if (!bulkImportPgnPath) return;
+      const pgnPath = bulkImportPgnPath;
+      setBulkImportPgnPath(null);
+      setBulkImportProgress({ total: 0, imported: 0, skippedDuplicates: 0, skippedInvalid: 0, failed: 0 });
       invoke("bulk_import_pgn", { dbPath: basePath, pgnPath }).catch((e) => {
         setBulkImportProgress(null);
         setBulkImportResult({ kind: "error", message: String(e) });
       });
-      return null;
-    });
-  }, []);
+    },
+    [bulkImportPgnPath]
+  );
 
   useEffect(() => {
     const unlistenPromises = [
@@ -214,10 +225,7 @@ export function HomeWindow() {
         <div className="modal-overlay">
           <div className="modal">
             <h2>Import en cours...</h2>
-            <p>
-              {bulkImportProgress.total} traitées — {bulkImportProgress.imported} importées,{" "}
-              {bulkImportProgress.skippedDuplicates} doublons ignorés, {bulkImportProgress.failed} échecs
-            </p>
+            <p>{formatBulkImportSummary(bulkImportProgress)}</p>
             <div className="modal-actions">
               <button onClick={() => invoke("cancel_bulk_import")}>Annuler</button>
             </div>
@@ -225,16 +233,12 @@ export function HomeWindow() {
         </div>
       )}
       {bulkImportResult && (
-        <div className="modal-overlay" onClick={() => setBulkImportResult(null)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-overlay">
+          <div className="modal">
             {bulkImportResult.kind === "done" ? (
               <>
                 <h2>Import terminé</h2>
-                <p>
-                  {bulkImportResult.summary.total} parties traitées — {bulkImportResult.summary.imported} importées,{" "}
-                  {bulkImportResult.summary.skippedDuplicates} doublons ignorés, {bulkImportResult.summary.failed}{" "}
-                  échecs
-                </p>
+                <p>{formatBulkImportSummary(bulkImportResult.summary)}</p>
               </>
             ) : (
               <>
@@ -243,6 +247,17 @@ export function HomeWindow() {
               </>
             )}
             <div className="modal-actions">
+              <button
+                onClick={() =>
+                  navigator.clipboard.writeText(
+                    bulkImportResult.kind === "done"
+                      ? formatBulkImportSummary(bulkImportResult.summary)
+                      : bulkImportResult.message,
+                  )
+                }
+              >
+                Copier
+              </button>
               <button onClick={() => setBulkImportResult(null)}>OK</button>
             </div>
           </div>

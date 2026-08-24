@@ -1,3 +1,5 @@
+import type { GamesSort, GamesSortColumn } from "../HomeContext";
+
 export interface GameRow {
   key: number;
   white: string;
@@ -11,9 +13,31 @@ interface GamesTableProps {
   games: GameRow[];
   onOpen: (key: number) => void;
   onDelete?: (key: number) => void;
+  sort?: GamesSort | null;
+  onSortChange?: (column: GamesSortColumn) => void;
 }
 
-export function GamesTable({ games, onOpen, onDelete }: GamesTableProps) {
+function SortableHeader({
+  label,
+  column,
+  sort,
+  onSortChange,
+}: {
+  label: string;
+  column: GamesSortColumn;
+  sort?: GamesSort | null;
+  onSortChange?: (column: GamesSortColumn) => void;
+}) {
+  if (!onSortChange) return <th>{label}</th>;
+  const active = sort?.column === column;
+  return (
+    <th className="games-table-sortable" onClick={() => onSortChange(column)}>
+      {label} {active ? (sort!.dir === "asc" ? "▲" : "▼") : ""}
+    </th>
+  );
+}
+
+export function GamesTable({ games, onOpen, onDelete, sort, onSortChange }: GamesTableProps) {
   if (games.length === 0) {
     return <p className="notation-empty">Aucune partie ici</p>;
   }
@@ -22,9 +46,9 @@ export function GamesTable({ games, onOpen, onDelete }: GamesTableProps) {
     <table className="explorer-table">
       <thead>
         <tr>
-          <th>Blancs</th>
-          <th>Noirs</th>
-          <th>Date</th>
+          <SortableHeader label="Blancs" column="white" sort={sort} onSortChange={onSortChange} />
+          <SortableHeader label="Noirs" column="black" sort={sort} onSortChange={onSortChange} />
+          <SortableHeader label="Date" column="date" sort={sort} onSortChange={onSortChange} />
           <th>Résultat</th>
           <th>Évènement</th>
           {onDelete && <th></th>}

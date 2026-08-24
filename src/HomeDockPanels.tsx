@@ -43,6 +43,8 @@ export function PartiesPanelView() {
     gamesSearchInput,
     onGamesSearchChange,
     onGamesPageChange,
+    gamesSort,
+    onGamesSortChange,
     onOpenBaseGame,
     onDeleteGame,
     onToggleReference,
@@ -129,7 +131,13 @@ export function PartiesPanelView() {
           </button>
         </div>
       )}
-      <GamesTable games={rows} onOpen={onOpenBaseGame} onDelete={onDeleteGame} />
+      <GamesTable
+        games={rows}
+        onOpen={onOpenBaseGame}
+        onDelete={onDeleteGame}
+        sort={gamesSort}
+        onSortChange={onGamesSortChange}
+      />
     </div>
   );
 }

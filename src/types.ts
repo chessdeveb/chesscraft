@@ -85,5 +85,6 @@ export interface BulkImportSummary {
   total: number;
   imported: number;
   skippedDuplicates: number;
+  skippedInvalid: number;
   failed: number;
 }

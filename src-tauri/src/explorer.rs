@@ -1,4 +1,3 @@
-use crate::db;
 use rusqlite::Connection;
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -21,31 +20,63 @@ struct Tally {
     black_wins: u32,
 }
 
-/// Parcourt toutes les parties de la base et agrege les coups joues apres
-/// la sequence `moves` (prefixe de la ligne principale, en SAN). Compare la
-/// liste de coups mise en cache (colonne mainline_sans) plutot que de
-/// reparser chaque partie coup par coup : indispensable pour rester rapide
-/// sur une base de plusieurs centaines de milliers de parties.
+/// Agrege les coups joues apres la sequence `moves` (prefixe de la ligne
+/// principale, en SAN). Le comptage se fait entierement en SQL (GROUP BY sur
+/// le coup suivant, extrait par sous-chaine) plutot qu'en rapatriant chaque
+/// partie en Rust pour la comparer une a une : sur une base de plusieurs
+/// millions de parties, la difference est de l'ordre de la seconde contre
+/// plusieurs dizaines de secondes. Le filtrage par prefixe (LIKE 'prefixe %')
+/// s'appuie sur idx_games_mainline pour eviter un balayage complet des que
+/// des coups sont deja joues.
 pub fn explore(conn: &Connection, moves: &[String]) -> Result<Vec<OpeningMoveStat>, String> {
-    let games = db::all_games_mainline(conn)?;
-    let mut stats: BTreeMap<String, Tally> = BTreeMap::new();
+    let prefix = moves.join(" ");
+    // Intervalle explicite plutot que LIKE 'prefixe %' : sur cette requete
+    // (sous-requete + GROUP BY), l'optimisation LIKE-vers-intervalle de
+    // SQLite ne se declenche pas et force un scan complet de l'index a
+    // chaque appel. Un >= / < explicite, lui, est toujours converti en
+    // recherche d'intervalle sur idx_games_mainline.
+    let (rest_start, lo, hi) = if prefix.is_empty() {
+        (1i64, String::new(), "\u{ffff}".to_string())
+    } else {
+        (
+            prefix.len() as i64 + 2,
+            format!("{prefix} "),
+            format!("{prefix} ") + "\u{ffff}",
+        )
+    };
 
-    for (mainline_sans, result) in games {
-        let mainline: Vec<&str> = if mainline_sans.is_empty() {
-            Vec::new()
-        } else {
-            mainline_sans.split(' ').collect()
-        };
-        if mainline.len() <= moves.len() || !mainline.iter().zip(moves.iter()).all(|(a, b)| *a == b.as_str()) {
+    let mut stmt = conn
+        .prepare(
+            "SELECT
+                CASE WHEN INSTR(rest, ' ') = 0 THEN rest ELSE SUBSTR(rest, 1, INSTR(rest, ' ') - 1) END AS next_move,
+                result,
+                COUNT(*) AS cnt
+             FROM (SELECT SUBSTR(mainline_sans, ?1) AS rest, result FROM games WHERE mainline_sans >= ?2 AND mainline_sans < ?3)
+             GROUP BY next_move, result",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let rows = stmt
+        .query_map(rusqlite::params![rest_start, lo, hi], |row| {
+            let next_move: String = row.get(0)?;
+            let result: Option<String> = row.get(1)?;
+            let cnt: u32 = row.get(2)?;
+            Ok((next_move, result, cnt))
+        })
+        .map_err(|e| e.to_string())?;
+
+    let mut stats: BTreeMap<String, Tally> = BTreeMap::new();
+    for row in rows {
+        let (san, result, cnt) = row.map_err(|e| e.to_string())?;
+        if san.is_empty() {
             continue;
         }
-
-        let entry = stats.entry(mainline[moves.len()].to_string()).or_default();
-        entry.games += 1;
+        let entry = stats.entry(san).or_default();
+        entry.games += cnt;
         match result.as_deref() {
-            Some("1-0") => entry.white_wins += 1,
-            Some("1/2-1/2") => entry.draws += 1,
-            Some("0-1") => entry.black_wins += 1,
+            Some("1-0") => entry.white_wins += cnt,
+            Some("1/2-1/2") => entry.draws += cnt,
+            Some("0-1") => entry.black_wins += cnt,
             _ => {}
         }
     }
@@ -67,6 +98,7 @@ pub fn explore(conn: &Connection, moves: &[String]) -> Result<Vec<OpeningMoveSta
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db;
     use std::collections::BTreeMap;
 
     fn conn_with_games(games: &[(&str, &str, &str)]) -> Connection {
