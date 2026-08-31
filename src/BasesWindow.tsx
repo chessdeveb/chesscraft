@@ -2,11 +2,15 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { useTranslation } from "react-i18next";
 import { BasesTable } from "./components/BasesTable";
+import { useSyncLanguage } from "./i18n";
 import type { BaseInfo } from "./types";
 import "./App.css";
 
 export function BasesWindow() {
+  useSyncLanguage();
+  const { t } = useTranslation();
   const [bases, setBases] = useState<BaseInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
 
@@ -23,7 +27,7 @@ export function BasesWindow() {
 
   return (
     <main className="picker-window">
-      <h2>Emplacement des bases</h2>
+      <h2>{t("basesWindow.title")}</h2>
       {error && <p className="error">{error}</p>}
       <div className="modal-table-wrap">
         <BasesTable bases={bases} onSelect={handleSelect} />

@@ -72,6 +72,7 @@ export interface GameSummary {
   date: string;
   result: string;
   event: string;
+  timeControl: string;
 }
 
 export type SaveResult = { kind: "saved"; id: number } | { kind: "duplicate"; existing: GameSummary };

@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
+import { useTranslation } from "react-i18next";
 import { BasesTable } from "./BasesTable";
 import type { BaseInfo } from "../types";
 
 interface SaveBasePickerProps {
+  tabId: number;
   activeBasePath: string | null;
   tags: Record<string, string>;
   onConfirm: (path: string) => void;
@@ -36,7 +38,8 @@ function inputValueToPgnDate(inputValue: string): string {
   return inputValue.replace(/-/g, ".");
 }
 
-export function SaveBasePicker({ activeBasePath, tags, onConfirm, onCancel }: SaveBasePickerProps) {
+export function SaveBasePicker({ tabId, activeBasePath, tags, onConfirm, onCancel }: SaveBasePickerProps) {
+  const { t } = useTranslation();
   const [bases, setBases] = useState<BaseInfo[]>([]);
   const [selectedPath, setSelectedPath] = useState<string | null>(activeBasePath);
   const [error, setError] = useState<string | null>(null);
@@ -62,7 +65,7 @@ export function SaveBasePicker({ activeBasePath, tags, onConfirm, onCancel }: Sa
 
   async function handleCreateBase() {
     try {
-      const path = await save({ filters: [{ name: "Base d'échecs", extensions: ["sqlite"] }] });
+      const path = await save({ filters: [{ name: t("common.chessBaseFilter"), extensions: ["sqlite"] }] });
       if (!path) return;
       const info = await invoke<BaseInfo>("create_base", { name: baseNameFromPath(path), path });
       setBases((prev) => [...prev, info]);
@@ -77,6 +80,7 @@ export function SaveBasePicker({ activeBasePath, tags, onConfirm, onCancel }: Sa
     if (!selectedPath) return;
     try {
       await invoke("set_tags", {
+        tabId,
         tags: {
           White: white,
           Black: black,
@@ -98,27 +102,27 @@ export function SaveBasePicker({ activeBasePath, tags, onConfirm, onCancel }: Sa
   return (
     <div className="modal-overlay" onClick={onCancel}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h2>Sauvegarder dans quelle base ?</h2>
+        <h2>{t("savePicker.title")}</h2>
         {error && <p className="error">{error}</p>}
         <div className="save-game-info">
           <label>
-            Blancs
+            {t("common.white")}
             <input value={white} onChange={(e) => setWhite(e.target.value)} />
           </label>
           <label>
-            Elo Blancs
+            {t("savePicker.whiteElo")}
             <input value={whiteElo} onChange={(e) => setWhiteElo(e.target.value)} />
           </label>
           <label>
-            Noirs
+            {t("common.black")}
             <input value={black} onChange={(e) => setBlack(e.target.value)} />
           </label>
           <label>
-            Elo Noirs
+            {t("savePicker.blackElo")}
             <input value={blackElo} onChange={(e) => setBlackElo(e.target.value)} />
           </label>
           <label>
-            Date
+            {t("common.date")}
             <input
               type="date"
               value={pgnDateToInputValue(date)}
@@ -126,7 +130,7 @@ export function SaveBasePicker({ activeBasePath, tags, onConfirm, onCancel }: Sa
             />
           </label>
           <label>
-            Résultat
+            {t("common.result")}
             <select value={result} onChange={(e) => setResult(e.target.value)}>
               {RESULT_OPTIONS.map((r) => (
                 <option key={r} value={r}>
@@ -136,15 +140,15 @@ export function SaveBasePicker({ activeBasePath, tags, onConfirm, onCancel }: Sa
             </select>
           </label>
           <label>
-            Évènement
+            {t("common.event")}
             <input value={event} onChange={(e) => setEvent(e.target.value)} />
           </label>
           <label>
-            Site
+            {t("savePicker.site")}
             <input value={site} onChange={(e) => setSite(e.target.value)} />
           </label>
           <label>
-            Round
+            {t("savePicker.round")}
             <input value={round} onChange={(e) => setRound(e.target.value)} />
           </label>
         </div>
@@ -152,10 +156,10 @@ export function SaveBasePicker({ activeBasePath, tags, onConfirm, onCancel }: Sa
           <BasesTable bases={bases} selectedPath={selectedPath} onSelect={(b) => setSelectedPath(b.path)} />
         </div>
         <div className="modal-actions">
-          <button onClick={handleCreateBase}>Nouvelle base</button>
-          <button onClick={onCancel}>Annuler</button>
+          <button onClick={handleCreateBase}>{t("common.newBase")}</button>
+          <button onClick={onCancel}>{t("common.cancel")}</button>
           <button disabled={!selectedPath} onClick={handleConfirm}>
-            Sauvegarder
+            {t("common.save")}
           </button>
         </div>
       </div>

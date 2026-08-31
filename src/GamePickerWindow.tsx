@@ -2,10 +2,14 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { useTranslation } from "react-i18next";
+import { useSyncLanguage } from "./i18n";
 import type { PgnGameSummary } from "./types";
 import "./App.css";
 
 export function GamePickerWindow() {
+  useSyncLanguage();
+  const { t } = useTranslation();
   const params = new URLSearchParams(window.location.search);
   const path = params.get("path") ?? "";
   const [games, setGames] = useState<PgnGameSummary[]>([]);
@@ -30,11 +34,11 @@ export function GamePickerWindow() {
         <table className="explorer-table">
           <thead>
             <tr>
-              <th>Blancs</th>
-              <th>Noirs</th>
-              <th>Date</th>
-              <th>Résultat</th>
-              <th>Évènement</th>
+              <th>{t("common.white")}</th>
+              <th>{t("common.black")}</th>
+              <th>{t("common.date")}</th>
+              <th>{t("common.result")}</th>
+              <th>{t("common.event")}</th>
             </tr>
           </thead>
           <tbody>

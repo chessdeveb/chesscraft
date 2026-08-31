@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { KeyboardEvent } from "react";
+import { useTranslation } from "react-i18next";
 import type { OpeningMoveStat } from "../types";
 
 interface OpeningExplorerProps {
@@ -9,6 +10,7 @@ interface OpeningExplorerProps {
 }
 
 export function OpeningExplorer({ stats, error, onSelectMove }: OpeningExplorerProps) {
+  const { t } = useTranslation();
   const [highlightedIndex, setHighlightedIndex] = useState(0);
 
   useEffect(() => {
@@ -20,7 +22,7 @@ export function OpeningExplorer({ stats, error, onSelectMove }: OpeningExplorerP
   }
 
   if (stats.length === 0) {
-    return <p className="notation-empty">Aucune partie de la base ne passe par cette position</p>;
+    return <p className="notation-empty">{t("explorer.empty")}</p>;
   }
 
   const total = stats.reduce((sum, s) => sum + s.games, 0);
@@ -45,12 +47,12 @@ export function OpeningExplorer({ stats, error, onSelectMove }: OpeningExplorerP
     <table className="explorer-table" tabIndex={0} onKeyDown={handleKeyDown}>
       <thead>
         <tr>
-          <th>Coup</th>
-          <th>Parties</th>
+          <th>{t("explorer.move")}</th>
+          <th>{t("explorer.games")}</th>
           <th>%</th>
-          <th>Blancs</th>
-          <th>Nulles</th>
-          <th>Noirs</th>
+          <th>{t("explorer.white")}</th>
+          <th>{t("explorer.draws")}</th>
+          <th>{t("explorer.black")}</th>
         </tr>
       </thead>
       <tbody>

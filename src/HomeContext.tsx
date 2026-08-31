@@ -9,6 +9,24 @@ export interface GamesSort {
   dir: "asc" | "desc";
 }
 
+export interface GamesAdvancedFilter {
+  white: string;
+  black: string;
+  result: string;
+  dateFrom: string;
+  dateTo: string;
+  timeControl: string;
+}
+
+export const EMPTY_GAMES_ADVANCED_FILTER: GamesAdvancedFilter = {
+  white: "",
+  black: "",
+  result: "",
+  dateFrom: "",
+  dateTo: "",
+  timeControl: "",
+};
+
 export interface HomeContextValue {
   error: string | null;
 
@@ -27,14 +45,26 @@ export interface HomeContextValue {
 
   games: GameSummary[];
   gamesTotal: number;
+  gamesLoading: boolean;
   gamesPage: number;
   gamesSearchInput: string;
   onGamesSearchChange: (v: string) => void;
   onGamesPageChange: (p: number) => void;
   gamesSort: GamesSort | null;
   onGamesSortChange: (column: GamesSortColumn) => void;
+  gamesAdvancedOpen: boolean;
+  onToggleGamesAdvanced: () => void;
+  gamesAdvancedFilter: GamesAdvancedFilter;
+  onGamesAdvancedFilterChange: (patch: Partial<GamesAdvancedFilter>) => void;
+  onGamesFilterCommit: () => void;
   onOpenBaseGame: (id: number) => void;
   onDeleteGame: (id: number) => void;
+  onDeleteGames: (ids: number[]) => void;
+  onMoveGame: (id: number) => void;
+  onTransferGames: (ids: number[], mode: "move" | "copy") => void;
+  onDropGamesOnBase: (base: BaseInfo, ids: number[], fromPath: string, ctrlKey: boolean) => void;
+  selectedGameIds: Set<number>;
+  onGamesSelectionChange: (ids: Set<number>) => void;
 
   pgnGames: PgnGameSummary[];
   onOpenPgnGame: (index: number) => void;

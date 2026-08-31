@@ -4,15 +4,23 @@ import { emit, listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
+import { useTranslation } from "react-i18next";
 import { HomeDockview } from "./HomeDockview";
 import { ImportBasePicker } from "./components/ImportBasePicker";
+import i18n, { useSyncLanguage } from "./i18n";
 import type { BulkImportSummary, PgnGameSummary, TabDto } from "./types";
 import "./App.css";
 
 type BulkImportResult = { kind: "done"; summary: BulkImportSummary } | { kind: "error"; message: string };
 
 function formatBulkImportSummary(summary: BulkImportSummary): string {
-  return `${summary.total} traitées — ${summary.imported} importées, ${summary.skippedDuplicates} doublons ignorés, ${summary.skippedInvalid} noms manquants ignorés, ${summary.failed} échecs`;
+  return i18n.t("homeWindow.importSummary", {
+    total: summary.total,
+    imported: summary.imported,
+    duplicates: summary.skippedDuplicates,
+    invalid: summary.skippedInvalid,
+    failed: summary.failed,
+  });
 }
 
 // Creer la fenetre Partie depuis une commande Rust (WebviewWindowBuilder
@@ -28,7 +36,7 @@ async function openTabInGameWindow(tab: TabDto): Promise<void> {
   }
   const win = new WebviewWindow("game", {
     url: `/?window=game&tabId=${tab.tabId}`,
-    title: "Partie - chesscraft",
+    title: i18n.t("homeWindow.gameWindowTitle"),
     width: 1100,
     height: 750,
     dragDropEnabled: false,
@@ -37,6 +45,8 @@ async function openTabInGameWindow(tab: TabDto): Promise<void> {
 }
 
 export function HomeWindow() {
+  useSyncLanguage();
+  const { t } = useTranslation();
   const [homeFocusPath, setHomeFocusPath] = useState<string | null>(null);
   const [basesVersion, setBasesVersion] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -91,7 +101,7 @@ export function HomeWindow() {
       }
       const picker = new WebviewWindow("game-picker", {
         url: `/?window=game-picker&path=${encodeURIComponent(path)}`,
-        title: "Choisir une partie",
+        title: t("homeWindow.pickerWindowTitle"),
         width: 720,
         height: 480,
       });
@@ -99,7 +109,7 @@ export function HomeWindow() {
     } catch (e) {
       setError(String(e));
     }
-  }, [importGameAt]);
+  }, [importGameAt, t]);
 
   const handleBulkImportClick = useCallback(async () => {
     try {
@@ -191,7 +201,7 @@ export function HomeWindow() {
       listen("menu-show-bases-paths", () => {
         const win = new WebviewWindow("bases-paths", {
           url: "/?window=bases-paths",
-          title: "Emplacement des bases",
+          title: t("homeWindow.basesPathsWindowTitle"),
           width: 640,
           height: 420,
         });
@@ -201,7 +211,7 @@ export function HomeWindow() {
     return () => {
       unlistenPromises.forEach((p) => p.then((unlisten) => unlisten()));
     };
-  }, [handleNewGame, handleImport, handleBulkImportClick]);
+  }, [handleNewGame, handleImport, handleBulkImportClick, t]);
 
   return (
     <div className="app-layout">
@@ -224,10 +234,10 @@ export function HomeWindow() {
       {bulkImportProgress && (
         <div className="modal-overlay">
           <div className="modal">
-            <h2>Import en cours...</h2>
+            <h2>{t("homeWindow.importing")}</h2>
             <p>{formatBulkImportSummary(bulkImportProgress)}</p>
             <div className="modal-actions">
-              <button onClick={() => invoke("cancel_bulk_import")}>Annuler</button>
+              <button onClick={() => invoke("cancel_bulk_import")}>{t("common.cancel")}</button>
             </div>
           </div>
         </div>
@@ -237,12 +247,12 @@ export function HomeWindow() {
           <div className="modal">
             {bulkImportResult.kind === "done" ? (
               <>
-                <h2>Import terminé</h2>
+                <h2>{t("homeWindow.importDone")}</h2>
                 <p>{formatBulkImportSummary(bulkImportResult.summary)}</p>
               </>
             ) : (
               <>
-                <h2>Échec de l'import</h2>
+                <h2>{t("homeWindow.importFailed")}</h2>
                 <p className="error">{bulkImportResult.message}</p>
               </>
             )}
@@ -256,9 +266,9 @@ export function HomeWindow() {
                   )
                 }
               >
-                Copier
+                {t("common.copy")}
               </button>
-              <button onClick={() => setBulkImportResult(null)}>OK</button>
+              <button onClick={() => setBulkImportResult(null)}>{t("common.ok")}</button>
             </div>
           </div>
         </div>

@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { ask, save } from "@tauri-apps/plugin-dialog";
 import { DockviewReact, type DockviewApi, type DockviewReadyEvent } from "dockview-react";
 import type { Dests, Key } from "@lichess-org/chessground/types";
+import { useTranslation } from "react-i18next";
 import { AppContext, type AppContextValue } from "./AppContext";
 import { dockviewComponents } from "./DockPanels";
 import { EVAL_NAG_CODES, MOVE_NAG_CODES } from "./nag";
@@ -19,6 +20,16 @@ import "./App.css";
 interface GameTabProps {
   tabId: number;
   active: boolean;
+  onTreeChange?: (tabId: number, tree: TreeDto) => void;
+}
+
+// Expose a l'appelant (App.tsx) un point d'entree unique pour demander la
+// fermeture de cet onglet : encapsule ici la decision de proposer une
+// sauvegarde (l'etat "modifie" et le flux de sauvegarde vivent tous les deux
+// dans GameTab). Resout a `true` si la fermeture peut continuer, `false` si
+// l'utilisateur annule.
+export interface GameTabHandle {
+  requestClose: () => Promise<boolean>;
 }
 
 function buildDests(moves: MoveDto[]): Dests {
@@ -52,7 +63,7 @@ interface GamePanelPrefs {
 const GAME_PANELS_KEY = "gamePanels";
 
 function loadGamePanelPrefs(): GamePanelPrefs {
-  const defaults: GamePanelPrefs = { notation: true, explorer: true, engine: false };
+  const defaults: GamePanelPrefs = { notation: true, explorer: false, engine: false };
   try {
     const raw = localStorage.getItem(GAME_PANELS_KEY);
     if (!raw) return defaults;
@@ -79,9 +90,13 @@ function useDockviewTheme(): string {
   return theme;
 }
 
-export function GameTab({ tabId, active }: GameTabProps) {
+export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab({ tabId, active, onTreeChange }, ref) {
+  const { t } = useTranslation();
   const [activeBasePath, setActiveBasePath] = useState<string | null>(null);
   const [showSaveBasePicker, setShowSaveBasePicker] = useState(false);
+  const [isDirty, setIsDirty] = useState(false);
+  const [closeConfirmOpen, setCloseConfirmOpen] = useState(false);
+  const closeResolveRef = useRef<((proceed: boolean) => void) | null>(null);
 
   const [tree, setTree] = useState<TreeDto | null>(null);
   const [currentNodeId, setCurrentNodeId] = useState<number>(0);
@@ -105,6 +120,9 @@ export function GameTab({ tabId, active }: GameTabProps) {
       setTree(t);
       setCurrentNodeId(t.root);
     });
+    // si la partie vient d'une base (open_game), la sauvegarde doit
+    // proposer cette meme base par defaut plutot que de repartir a vide
+    invoke<string | null>("get_active_base_path", { tabId }).then(setActiveBasePath);
   }, [tabId]);
 
   useEffect(() => {
@@ -113,6 +131,12 @@ export function GameTab({ tabId, active }: GameTabProps) {
       .then((moves) => setDests(buildDests(moves)))
       .catch(() => setDests(new Map()));
   }, [tabId, currentNodeId, tree]);
+
+  // remonte l'arbre au parent pour qu'il puisse recalculer le titre de
+  // l'onglet (ex. apres avoir renseigne les noms des joueurs a la sauvegarde)
+  useEffect(() => {
+    if (tree) onTreeChange?.(tabId, tree);
+  }, [tree, tabId, onTreeChange]);
 
   const currentNode: NodeDto | undefined = tree?.nodes.find((n) => n.id === currentNodeId);
 
@@ -131,6 +155,7 @@ export function GameTab({ tabId, active }: GameTabProps) {
         setCurrentNodeId(newId);
         setVariationChoice(null);
         setError(null);
+        setIsDirty(true);
       } catch (e) {
         setError(String(e));
       }
@@ -158,6 +183,7 @@ export function GameTab({ tabId, active }: GameTabProps) {
       try {
         await invoke("set_shapes", { tabId, nodeId: currentNodeId, shapes });
         await refreshTree();
+        setIsDirty(true);
       } catch (e) {
         setError(String(e));
       }
@@ -170,6 +196,7 @@ export function GameTab({ tabId, active }: GameTabProps) {
       try {
         await invoke("set_comment", { tabId, nodeId: currentNodeId, before, after });
         await refreshTree();
+        setIsDirty(true);
       } catch (e) {
         setError(String(e));
       }
@@ -188,6 +215,7 @@ export function GameTab({ tabId, active }: GameTabProps) {
       try {
         await invoke("set_nags", { tabId, nodeId: currentNodeId, nags: nextNags });
         await refreshTree();
+        setIsDirty(true);
       } catch (e) {
         setError(String(e));
       }
@@ -203,7 +231,7 @@ export function GameTab({ tabId, active }: GameTabProps) {
       });
       if (!path) return;
       await invoke("export_pgn", { tabId, path });
-      setStatusMessage(`Partie exportée vers ${path}`);
+      setStatusMessage(t("gameTab.exportedTo", { path }));
       setError(null);
     } catch (e) {
       setError(String(e));
@@ -222,8 +250,8 @@ export function GameTab({ tabId, active }: GameTabProps) {
         if (result.kind === "duplicate") {
           const g = result.existing;
           const proceed = await ask(
-            `Cette partie existe déjà dans cette base (${g.white} - ${g.black}, ${g.date}). L'ajouter quand même ?`,
-            { title: "Partie déjà présente", kind: "warning" }
+            t("gameTab.duplicateConfirm", { white: g.white, black: g.black, date: g.date }),
+            { title: t("gameTab.duplicateTitle"), kind: "warning" }
           );
           if (proceed) {
             await handleConfirmSave(path, true);
@@ -232,16 +260,31 @@ export function GameTab({ tabId, active }: GameTabProps) {
         }
         setActiveBasePath(path);
         setShowSaveBasePicker(false);
-        setStatusMessage(`Partie sauvegardée dans ${path}`);
+        setStatusMessage(t("gameTab.savedTo", { path }));
         setError(null);
+        setIsDirty(false);
         await refreshTree();
         await emit("bases-changed");
+        if (closeResolveRef.current) {
+          closeResolveRef.current(true);
+          closeResolveRef.current = null;
+        }
       } catch (e) {
         setError(String(e));
       }
     },
     [tabId, refreshTree]
   );
+
+  const requestClose = useCallback((): Promise<boolean> => {
+    if (!isDirty) return Promise.resolve(true);
+    return new Promise<boolean>((resolve) => {
+      closeResolveRef.current = resolve;
+      setCloseConfirmOpen(true);
+    });
+  }, [isDirty]);
+
+  useImperativeHandle(ref, () => ({ requestClose }), [requestClose]);
 
   // --- Moteur ---
   const [enginePath, setEnginePathState] = useState(() => localStorage.getItem("stockfishPath") ?? "");
@@ -314,6 +357,7 @@ export function GameTab({ tabId, active }: GameTabProps) {
   }, []);
 
   const setPanelVisible = useCallback((id: "notation" | "explorer" | "engine", visible: boolean) => {
+    if (id === "explorer") setExplorerVisible(visible);
     const api = dockviewApiRef.current;
     if (!api) return;
     const existing = api.getPanel(id);
@@ -326,7 +370,7 @@ export function GameTab({ tabId, active }: GameTabProps) {
         api.addPanel({
           id: "notation",
           component: "notation",
-          title: "Notation",
+          title: t("gameTab.panel.notation"),
           position: { direction: "right", referencePanel: "board" },
         });
       } else if (id === "explorer") {
@@ -334,7 +378,7 @@ export function GameTab({ tabId, active }: GameTabProps) {
         api.addPanel({
           id: "explorer",
           component: "explorer",
-          title: "Explorateur",
+          title: t("gameTab.panel.explorer"),
           position: notation ? { direction: "within", referencePanel: "notation" } : undefined,
         });
       } else {
@@ -342,14 +386,14 @@ export function GameTab({ tabId, active }: GameTabProps) {
         api.addPanel({
           id: "engine",
           component: "engine",
-          title: "Moteur",
+          title: t("gameTab.panel.engine"),
           position: notation ? { direction: "below", referencePanel: "notation" } : undefined,
         });
       }
     } else {
       existing?.api.close();
     }
-  }, []);
+  }, [t]);
 
   const toggleGamePanel = useCallback(
     (id: "notation" | "explorer" | "engine") => {
@@ -398,9 +442,14 @@ export function GameTab({ tabId, active }: GameTabProps) {
   // --- Explorateur d'ouvertures ---
   const [explorerStats, setExplorerStats] = useState<OpeningMoveStat[]>([]);
   const [explorerError, setExplorerError] = useState<string | null>(null);
+  const [explorerVisible, setExplorerVisible] = useState(() => loadGamePanelPrefs().explorer);
 
   useEffect(() => {
-    if (!tree) return;
+    // ne pas interroger la base de reference tant que le panneau n'est pas
+    // affiche : sur une base de plusieurs millions de parties, les premiers
+    // coups d'une partie restent lents a agreger (voir opening_explorer cote
+    // Rust), inutile de payer ce cout a chaque coup si personne ne regarde.
+    if (!tree || !explorerVisible) return;
     const moves = pathSans(tree, currentNodeId);
     invoke<OpeningMoveStat[]>("opening_explorer", { moves })
       .then((stats) => {
@@ -408,7 +457,7 @@ export function GameTab({ tabId, active }: GameTabProps) {
         setExplorerError(null);
       })
       .catch((e) => setExplorerError(String(e)));
-  }, [tabId, tree, currentNodeId]);
+  }, [tabId, tree, currentNodeId, explorerVisible]);
 
   const handleExplorerMove = useCallback(
     async (san: string) => {
@@ -490,15 +539,27 @@ export function GameTab({ tabId, active }: GameTabProps) {
     (event: DockviewReadyEvent) => {
       dockviewApiRef.current = event.api;
       const api = event.api;
-      api.addPanel({ id: "board", component: "board", title: "Échiquier" });
+      api.addPanel({ id: "board", component: "board", title: t("gameTab.panel.board") });
       const prefs = loadGamePanelPrefs();
       if (prefs.notation) setPanelVisible("notation", true);
       if (prefs.explorer) setPanelVisible("explorer", true);
       if (prefs.engine) setPanelVisible("engine", true);
       api.getPanel("notation")?.api.setActive();
     },
-    [setPanelVisible]
+    [setPanelVisible, t]
   );
+
+  // le titre d'un panneau dockview est fige au moment de addPanel() (API
+  // imperative, pas reactive) : sans ceci, changer de langue ne renommerait
+  // pas les onglets deja ouverts.
+  useEffect(() => {
+    const api = dockviewApiRef.current;
+    if (!api) return;
+    api.getPanel("board")?.api.setTitle(t("gameTab.panel.board"));
+    api.getPanel("notation")?.api.setTitle(t("gameTab.panel.notation"));
+    api.getPanel("explorer")?.api.setTitle(t("gameTab.panel.explorer"));
+    api.getPanel("engine")?.api.setTitle(t("gameTab.panel.engine"));
+  }, [t]);
 
   const contextValue: AppContextValue = {
     tree,
@@ -549,12 +610,55 @@ export function GameTab({ tabId, active }: GameTabProps) {
       </main>
       {showSaveBasePicker && (
         <SaveBasePicker
+          tabId={tabId}
           activeBasePath={activeBasePath}
           tags={tree?.tags ?? {}}
           onConfirm={handleConfirmSave}
-          onCancel={() => setShowSaveBasePicker(false)}
+          onCancel={() => {
+            setShowSaveBasePicker(false);
+            if (closeResolveRef.current) {
+              closeResolveRef.current(false);
+              closeResolveRef.current = null;
+            }
+          }}
         />
+      )}
+      {closeConfirmOpen && (
+        <div className="modal-overlay">
+          <div className="modal">
+            <h2>{t("gameTab.closeConfirmTitle")}</h2>
+            <p>{t("gameTab.closeConfirmMessage")}</p>
+            <div className="modal-actions">
+              <button
+                onClick={() => {
+                  setCloseConfirmOpen(false);
+                  closeResolveRef.current?.(false);
+                  closeResolveRef.current = null;
+                }}
+              >
+                {t("common.cancel")}
+              </button>
+              <button
+                onClick={() => {
+                  setCloseConfirmOpen(false);
+                  closeResolveRef.current?.(true);
+                  closeResolveRef.current = null;
+                }}
+              >
+                {t("gameTab.discard")}
+              </button>
+              <button
+                onClick={() => {
+                  setCloseConfirmOpen(false);
+                  setShowSaveBasePicker(true);
+                }}
+              >
+                {t("common.save")}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </AppContext.Provider>
   );
-}
+});

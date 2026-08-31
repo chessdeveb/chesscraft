@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import { EVAL_NAG_CHOICES, EVAL_NAG_CODES, MOVE_NAG_CHOICES, MOVE_NAG_CODES, nagSymbol } from "../nag";
 import type { NodeDto, TreeDto } from "../types";
 
@@ -19,6 +20,7 @@ function InlineCommentEditor({
   onSave: (text: string) => void;
   onClose: () => void;
 }) {
+  const { t } = useTranslation();
   const [text, setText] = useState(value);
 
   useEffect(() => {
@@ -34,9 +36,9 @@ function InlineCommentEditor({
         rows={2}
         value={text}
         onChange={(e) => setText(e.currentTarget.value)}
-        placeholder="Commentaire..."
+        placeholder={t("notation.commentPlaceholder")}
       />
-      <button onClick={onClose} title="Fermer" aria-label="Fermer l'éditeur de commentaire">
+      <button onClick={onClose} title={t("notation.close")} aria-label={t("notation.closeCommentEditor")}>
         ✕
       </button>
     </div>
@@ -44,6 +46,7 @@ function InlineCommentEditor({
 }
 
 export function Notation({ tree, currentNodeId, onSelect, onSetComment, onToggleNag }: NotationProps) {
+  const { t } = useTranslation();
   const byId = new Map(tree.nodes.map((n) => [n.id, n]));
   const [editing, setEditing] = useState<"before" | "after" | null>(null);
 
@@ -124,6 +127,7 @@ export function Notation({ tree, currentNodeId, onSelect, onSetComment, onToggle
   const black = tree.tags.Black ?? "?";
   const event = tree.tags.Event;
   const date = tree.tags.Date;
+  const result = tree.tags.Result;
 
   return (
     <div className="notation-wrapper">
@@ -133,6 +137,7 @@ export function Notation({ tree, currentNodeId, onSelect, onSetComment, onToggle
             {white}
             {elo("White")} – {black}
             {elo("Black")}
+            {result && <span className="notation-header-result">{result}</span>}
           </div>
           {(event || date) && (
             <div className="notation-header-meta">
@@ -145,7 +150,7 @@ export function Notation({ tree, currentNodeId, onSelect, onSetComment, onToggle
         {firstMoveId !== undefined ? (
           renderLine(firstMoveId, true)
         ) : (
-          <p className="notation-empty">Aucun coup joué</p>
+          <p className="notation-empty">{t("notation.empty")}</p>
         )}
         {tree.tags.Result && <span className="notation-result">{tree.tags.Result}</span>}
       </div>
@@ -155,7 +160,7 @@ export function Notation({ tree, currentNodeId, onSelect, onSetComment, onToggle
             {MOVE_NAG_CHOICES.map((n) => (
               <button
                 key={n.code}
-                title={n.label}
+                title={t(n.labelKey)}
                 className={"nag-button" + (activeMoveNag === n.code ? " nag-button--active" : "")}
                 onClick={() => onToggleNag(n.code)}
               >
@@ -166,7 +171,7 @@ export function Notation({ tree, currentNodeId, onSelect, onSetComment, onToggle
             {EVAL_NAG_CHOICES.map((n) => (
               <button
                 key={n.code}
-                title={n.label}
+                title={t(n.labelKey)}
                 className={"nag-button" + (activeEvalNag === n.code ? " nag-button--active" : "")}
                 onClick={() => onToggleNag(n.code)}
               >
@@ -176,19 +181,19 @@ export function Notation({ tree, currentNodeId, onSelect, onSetComment, onToggle
             <span className="annotate-toolbar-sep" />
             <button
               className={"annotate-icon" + (editing === "before" ? " annotate-icon--active" : "")}
-              title="Commentaire avant le coup"
-              aria-label="Commentaire avant le coup"
+              title={t("notation.commentBefore")}
+              aria-label={t("notation.commentBefore")}
               onClick={() => setEditing(editing === "before" ? null : "before")}
             >
-              💬 avant
+              {t("notation.commentBeforeShort")}
             </button>
             <button
               className={"annotate-icon" + (editing === "after" ? " annotate-icon--active" : "")}
-              title="Commentaire après le coup"
-              aria-label="Commentaire après le coup"
+              title={t("notation.commentAfter")}
+              aria-label={t("notation.commentAfter")}
               onClick={() => setEditing(editing === "after" ? null : "after")}
             >
-              💬 après
+              {t("notation.commentAfterShort")}
             </button>
           </div>
           {editing === "before" && (

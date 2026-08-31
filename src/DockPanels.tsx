@@ -1,5 +1,6 @@
 import type { IDockviewPanelProps } from "dockview-react";
 import type { Color } from "@lichess-org/chessground/types";
+import { useTranslation } from "react-i18next";
 import { useAppContext } from "./AppContext";
 import { Board } from "./components/Board";
 import { EnginePanel } from "./components/EnginePanel";
@@ -23,6 +24,7 @@ export function BoardPanel() {
 }
 
 export function NotationPanelView() {
+  const { t } = useTranslation();
   const {
     tree,
     currentNodeId,
@@ -38,7 +40,7 @@ export function NotationPanelView() {
     <div className="dock-panel-content">
       {variationChoice && (
         <div className="variation-choice">
-          <p>Continuer avec :</p>
+          <p>{t("dockPanels.continueWith")}</p>
           <div className="variation-choice-options">
             {variationChoice.map((option, index) => (
               <button

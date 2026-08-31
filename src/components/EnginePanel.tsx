@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { useTranslation } from "react-i18next";
 import type { EngineInfo } from "../types";
 
 interface EnginePanelProps {
@@ -56,12 +57,13 @@ export function EnginePanel({
   onResume,
   onClose,
 }: EnginePanelProps) {
+  const { t } = useTranslation();
   const [showSettings, setShowSettings] = useState(() => !enginePath);
 
   async function handleBrowse() {
     const path = await open({
       multiple: false,
-      filters: [{ name: "Exécutable", extensions: ["exe"] }],
+      filters: [{ name: t("engine.executableFilter"), extensions: ["exe"] }],
     });
     if (path) onEnginePathChange(path);
   }
@@ -70,20 +72,20 @@ export function EnginePanel({
     <div className="engine-panel">
       <div className="engine-toolbar">
         {!running ? (
-          <button onClick={onStart} disabled={starting || !enginePath} title="Démarrer" aria-label="Démarrer">
+          <button onClick={onStart} disabled={starting || !enginePath} title={t("engine.start")} aria-label={t("engine.start")}>
             {starting ? "…" : "▶"}
           </button>
         ) : (
           <>
-            <button onClick={onStop} title="Arrêter" aria-label="Arrêter">
+            <button onClick={onStop} title={t("engine.stop")} aria-label={t("engine.stop")}>
               ⏹
             </button>
             {paused ? (
-              <button onClick={onResume} title="Reprendre" aria-label="Reprendre">
+              <button onClick={onResume} title={t("engine.resume")} aria-label={t("engine.resume")}>
                 ▶
               </button>
             ) : (
-              <button onClick={onPause} title="Pause" aria-label="Pause">
+              <button onClick={onPause} title={t("engine.pause")} aria-label={t("engine.pause")}>
                 ⏸
               </button>
             )}
@@ -91,13 +93,13 @@ export function EnginePanel({
         )}
         <button
           onClick={() => setShowSettings((v) => !v)}
-          title="Paramètres du moteur"
-          aria-label="Paramètres du moteur"
+          title={t("engine.settings")}
+          aria-label={t("engine.settings")}
           className={"icon-toggle" + (showSettings ? " icon-toggle--active" : "")}
         >
           ⚙
         </button>
-        <button onClick={onClose} title="Fermer le panneau" aria-label="Fermer le panneau">
+        <button onClick={onClose} title={t("engine.closePanel")} aria-label={t("engine.closePanel")}>
           ✕
         </button>
       </div>
@@ -105,22 +107,22 @@ export function EnginePanel({
       {showSettings && (
         <div className="engine-settings">
           <label className="engine-field engine-field--full">
-            Chemin Stockfish
+            {t("engine.stockfishPath")}
             <div className="engine-path-row">
               <input
                 value={enginePath}
                 onChange={(e) => onEnginePathChange(e.currentTarget.value)}
-                placeholder="Chemin vers Stockfish (.exe)"
+                placeholder={t("engine.stockfishPathPlaceholder")}
                 disabled={running}
               />
               <button onClick={handleBrowse} disabled={running}>
-                Parcourir
+                {t("engine.browse")}
               </button>
             </div>
           </label>
           <div className="engine-settings-row">
             <label className="engine-field">
-              Profondeur
+              {t("engine.depth")}
               <select value={depth} onChange={(e) => onDepthChange(Number(e.currentTarget.value))}>
                 <option value={10}>10</option>
                 <option value={14}>14</option>
@@ -130,7 +132,7 @@ export function EnginePanel({
               </select>
             </label>
             <label className="engine-field">
-              Variantes
+              {t("engine.multiPv")}
               <select value={multiPv} onChange={(e) => onMultiPvChange(Number(e.currentTarget.value))}>
                 <option value={1}>1</option>
                 <option value={2}>2</option>
@@ -140,7 +142,7 @@ export function EnginePanel({
               </select>
             </label>
             <label className="engine-field">
-              Cœurs
+              {t("engine.threads")}
               <select value={threads} onChange={(e) => onThreadsChange(Number(e.currentTarget.value))}>
                 {Array.from({ length: maxThreads }, (_, i) => i + 1).map((n) => (
                   <option key={n} value={n}>
@@ -157,12 +159,12 @@ export function EnginePanel({
 
       {running && (
         <div className="engine-lines">
-          {paused && <p className="engine-line engine-line--paused">En pause</p>}
-          {lines.length === 0 && !paused && <p className="engine-line">Analyse en cours…</p>}
+          {paused && <p className="engine-line engine-line--paused">{t("engine.paused")}</p>}
+          {lines.length === 0 && !paused && <p className="engine-line">{t("engine.analyzing")}</p>}
           {lines.map((info) => (
             <div key={info.multipv} className="engine-result">
               <span className="engine-score">{formatScore(info)}</span>
-              <span className="engine-depth">profondeur {info.depth}</span>
+              <span className="engine-depth">{t("engine.depthLabel")}{info.depth}</span>
               <p className="engine-line">{info.pvSan.join(" ")}</p>
             </div>
           ))}

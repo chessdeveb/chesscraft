@@ -4,6 +4,7 @@ mod db;
 mod engine;
 mod explorer;
 mod game_tree;
+mod i18n;
 mod pgn;
 mod recent_pgns;
 
@@ -14,7 +15,7 @@ use explorer::OpeningMoveStat;
 use game_tree::{GameTree, MoveDto, ShapeDto, TreeDto};
 use pgn::PgnGameSummary;
 use rusqlite::Connection;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Mutex;
@@ -62,6 +63,9 @@ struct AppState {
     // prefixe) : vide seulement quand la base de reference change ou qu'un
     // import en masse la modifie.
     explorer_cache: Mutex<HashMap<String, Vec<OpeningMoveStat>>>,
+    // Langue courante du menu natif (persistee dans language.txt) : le menu
+    // est reconstruit et rattache a toutes les fenetres a chaque changement.
+    language: Mutex<String>,
 }
 
 fn allocate_tab_id(state: &AppState) -> u32 {
@@ -106,6 +110,13 @@ fn get_tree(state: State<AppState>, tab_id: u32) -> Result<TreeDto, String> {
     let sessions = state.sessions.lock().unwrap();
     let session = sessions.get(&tab_id).ok_or_else(|| "onglet introuvable".to_string())?;
     Ok(session.tree.to_dto())
+}
+
+#[tauri::command]
+fn get_active_base_path(state: State<AppState>, tab_id: u32) -> Result<Option<String>, String> {
+    let sessions = state.sessions.lock().unwrap();
+    let session = sessions.get(&tab_id).ok_or_else(|| "onglet introuvable".to_string())?;
+    Ok(session.active_base_path.clone())
 }
 
 #[tauri::command]
@@ -244,14 +255,22 @@ fn bulk_import_pgn(app: AppHandle, state: State<AppState>, db_path: String, pgn_
         let result = (|| -> Result<bulk_import::BulkImportSummary, String> {
             let pgn_text = std::fs::read_to_string(&pgn_path).map_err(|e| e.to_string())?;
             let mut conn = db::open(Path::new(&db_path))?;
-            bulk_import::bulk_import(
+            let summary = bulk_import::bulk_import(
                 &mut conn,
                 &pgn_text,
                 move |summary| {
                     let _ = progress_app.emit("bulk-import-progress", summary.clone());
                 },
                 move || *cancel_app.state::<AppState>().bulk_import_cancel.lock().unwrap(),
-            )
+            )?;
+            // recalcule les stats precalculees de l'explorateur d'ouvertures
+            // (voir explorer::rebuild_prefix_stats) : cout marginal a cote de
+            // l'import lui-meme, evite de retomber sur le calcul a la volee,
+            // lent sur les tout premiers coups, au prochain jeu ouvert.
+            // Echec non bloquant : l'explorateur retombe alors sur le calcul
+            // a la volee (voir explorer::explore).
+            let _ = explorer::rebuild_prefix_stats(&mut conn);
+            Ok(summary)
         })();
 
         log_bulk_import_result(&app, &pgn_path, &db_path, &result);
@@ -430,7 +449,7 @@ fn add_existing_base(app: AppHandle, path: String) -> Result<BaseInfo, String> {
         .to_string();
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     bases::register_base(&dir, &name, &path)?;
-    let games = db::count_games(&conn, "")?;
+    let games = db::count_games(&conn, &db::GamesFilter::default())?;
     Ok(BaseInfo { name, path, games, is_reference: false, missing: false })
 }
 
@@ -441,18 +460,52 @@ struct GamesPage {
     total: u32,
 }
 
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct GamesFilterDto {
+    #[serde(default)]
+    search: String,
+    #[serde(default)]
+    white: String,
+    #[serde(default)]
+    black: String,
+    #[serde(default)]
+    result: String,
+    #[serde(default)]
+    date_from: String,
+    #[serde(default)]
+    date_to: String,
+    #[serde(default)]
+    time_control: String,
+}
+
+impl From<GamesFilterDto> for db::GamesFilter {
+    fn from(dto: GamesFilterDto) -> Self {
+        db::GamesFilter {
+            search: dto.search,
+            white: dto.white,
+            black: dto.black,
+            result: dto.result,
+            date_from: dto.date_from,
+            date_to: dto.date_to,
+            time_control: dto.time_control,
+        }
+    }
+}
+
 #[tauri::command]
 fn list_games_in_base(
     path: String,
-    search: String,
+    filter: GamesFilterDto,
     sort_by: String,
     sort_dir: String,
     offset: u32,
     limit: u32,
 ) -> Result<GamesPage, String> {
     let conn = db::open(Path::new(&path))?;
-    let total = db::count_games(&conn, &search)?;
-    let games = db::list_games_page(&conn, &search, &sort_by, &sort_dir, limit, offset)?;
+    let filter: db::GamesFilter = filter.into();
+    let total = db::count_games(&conn, &filter)?;
+    let games = db::list_games_page(&conn, &filter, &sort_by, &sort_dir, limit, offset)?;
     Ok(GamesPage { games, total })
 }
 
@@ -467,6 +520,42 @@ fn delete_game(state: State<AppState>, path: String, id: i64) -> Result<(), Stri
         }
     }
     Ok(())
+}
+
+#[tauri::command]
+fn move_game(
+    state: State<AppState>,
+    from_path: String,
+    to_path: String,
+    id: i64,
+    copy: bool,
+    force: bool,
+) -> Result<db::SaveResult, String> {
+    let source = db::open(Path::new(&from_path))?;
+    let target = db::open(Path::new(&to_path))?;
+
+    let (tags, pgn_text, mainline_sans) = db::load_game_for_move(&source, id)?
+        .ok_or_else(|| "partie introuvable".to_string())?;
+    let moves: Vec<String> = mainline_sans.split_whitespace().map(|s| s.to_string()).collect();
+
+    if !force {
+        if let Some(existing) = db::find_duplicate(&target, &tags, &moves)? {
+            return Ok(db::SaveResult::Duplicate { existing });
+        }
+    }
+
+    let new_id = db::save_game(&target, &pgn_text, &tags, &mainline_sans)?;
+    if !copy {
+        db::delete_game(&source, id)?;
+
+        let mut sessions = state.sessions.lock().unwrap();
+        for session in sessions.values_mut() {
+            if session.active_base_path.as_deref() == Some(from_path.as_str()) && session.active_game_id == Some(id) {
+                session.active_game_id = None;
+            }
+        }
+    }
+    Ok(db::SaveResult::Saved { id: new_id })
 }
 
 #[tauri::command]
@@ -521,15 +610,18 @@ fn save_game_to(state: State<AppState>, tab_id: u32, path: String, force: bool) 
 /// fait planter l'appli sous Windows). `home_panels`/`game_panels`
 /// determinent quelles cases du menu Affichage sont activees selon le type
 /// de fenetre (Accueil ou Partie).
-fn build_menu(app: &AppHandle, home_panels: bool, game_panels: bool) -> tauri::Result<Menu<tauri::Wry>> {
-    let new_game_item = MenuItemBuilder::with_id("new_game", "Nouvelle partie").build(app)?;
-    let import_item = MenuItemBuilder::with_id("import_pgn", "Ouvrir PGN...").build(app)?;
-    let bulk_import_item = MenuItemBuilder::with_id("bulk_import_pgn", "Importer un PGN...").build(app)?;
-    let export_item = MenuItemBuilder::with_id("export_pgn", "Exporter PGN...").build(app)?;
-    let save_item = MenuItemBuilder::with_id("save_game", "Sauvegarder")
+fn build_menu(app: &AppHandle, home_panels: bool, game_panels: bool, lang: &str) -> tauri::Result<Menu<tauri::Wry>> {
+    let t = i18n::translations(lang);
+    let t = |key: &str| t.get(key).cloned().unwrap_or_else(|| key.to_string());
+
+    let new_game_item = MenuItemBuilder::with_id("new_game", t("menu.file.newGame")).build(app)?;
+    let import_item = MenuItemBuilder::with_id("import_pgn", t("menu.file.openPgn")).build(app)?;
+    let bulk_import_item = MenuItemBuilder::with_id("bulk_import_pgn", t("menu.file.importPgn")).build(app)?;
+    let export_item = MenuItemBuilder::with_id("export_pgn", t("menu.file.exportPgn")).build(app)?;
+    let save_item = MenuItemBuilder::with_id("save_game", t("menu.file.save"))
         .accelerator("CmdOrCtrl+S")
         .build(app)?;
-    let file_menu = SubmenuBuilder::new(app, "Fichier")
+    let file_menu = SubmenuBuilder::new(app, t("menu.file"))
         .item(&new_game_item)
         .separator()
         .item(&import_item)
@@ -539,31 +631,31 @@ fn build_menu(app: &AppHandle, home_panels: bool, game_panels: bool) -> tauri::R
         .item(&save_item)
         .build()?;
 
-    let panel_bases = CheckMenuItemBuilder::with_id("panel_bases", "Bases")
+    let panel_bases = CheckMenuItemBuilder::with_id("panel_bases", t("menu.display.bases"))
         .enabled(home_panels)
         .checked(home_panels)
         .build(app)?;
-    let panel_pgn = CheckMenuItemBuilder::with_id("panel_pgn", "PGN")
+    let panel_pgn = CheckMenuItemBuilder::with_id("panel_pgn", t("menu.display.pgn"))
         .enabled(home_panels)
         .checked(home_panels)
         .build(app)?;
-    let panel_parties = CheckMenuItemBuilder::with_id("panel_parties", "Parties")
+    let panel_parties = CheckMenuItemBuilder::with_id("panel_parties", t("menu.display.games"))
         .enabled(home_panels)
         .checked(home_panels)
         .build(app)?;
-    let panel_notation = CheckMenuItemBuilder::with_id("panel_notation", "Notation")
+    let panel_notation = CheckMenuItemBuilder::with_id("panel_notation", t("menu.display.notation"))
         .enabled(game_panels)
         .checked(game_panels)
         .build(app)?;
-    let panel_explorer = CheckMenuItemBuilder::with_id("panel_explorer", "Explorateur")
+    let panel_explorer = CheckMenuItemBuilder::with_id("panel_explorer", t("menu.display.explorer"))
         .enabled(game_panels)
         .checked(game_panels)
         .build(app)?;
-    let panel_engine = CheckMenuItemBuilder::with_id("panel_engine", "Moteur")
+    let panel_engine = CheckMenuItemBuilder::with_id("panel_engine", t("menu.display.engine"))
         .enabled(game_panels)
         .checked(false)
         .build(app)?;
-    let display_menu = SubmenuBuilder::new(app, "Affichage")
+    let display_menu = SubmenuBuilder::new(app, t("menu.display"))
         .item(&panel_bases)
         .item(&panel_pgn)
         .item(&panel_parties)
@@ -573,12 +665,12 @@ fn build_menu(app: &AppHandle, home_panels: bool, game_panels: bool) -> tauri::R
         .item(&panel_engine)
         .build()?;
 
-    let board_theme_brown = MenuItemBuilder::with_id("board-theme-brown", "Brun").build(app)?;
-    let board_theme_blue = MenuItemBuilder::with_id("board-theme-blue", "Bleu").build(app)?;
-    let board_theme_green = MenuItemBuilder::with_id("board-theme-green", "Vert").build(app)?;
-    let board_theme_grey = MenuItemBuilder::with_id("board-theme-grey", "Gris").build(app)?;
-    let board_theme_wood = MenuItemBuilder::with_id("board-theme-wood", "Bois").build(app)?;
-    let board_colors_menu = SubmenuBuilder::new(app, "Couleurs de l'echiquier")
+    let board_theme_brown = MenuItemBuilder::with_id("board-theme-brown", t("menu.preferences.boardColors.brown")).build(app)?;
+    let board_theme_blue = MenuItemBuilder::with_id("board-theme-blue", t("menu.preferences.boardColors.blue")).build(app)?;
+    let board_theme_green = MenuItemBuilder::with_id("board-theme-green", t("menu.preferences.boardColors.green")).build(app)?;
+    let board_theme_grey = MenuItemBuilder::with_id("board-theme-grey", t("menu.preferences.boardColors.grey")).build(app)?;
+    let board_theme_wood = MenuItemBuilder::with_id("board-theme-wood", t("menu.preferences.boardColors.wood")).build(app)?;
+    let board_colors_menu = SubmenuBuilder::new(app, t("menu.preferences.boardColors"))
         .item(&board_theme_brown)
         .item(&board_theme_blue)
         .item(&board_theme_green)
@@ -586,14 +678,80 @@ fn build_menu(app: &AppHandle, home_panels: bool, game_panels: bool) -> tauri::R
         .item(&board_theme_wood)
         .build()?;
     let show_bases_paths_item =
-        MenuItemBuilder::with_id("show_bases_paths", "Emplacement des bases...").build(app)?;
-    let preferences_menu = SubmenuBuilder::new(app, "Preferences")
+        MenuItemBuilder::with_id("show_bases_paths", t("menu.preferences.basesPaths")).build(app)?;
+    let lang_fr_item = CheckMenuItemBuilder::with_id("lang-fr", t("menu.preferences.language.fr"))
+        .checked(lang != "en")
+        .build(app)?;
+    let lang_en_item = CheckMenuItemBuilder::with_id("lang-en", t("menu.preferences.language.en"))
+        .checked(lang == "en")
+        .build(app)?;
+    let language_menu = SubmenuBuilder::new(app, t("menu.preferences.language"))
+        .item(&lang_fr_item)
+        .item(&lang_en_item)
+        .build()?;
+    let preferences_menu = SubmenuBuilder::new(app, t("menu.preferences"))
         .item(&board_colors_menu)
         .separator()
         .item(&show_bases_paths_item)
+        .separator()
+        .item(&language_menu)
         .build()?;
 
     Menu::with_items(app, &[&file_menu, &display_menu, &preferences_menu])
+}
+
+/// Reconstruit le menu dans la langue donnee et le rattache a la fenetre
+/// principale et, si elle est ouverte, a la fenetre Partie.
+fn rebuild_and_attach_menu(app: &AppHandle, lang: &str) -> Result<(), String> {
+    let menu = build_menu(app, true, true, lang).map_err(|e| e.to_string())?;
+    app.set_menu(menu).map_err(|e| e.to_string())?;
+    if let Some(game_window) = app.get_webview_window("game") {
+        let game_menu = build_menu(app, true, true, lang).map_err(|e| e.to_string())?;
+        game_window.set_menu(game_menu).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+// La fenetre "game" est creee cote JS (voir openTabInGameWindow) et n'herite
+// pas automatiquement du menu partage defini au demarrage : on le rattache
+// explicitement une fois la fenetre montee. Contrairement a la creation de
+// fenetre depuis une commande (qui plante de facon fiable, voir les
+// tentatives precedentes), attacher un menu a une fenetre DEJA existante ne
+// pose pas ce probleme.
+#[tauri::command]
+fn attach_game_menu(app: AppHandle, state: State<AppState>) -> Result<(), String> {
+    let window = app
+        .get_webview_window("game")
+        .ok_or_else(|| "fenetre game introuvable".to_string())?;
+    let lang = state.language.lock().unwrap().clone();
+    let menu = build_menu(&app, true, true, &lang).map_err(|e| e.to_string())?;
+    window.set_menu(menu).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn get_language(state: State<AppState>) -> String {
+    state.language.lock().unwrap().clone()
+}
+
+#[tauri::command]
+fn set_language(app: AppHandle, lang: String) -> Result<(), String> {
+    apply_language_change(&app, &lang)
+}
+
+/// Change la langue courante : persiste le choix, reconstruit et rattache le
+/// menu natif a toutes les fenetres ouvertes, previent le cote React (menu
+/// natif et interface React doivent rester synchronises quelle que soit la
+/// source du changement).
+fn apply_language_change(app: &AppHandle, lang: &str) -> Result<(), String> {
+    let lang = if lang == "en" { "en".to_string() } else { "fr".to_string() };
+    *app.state::<AppState>().language.lock().unwrap() = lang.clone();
+    if let Ok(dir) = app.path().app_data_dir() {
+        let _ = i18n::save_language(&dir, &lang);
+    }
+    rebuild_and_attach_menu(app, &lang)?;
+    let _ = app.emit("language-changed", &lang);
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -619,6 +777,12 @@ pub fn run() {
                 }
             }
 
+            let initial_lang = app
+                .path()
+                .app_data_dir()
+                .map(|dir| i18n::load_language(&dir))
+                .unwrap_or_else(|_| "fr".to_string());
+
             app.manage(AppState {
                 sessions: Mutex::new(HashMap::new()),
                 next_tab_id: Mutex::new(0),
@@ -626,18 +790,23 @@ pub fn run() {
                 bulk_import_running: Mutex::new(false),
                 reference_conn: Mutex::new(None),
                 explorer_cache: Mutex::new(HashMap::new()),
+                language: Mutex::new(initial_lang.clone()),
             });
 
             // menu unique partage par toutes les fenetres (voir open_game_window) :
             // toutes les cases Affichage restent activees, chaque fenetre ignore
             // simplement cote JS les bascules qui ne la concernent pas.
-            let shared_menu = build_menu(&app.handle(), true, true)?;
+            let shared_menu = build_menu(&app.handle(), true, true, &initial_lang)?;
             app.set_menu(shared_menu)?;
 
             app.on_menu_event(move |app_handle, event| {
                 let id = event.id().as_ref();
                 if let Some(theme) = id.strip_prefix("board-theme-") {
                     let _ = app_handle.emit("menu-set-board-theme", theme);
+                    return;
+                }
+                if let Some(lang) = id.strip_prefix("lang-") {
+                    let _ = apply_language_change(app_handle, lang);
                     return;
                 }
                 let event_name = match id {
@@ -661,7 +830,11 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            attach_game_menu,
+            get_language,
+            set_language,
             new_game,
+            get_active_base_path,
             close_tab,
             get_tree,
             legal_moves,
@@ -690,7 +863,8 @@ pub fn run() {
             list_recent_pgns,
             set_base_reference,
             delete_base,
-            delete_game
+            delete_game,
+            move_game
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

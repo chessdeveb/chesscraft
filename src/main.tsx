@@ -4,6 +4,7 @@ import App from "./App";
 import { BasesWindow } from "./BasesWindow";
 import { GamePickerWindow } from "./GamePickerWindow";
 import { HomeWindow } from "./HomeWindow";
+import "./i18n";
 
 const windowParam = new URLSearchParams(window.location.search).get("window");
 
