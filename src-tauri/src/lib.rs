@@ -28,6 +28,10 @@ struct GameSession {
     active_base_path: Option<String>,
     active_game_id: Option<i64>,
     engine: Option<EngineHandle>,
+    // Prepation d'adversaire (voir open_player_prep_tab) : restreint
+    // l'explorateur d'ouvertures de cet onglet aux seules parties de ce
+    // joueur, dans cette couleur. None pour un onglet normal.
+    explorer_player_filter: Option<explorer::PlayerFilter>,
 }
 
 impl GameSession {
@@ -38,6 +42,7 @@ impl GameSession {
             active_base_path: None,
             active_game_id: None,
             engine: None,
+            explorer_player_filter: None,
         }
     }
 }
@@ -66,6 +71,12 @@ struct AppState {
     // Langue courante du menu natif (persistee dans language.txt) : le menu
     // est reconstruit et rattache a toutes les fenetres a chaque changement.
     language: Mutex<String>,
+    // Cases a cocher "Affichage > panneau" (une par fenetre, cle
+    // "<label fenetre>:<id case>") : gardees ici pour pouvoir les mettre a
+    // jour individuellement (voir set_panel_checked) sans reconstruire tout
+    // le menu -- necessaire pour que la case reflete l'etat reel d'un
+    // panneau ferme via son propre bouton plutot que via le menu.
+    panel_menu_items: Mutex<HashMap<String, tauri::menu::CheckMenuItem<tauri::Wry>>>,
 }
 
 fn allocate_tab_id(state: &AppState) -> u32 {
@@ -86,14 +97,34 @@ fn insert_session(state: &AppState, tab_id: u32, session: GameSession) -> TreeDt
 struct TabDto {
     tab_id: u32,
     tree: TreeDto,
+    // Distingue cote frontend un onglet de preparation d'adversaire (voir
+    // open_player_prep_tab) d'un onglet de partie classique : titre d'onglet
+    // different, panneaux par defaut differents (explorateur ouvert, notation
+    // fermee -- il n'y a pas de coups a lister).
+    #[serde(default)]
+    is_player_prep: bool,
 }
-
 
 #[tauri::command]
 fn new_game(state: State<AppState>) -> TabDto {
     let tab_id = allocate_tab_id(&state);
     let tree = insert_session(&state, tab_id, GameSession::new());
-    TabDto { tab_id, tree }
+    TabDto { tab_id, tree, is_player_prep: false }
+}
+
+/// Ouvre un nouvel onglet vierge dont l'explorateur d'ouvertures ne
+/// considere que les parties de `name` jouees avec les blancs (white=true)
+/// ou les noirs -- preparation d'adversaire depuis le clic droit sur la
+/// liste des joueurs. Le nom du joueur est mis en tag White/Black de la
+/// partie vide pour que l'onglet s'affiche deja avec un titre parlant.
+#[tauri::command]
+fn open_player_prep_tab(state: State<AppState>, name: String, white: bool) -> TabDto {
+    let tab_id = allocate_tab_id(&state);
+    let mut session = GameSession::new();
+    session.tree.tags.insert(if white { "White" } else { "Black" }.to_string(), name.clone());
+    session.explorer_player_filter = Some(explorer::PlayerFilter { name, white });
+    let tree = insert_session(&state, tab_id, session);
+    TabDto { tab_id, tree, is_player_prep: true }
 }
 
 #[tauri::command]
@@ -193,7 +224,7 @@ fn import_pgn(state: State<AppState>, path: String, index: u32) -> Result<TabDto
     session.tree = parsed;
     let tab_id = allocate_tab_id(&state);
     let tree = insert_session(&state, tab_id, session);
-    Ok(TabDto { tab_id, tree })
+    Ok(TabDto { tab_id, tree, is_player_prep: false })
 }
 
 // Journal durable des imports en masse : ecrit independamment de l'etat de
@@ -270,6 +301,7 @@ fn bulk_import_pgn(app: AppHandle, state: State<AppState>, db_path: String, pgn_
             // Echec non bloquant : l'explorateur retombe alors sur le calcul
             // a la volee (voir explorer::explore).
             let _ = explorer::rebuild_prefix_stats(&mut conn);
+            let _ = db::rebuild_player_stats(&mut conn);
             Ok(summary)
         })();
 
@@ -380,11 +412,12 @@ fn pause_engine(state: State<AppState>, tab_id: u32) -> Result<(), String> {
     }
 }
 
-#[tauri::command]
-// L'explorateur s'appuie toujours sur la base marquee "reference", pas sur
-// la base d'origine de la partie affichee (qui peut tres bien ne pas en
-// avoir une, ex. une partie ouverte depuis un fichier PGN).
-fn opening_explorer(app: AppHandle, state: State<AppState>, moves: Vec<String>) -> Result<Vec<OpeningMoveStat>, String> {
+// L'explorateur (stats, liste de parties, aperçu) s'appuie toujours sur la
+// base marquee "reference", pas sur la base d'origine de la partie affichee
+// (qui peut tres bien ne pas en avoir une, ex. une partie ouverte depuis un
+// fichier PGN). Rouvre/reutilise la connexion mise en cache dans
+// state.reference_conn selon que la base de reference a change ou non.
+fn ensure_reference_conn(app: &AppHandle, state: &State<AppState>) -> Result<(), String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let reference = bases::list_bases(&dir)
         .into_iter()
@@ -398,15 +431,81 @@ fn opening_explorer(app: AppHandle, state: State<AppState>, moves: Vec<String>) 
         *conn_cache = Some((reference.path.clone(), conn));
         state.explorer_cache.lock().unwrap().clear();
     }
+    Ok(())
+}
 
-    let key = moves.join(" ");
-    if let Some(cached) = state.explorer_cache.lock().unwrap().get(&key) {
-        return Ok(cached.clone());
+/// Filtre de preparation d'adversaire actif sur cet onglet, le cas echeant
+/// (voir GameSession::explorer_player_filter / open_player_prep_tab).
+fn player_filter_for_tab(state: &State<AppState>, tab_id: u32) -> Option<explorer::PlayerFilter> {
+    state.sessions.lock().unwrap().get(&tab_id).and_then(|s| s.explorer_player_filter.clone())
+}
+
+#[tauri::command]
+fn opening_explorer(app: AppHandle, state: State<AppState>, tab_id: u32, moves: Vec<String>) -> Result<Vec<OpeningMoveStat>, String> {
+    ensure_reference_conn(&app, &state)?;
+    let filter = player_filter_for_tab(&state, tab_id);
+
+    // le cache partage (explorer_cache) ne couvre que la vue non filtree,
+    // commune a tous les onglets ; un filtre joueur est propre a un seul
+    // onglet de preparation et reste rapide sans avoir besoin d'etre mis en
+    // cache (voir explorer::PlayerFilter).
+    if filter.is_none() {
+        let key = moves.join(" ");
+        if let Some(cached) = state.explorer_cache.lock().unwrap().get(&key) {
+            return Ok(cached.clone());
+        }
+        let conn_cache = state.reference_conn.lock().unwrap();
+        let conn = &conn_cache.as_ref().unwrap().1;
+        let stats = explorer::explore(conn, &moves, None)?;
+        state.explorer_cache.lock().unwrap().insert(key, stats.clone());
+        return Ok(stats);
     }
+    let conn_cache = state.reference_conn.lock().unwrap();
     let conn = &conn_cache.as_ref().unwrap().1;
-    let stats = explorer::explore(conn, &moves)?;
-    state.explorer_cache.lock().unwrap().insert(key, stats.clone());
-    Ok(stats)
+    explorer::explore(conn, &moves, filter.as_ref())
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ExplorerGamesPage {
+    games: Vec<db::GameSummary>,
+    total: u32,
+    base_path: String,
+}
+
+/// Parties de la base de reference passant par la position atteinte par
+/// `moves`, paginees. Complement de `opening_explorer` (qui ne donne que les
+/// stats agregees par coup suivant) pour le panneau "parties dans cette
+/// position".
+#[tauri::command]
+fn opening_explorer_games(
+    app: AppHandle,
+    state: State<AppState>,
+    tab_id: u32,
+    moves: Vec<String>,
+    offset: u32,
+    limit: u32,
+) -> Result<ExplorerGamesPage, String> {
+    ensure_reference_conn(&app, &state)?;
+    let filter = player_filter_for_tab(&state, tab_id);
+    let conn_cache = state.reference_conn.lock().unwrap();
+    let (base_path, conn) = conn_cache.as_ref().unwrap();
+    let total = db::count_games_at_position(conn, &moves, filter.as_ref())?;
+    let games = db::games_at_position(conn, &moves, filter.as_ref(), limit, offset)?;
+    Ok(ExplorerGamesPage { games, total, base_path: base_path.clone() })
+}
+
+/// Charge une partie de la base de reference sous forme d'arbre, en lecture
+/// seule, sans creer de session/onglet -- utilise pour le petit echiquier de
+/// balayage dans le panneau "parties dans cette position".
+#[tauri::command]
+fn opening_explorer_preview_game(app: AppHandle, state: State<AppState>, id: i64) -> Result<TreeDto, String> {
+    ensure_reference_conn(&app, &state)?;
+    let conn_cache = state.reference_conn.lock().unwrap();
+    let conn = &conn_cache.as_ref().unwrap().1;
+    let pgn_text = db::load_game_pgn(conn, id)?.ok_or_else(|| "partie introuvable".to_string())?;
+    let tree = pgn::parse_game(&pgn_text)?;
+    Ok(tree.to_dto())
 }
 
 #[tauri::command]
@@ -509,6 +608,28 @@ fn list_games_in_base(
     Ok(GamesPage { games, total })
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PlayersPage {
+    players: Vec<db::PlayerSummary>,
+    total: u32,
+}
+
+#[tauri::command]
+fn list_players_in_base(
+    path: String,
+    search: String,
+    sort_by: String,
+    sort_dir: String,
+    offset: u32,
+    limit: u32,
+) -> Result<PlayersPage, String> {
+    let conn = db::open(Path::new(&path))?;
+    let total = db::count_players(&conn, &search)?;
+    let players = db::list_players_page(&conn, &search, &sort_by, &sort_dir, limit, offset)?;
+    Ok(PlayersPage { players, total })
+}
+
 #[tauri::command]
 fn delete_game(state: State<AppState>, path: String, id: i64) -> Result<(), String> {
     let conn = db::open(Path::new(&path))?;
@@ -570,7 +691,7 @@ fn open_game(state: State<AppState>, path: String, id: i64) -> Result<TabDto, St
     session.active_game_id = Some(id);
     let tab_id = allocate_tab_id(&state);
     let tree = insert_session(&state, tab_id, session);
-    Ok(TabDto { tab_id, tree })
+    Ok(TabDto { tab_id, tree, is_player_prep: false })
 }
 
 #[tauri::command]
@@ -610,7 +731,7 @@ fn save_game_to(state: State<AppState>, tab_id: u32, path: String, force: bool) 
 /// fait planter l'appli sous Windows). `home_panels`/`game_panels`
 /// determinent quelles cases du menu Affichage sont activees selon le type
 /// de fenetre (Accueil ou Partie).
-fn build_menu(app: &AppHandle, home_panels: bool, game_panels: bool, lang: &str) -> tauri::Result<Menu<tauri::Wry>> {
+fn build_menu(app: &AppHandle, home_panels: bool, game_panels: bool, lang: &str, window_label: &str) -> tauri::Result<Menu<tauri::Wry>> {
     let t = i18n::translations(lang);
     let t = |key: &str| t.get(key).cloned().unwrap_or_else(|| key.to_string());
 
@@ -643,6 +764,10 @@ fn build_menu(app: &AppHandle, home_panels: bool, game_panels: bool, lang: &str)
         .enabled(home_panels)
         .checked(home_panels)
         .build(app)?;
+    let panel_players = CheckMenuItemBuilder::with_id("panel_players", t("menu.display.players"))
+        .enabled(home_panels)
+        .checked(home_panels)
+        .build(app)?;
     let panel_notation = CheckMenuItemBuilder::with_id("panel_notation", t("menu.display.notation"))
         .enabled(game_panels)
         .checked(game_panels)
@@ -659,11 +784,31 @@ fn build_menu(app: &AppHandle, home_panels: bool, game_panels: bool, lang: &str)
         .item(&panel_bases)
         .item(&panel_pgn)
         .item(&panel_parties)
+        .item(&panel_players)
         .separator()
         .item(&panel_notation)
         .item(&panel_explorer)
         .item(&panel_engine)
         .build()?;
+
+    // conserve les poignees des cases a cocher pour pouvoir les mettre a
+    // jour individuellement ensuite (voir set_panel_checked) sans
+    // reconstruire tout le menu.
+    {
+        let app_state = app.state::<AppState>();
+        let mut items = app_state.panel_menu_items.lock().unwrap();
+        for (id, item) in [
+            ("panel_bases", panel_bases),
+            ("panel_pgn", panel_pgn),
+            ("panel_parties", panel_parties),
+            ("panel_players", panel_players),
+            ("panel_notation", panel_notation),
+            ("panel_explorer", panel_explorer),
+            ("panel_engine", panel_engine),
+        ] {
+            items.insert(format!("{window_label}:{id}"), item);
+        }
+    }
 
     let board_theme_brown = MenuItemBuilder::with_id("board-theme-brown", t("menu.preferences.boardColors.brown")).build(app)?;
     let board_theme_blue = MenuItemBuilder::with_id("board-theme-blue", t("menu.preferences.boardColors.blue")).build(app)?;
@@ -703,10 +848,10 @@ fn build_menu(app: &AppHandle, home_panels: bool, game_panels: bool, lang: &str)
 /// Reconstruit le menu dans la langue donnee et le rattache a la fenetre
 /// principale et, si elle est ouverte, a la fenetre Partie.
 fn rebuild_and_attach_menu(app: &AppHandle, lang: &str) -> Result<(), String> {
-    let menu = build_menu(app, true, true, lang).map_err(|e| e.to_string())?;
+    let menu = build_menu(app, true, true, lang, "main").map_err(|e| e.to_string())?;
     app.set_menu(menu).map_err(|e| e.to_string())?;
     if let Some(game_window) = app.get_webview_window("game") {
-        let game_menu = build_menu(app, true, true, lang).map_err(|e| e.to_string())?;
+        let game_menu = build_menu(app, true, true, lang, "game").map_err(|e| e.to_string())?;
         game_window.set_menu(game_menu).map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -724,8 +869,23 @@ fn attach_game_menu(app: AppHandle, state: State<AppState>) -> Result<(), String
         .get_webview_window("game")
         .ok_or_else(|| "fenetre game introuvable".to_string())?;
     let lang = state.language.lock().unwrap().clone();
-    let menu = build_menu(&app, true, true, &lang).map_err(|e| e.to_string())?;
+    let menu = build_menu(&app, true, true, &lang, "game").map_err(|e| e.to_string())?;
     window.set_menu(menu).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Met a jour une case a cocher du menu Affichage sans reconstruire tout le
+/// menu, pour qu'elle reflete l'etat reel d'un panneau -- y compris quand il
+/// a ete ferme via son propre bouton plutot que via ce menu (voir
+/// panel_menu_items). `window` est injecte par Tauri d'apres la fenetre
+/// appelante : chaque fenetre (Accueil, Partie) ne peut mettre a jour que ses
+/// propres cases.
+#[tauri::command]
+fn set_panel_checked(window: tauri::Window, state: State<AppState>, id: String, checked: bool) -> Result<(), String> {
+    let key = format!("{}:{}", window.label(), id);
+    if let Some(item) = state.panel_menu_items.lock().unwrap().get(&key) {
+        item.set_checked(checked).map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 
@@ -791,12 +951,13 @@ pub fn run() {
                 reference_conn: Mutex::new(None),
                 explorer_cache: Mutex::new(HashMap::new()),
                 language: Mutex::new(initial_lang.clone()),
+                panel_menu_items: Mutex::new(HashMap::new()),
             });
 
             // menu unique partage par toutes les fenetres (voir open_game_window) :
             // toutes les cases Affichage restent activees, chaque fenetre ignore
             // simplement cote JS les bascules qui ne la concernent pas.
-            let shared_menu = build_menu(&app.handle(), true, true, &initial_lang)?;
+            let shared_menu = build_menu(&app.handle(), true, true, &initial_lang, "main")?;
             app.set_menu(shared_menu)?;
 
             app.on_menu_event(move |app_handle, event| {
@@ -819,6 +980,7 @@ pub fn run() {
                     "panel_bases" => "menu-toggle-panel-bases",
                     "panel_pgn" => "menu-toggle-panel-pgn",
                     "panel_parties" => "menu-toggle-panel-parties",
+                    "panel_players" => "menu-toggle-panel-players",
                     "panel_notation" => "menu-toggle-panel-notation",
                     "panel_explorer" => "menu-toggle-panel-explorer",
                     "panel_engine" => "menu-toggle-panel-engine",
@@ -831,9 +993,11 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             attach_game_menu,
+            set_panel_checked,
             get_language,
             set_language,
             new_game,
+            open_player_prep_tab,
             get_active_base_path,
             close_tab,
             get_tree,
@@ -853,11 +1017,14 @@ pub fn run() {
             analyze_position,
             pause_engine,
             opening_explorer,
+            opening_explorer_games,
+            opening_explorer_preview_game,
             logical_cpu_count,
             list_bases,
             create_base,
             add_existing_base,
             list_games_in_base,
+            list_players_in_base,
             open_game,
             save_game_to,
             list_recent_pgns,

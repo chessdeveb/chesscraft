@@ -1,11 +1,17 @@
 import { createContext, useContext } from "react";
-import type { BaseInfo, GameSummary, PgnGameSummary } from "./types";
+import type { BaseInfo, GameSummary, PgnGameSummary, PlayerSummary } from "./types";
 
 export type HomeActiveSource = { kind: "base"; base: BaseInfo } | { kind: "pgn"; pgn: BaseInfo } | null;
 
 export type GamesSortColumn = "white" | "black" | "date";
 export interface GamesSort {
   column: GamesSortColumn;
+  dir: "asc" | "desc";
+}
+
+export type PlayersSortColumn = "name" | "games";
+export interface PlayersSort {
+  column: PlayersSortColumn;
   dir: "asc" | "desc";
 }
 
@@ -68,6 +74,19 @@ export interface HomeContextValue {
 
   pgnGames: PgnGameSummary[];
   onOpenPgnGame: (index: number) => void;
+
+  players: PlayerSummary[];
+  playersTotal: number;
+  playersLoading: boolean;
+  playersPage: number;
+  playersSearchInput: string;
+  onPlayersSearchChange: (v: string) => void;
+  onPlayersPageChange: (p: number) => void;
+  onPlayersFilterCommit: () => void;
+  onSelectPlayer: (name: string) => void;
+  playersSort: PlayersSort | null;
+  onPlayersSortChange: (column: PlayersSortColumn) => void;
+  onPrepareAgainstPlayer: (name: string, white: boolean) => void;
 }
 
 export const HomeContext = createContext<HomeContextValue | null>(null);

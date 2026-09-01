@@ -77,9 +77,26 @@ export interface GameSummary {
 
 export type SaveResult = { kind: "saved"; id: number } | { kind: "duplicate"; existing: GameSummary };
 
+export interface ExplorerGamesPage {
+  games: GameSummary[];
+  total: number;
+  basePath: string;
+}
+
+export interface PlayerSummary {
+  name: string;
+  games: number;
+}
+
+export interface PlayersPage {
+  players: PlayerSummary[];
+  total: number;
+}
+
 export interface TabDto {
   tabId: number;
   tree: TreeDto;
+  isPlayerPrep: boolean;
 }
 
 export interface BulkImportSummary {

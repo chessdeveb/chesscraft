@@ -4,8 +4,12 @@ import { useTranslation } from "react-i18next";
 import { useAppContext } from "./AppContext";
 import { Board } from "./components/Board";
 import { EnginePanel } from "./components/EnginePanel";
+import { ExplorerGamesList } from "./components/ExplorerGamesList";
+import { ExplorerPreview } from "./components/ExplorerPreview";
 import { Notation } from "./components/Notation";
 import { OpeningExplorer } from "./components/OpeningExplorer";
+
+const EXPLORER_GAMES_PAGE_SIZE = 20;
 
 export function BoardPanel() {
   const { currentNode, dests, boardTheme, handleMove, handleShapesChange } = useAppContext();
@@ -66,10 +70,56 @@ export function NotationPanelView() {
 }
 
 export function ExplorerPanelView() {
-  const { explorerStats, explorerError, handleExplorerMove } = useAppContext();
+  const {
+    explorerStats,
+    explorerError,
+    handleExplorerMove,
+    explorerGames,
+    explorerGamesTotal,
+    explorerGamesPage,
+    explorerGamesLoading,
+    explorerGamesError,
+    onExplorerGamesPageChange,
+    previewGameId,
+    previewTree,
+    previewNodeId,
+    previewError,
+    onSelectPreviewGame,
+    onSelectPreviewNode,
+    onPreviewStep,
+    onOpenPreviewGame,
+    onClosePreview,
+    boardTheme,
+  } = useAppContext();
   return (
-    <div className="dock-panel-content">
-      <OpeningExplorer stats={explorerStats} error={explorerError} onSelectMove={handleExplorerMove} />
+    <div className="dock-panel-content explorer-panel">
+      <div className="explorer-panel-col explorer-panel-col--left">
+        <OpeningExplorer stats={explorerStats} error={explorerError} onSelectMove={handleExplorerMove} />
+        <ExplorerGamesList
+          games={explorerGames}
+          total={explorerGamesTotal}
+          page={explorerGamesPage}
+          pageSize={EXPLORER_GAMES_PAGE_SIZE}
+          loading={explorerGamesLoading}
+          error={explorerGamesError}
+          onPageChange={onExplorerGamesPageChange}
+          selectedGameId={previewGameId}
+          onSelectGame={onSelectPreviewGame}
+        />
+      </div>
+      <div className="explorer-panel-col explorer-panel-col--right">
+        <ExplorerPreview
+          gameId={previewGameId}
+          tree={previewTree}
+          nodeId={previewNodeId}
+          error={previewError}
+          onSelectNode={onSelectPreviewNode}
+          onStep={onPreviewStep}
+          onOpen={onOpenPreviewGame}
+          onClose={onClosePreview}
+          boardTheme={boardTheme}
+        />
+      </div>
     </div>
   );
 }

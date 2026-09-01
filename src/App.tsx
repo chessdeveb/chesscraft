@@ -11,9 +11,15 @@ import "./App.css";
 interface GameTabInfo {
   id: number;
   title: string;
+  isPlayerPrep: boolean;
 }
 
-function tabTitle(tree: TreeDto): string {
+function tabTitle(tree: TreeDto, isPlayerPrep: boolean): string {
+  if (isPlayerPrep) {
+    const name = tree.tags.White && tree.tags.White !== "?" ? tree.tags.White : tree.tags.Black;
+    const color = tree.tags.White && tree.tags.White !== "?" ? i18n.t("common.white") : i18n.t("common.black");
+    return `🎯 ${name} (${color})`;
+  }
   const white = tree.tags.White && tree.tags.White !== "?" ? tree.tags.White : i18n.t("common.white");
   const black = tree.tags.Black && tree.tags.Black !== "?" ? tree.tags.Black : i18n.t("common.black");
   return `${white} - ${black}`;
@@ -24,6 +30,10 @@ function initialTabId(): number | null {
   if (raw === null) return null;
   const id = Number(raw);
   return Number.isNaN(id) ? null : id;
+}
+
+function initialIsPlayerPrep(): boolean {
+  return new URLSearchParams(window.location.search).get("prep") === "1";
 }
 
 function App() {
@@ -47,9 +57,10 @@ function App() {
       setLoadError(t("app.noTabId", { search: window.location.search }));
       return;
     }
+    const isPrep = initialIsPlayerPrep();
     invoke<TreeDto>("get_tree", { tabId: id })
       .then((tree) => {
-        setTabs([{ id, title: tabTitle(tree) }]);
+        setTabs([{ id, title: tabTitle(tree, isPrep), isPlayerPrep: isPrep }]);
         setActiveTabId(id);
       })
       .catch((e) => setLoadError(String(e)));
@@ -57,9 +68,11 @@ function App() {
 
   // l'accueil signale l'ouverture d'une partie pendant que cette fenetre est deja ouverte
   useEffect(() => {
-    const unlistenPromise = listen<{ tabId: number; tree: TreeDto }>("game-tab-opened", (event) => {
-      const { tabId, tree } = event.payload;
-      setTabs((prev) => (prev.some((t) => t.id === tabId) ? prev : [...prev, { id: tabId, title: tabTitle(tree) }]));
+    const unlistenPromise = listen<{ tabId: number; tree: TreeDto; isPlayerPrep: boolean }>("game-tab-opened", (event) => {
+      const { tabId, tree, isPlayerPrep } = event.payload;
+      setTabs((prev) =>
+        prev.some((t) => t.id === tabId) ? prev : [...prev, { id: tabId, title: tabTitle(tree, isPlayerPrep), isPlayerPrep }]
+      );
       setActiveTabId(tabId);
     });
     return () => {
@@ -83,8 +96,13 @@ function App() {
   }, [tabs]);
 
   const handleTreeChange = useCallback((tabId: number, tree: TreeDto) => {
-    const title = tabTitle(tree);
-    setTabs((prev) => prev.map((t) => (t.id === tabId && t.title !== title ? { ...t, title } : t)));
+    setTabs((prev) =>
+      prev.map((t) => {
+        if (t.id !== tabId) return t;
+        const title = tabTitle(tree, t.isPlayerPrep);
+        return title !== t.title ? { ...t, title } : t;
+      })
+    );
   }, []);
 
   const handleCloseTab = useCallback(
@@ -162,6 +180,7 @@ function App() {
               }}
               tabId={tab.id}
               active={tab.id === activeTabId}
+              isPlayerPrep={tab.isPlayerPrep}
               onTreeChange={handleTreeChange}
             />
           </div>

@@ -1,6 +1,6 @@
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -64,7 +64,12 @@ pub fn open(path: &Path) -> Result<Connection, String> {
             result TEXT NOT NULL,
             cnt INTEGER NOT NULL
         );
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_opening_prefix_stats_unique ON opening_prefix_stats(prefix, next_move, result);",
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_opening_prefix_stats_unique ON opening_prefix_stats(prefix, next_move, result);
+        CREATE TABLE IF NOT EXISTS player_stats (
+            name TEXT NOT NULL COLLATE NOCASE,
+            games INTEGER NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_player_stats_name ON player_stats(name);",
     )
     .map_err(|e| e.to_string())?;
     migrate_add_columns(&conn)?;
@@ -72,6 +77,7 @@ pub fn open(path: &Path) -> Result<Connection, String> {
     migrate_name_indexes(&conn)?;
     migrate_prefix_stats_unique_index(&conn)?;
     migrate_prefix_stats(&mut conn)?;
+    migrate_player_stats(&mut conn)?;
     Ok(conn)
 }
 
@@ -122,6 +128,22 @@ fn migrate_prefix_stats(conn: &mut Connection) -> Result<(), String> {
         return Ok(());
     }
     crate::explorer::rebuild_prefix_stats(conn)
+}
+
+/// Meme principe que migrate_prefix_stats, pour la liste des joueurs : sans
+/// precalcul, compter les joueurs distincts d'une base de plusieurs millions
+/// de parties (UNION Blancs+Noirs, GROUP BY) prend potentiellement plusieurs
+/// minutes -- observe en pratique sur la base de reference de l'utilisateur.
+fn migrate_player_stats(conn: &mut Connection) -> Result<(), String> {
+    let already_built: i64 = conn.query_row("SELECT COUNT(*) FROM player_stats", [], |row| row.get(0)).map_err(|e| e.to_string())?;
+    if already_built > 0 {
+        return Ok(());
+    }
+    let has_games: i64 = conn.query_row("SELECT COUNT(*) FROM games", [], |row| row.get(0)).map_err(|e| e.to_string())?;
+    if has_games == 0 {
+        return Ok(());
+    }
+    rebuild_player_stats(conn)
 }
 
 /// La recherche de parties par nom (prefixe insensible a la casse) s'appuie
@@ -249,10 +271,11 @@ pub fn save_game(
     // fait lui-meme des INSERT (dans opening_prefix_stats), qui l'ecraserait
     // sinon avec le rowid de cette AUTRE table.
     let id = conn.last_insert_rowid();
-    // Tient opening_prefix_stats a jour en dehors d'un import en masse (qui
-    // fait son propre rebuild complet apres coup) : echec non bloquant, ce
-    // n'est qu'un cache de performance pour l'explorateur d'ouvertures.
+    // Tient opening_prefix_stats et player_stats a jour en dehors d'un import
+    // en masse (qui fait son propre rebuild complet apres coup) : echec non
+    // bloquant, ce ne sont que des caches de performance.
     let _ = crate::explorer::increment_prefix_stats(conn, mainline_sans, tags.get("Result").map(|s| s.as_str()));
+    let _ = increment_player_stats(conn, &get("White").unwrap_or_default(), &get("Black").unwrap_or_default());
     Ok(id)
 }
 
@@ -269,9 +292,16 @@ pub fn update_game(
     // partie.
     let old = conn
         .query_row(
-            "SELECT mainline_sans, result FROM games WHERE id = ?1",
+            "SELECT mainline_sans, result, white, black FROM games WHERE id = ?1",
             params![id],
-            |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, Option<String>>(1)?)),
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            },
         )
         .optional()
         .map_err(|e| e.to_string())?;
@@ -301,19 +331,30 @@ pub fn update_game(
     )
     .map_err(|e| e.to_string())?;
 
-    if let Some((Some(old_mainline), old_result)) = old {
-        let _ = crate::explorer::decrement_prefix_stats(conn, &old_mainline, old_result.as_deref());
+    if let Some((old_mainline, old_result, old_white, old_black)) = &old {
+        if let Some(old_mainline) = old_mainline {
+            let _ = crate::explorer::decrement_prefix_stats(conn, old_mainline, old_result.as_deref());
+        }
+        let _ = decrement_player_stats(conn, old_white.as_deref().unwrap_or_default(), old_black.as_deref().unwrap_or_default());
     }
     let _ = crate::explorer::increment_prefix_stats(conn, mainline_sans, tags.get("Result").map(|s| s.as_str()));
+    let _ = increment_player_stats(conn, &get("White").unwrap_or_default(), &get("Black").unwrap_or_default());
     Ok(())
 }
 
 pub fn delete_game(conn: &Connection, id: i64) -> Result<(), String> {
     let old = conn
         .query_row(
-            "SELECT mainline_sans, result FROM games WHERE id = ?1",
+            "SELECT mainline_sans, result, white, black FROM games WHERE id = ?1",
             params![id],
-            |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, Option<String>>(1)?)),
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            },
         )
         .optional()
         .map_err(|e| e.to_string())?;
@@ -321,8 +362,11 @@ pub fn delete_game(conn: &Connection, id: i64) -> Result<(), String> {
     conn.execute("DELETE FROM games WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;
 
-    if let Some((Some(old_mainline), old_result)) = old {
-        let _ = crate::explorer::decrement_prefix_stats(conn, &old_mainline, old_result.as_deref());
+    if let Some((old_mainline, old_result, old_white, old_black)) = old {
+        if let Some(old_mainline) = old_mainline {
+            let _ = crate::explorer::decrement_prefix_stats(conn, &old_mainline, old_result.as_deref());
+        }
+        let _ = decrement_player_stats(conn, old_white.as_deref().unwrap_or_default(), old_black.as_deref().unwrap_or_default());
     }
     Ok(())
 }
@@ -515,6 +559,242 @@ pub fn list_games_page(
     rows
 }
 
+/// Bornes d'un intervalle "commence exactement par ces coups" : contrairement
+/// a explorer::explore (qui ne veut que les CONTINUATIONS, donc part de
+/// `prefix + " "`), ici on veut aussi les parties qui s'arretent pile a cette
+/// position -- la borne basse est donc `prefix` lui-meme. Comme les coups
+/// sont separes par des espaces, aucune autre partie ne peut se glisser entre
+/// `prefix` et `prefix + " "` dans l'ordre lexicographique : cette seule
+/// plage capture a la fois le cas exact et toutes les continuations.
+fn position_bounds(moves: &[String]) -> (String, String) {
+    let prefix = moves.join(" ");
+    let hi = format!("{prefix}\u{ffff}");
+    (prefix, hi)
+}
+
+/// FROM+WHERE (avec index force) partages par count_games_at_position et
+/// games_at_position. Sans filtre joueur, idx_games_mainline est le bon
+/// index (le prefixe de coups est la seule condition, et il est de plus en
+/// plus selectif a mesure qu'on avance dans l'arbre). Avec un filtre joueur,
+/// c'est l'inverse a faible profondeur : le prefixe (souvent vide dans un
+/// onglet de preparation tout juste ouvert) ne restreint presque rien, alors
+/// que l'egalite sur white/black, elle, ne garde qu'une fraction infime de
+/// la base -- d'ou l'index force sur idx_games_white/idx_games_black dans ce
+/// cas (meme raisonnement que explorer::explore).
+fn position_from_and_where(
+    moves: &[String],
+    filter: Option<&crate::explorer::PlayerFilter>,
+) -> (String, String, Vec<Box<dyn rusqlite::ToSql>>) {
+    let (lo, hi) = position_bounds(moves);
+    match filter {
+        Some(f) => {
+            let index = if f.white { "idx_games_white" } else { "idx_games_black" };
+            let column = if f.white { "white" } else { "black" };
+            (
+                format!("games INDEXED BY {index}"),
+                format!("WHERE {column} = ?1 AND mainline_sans >= ?2 AND mainline_sans < ?3"),
+                vec![Box::new(f.name.clone()), Box::new(lo), Box::new(hi)],
+            )
+        }
+        None => (
+            "games INDEXED BY idx_games_mainline".to_string(),
+            "WHERE mainline_sans >= ?1 AND mainline_sans < ?2".to_string(),
+            vec![Box::new(lo), Box::new(hi)],
+        ),
+    }
+}
+
+/// Nombre de parties de la base de reference passant exactement par cette
+/// position (prefixe de mainline_sans), optionnellement restreint a un seul
+/// joueur/couleur (voir explorer::PlayerFilter). Voir games_at_position pour
+/// le detail des bornes utilisees.
+pub fn count_games_at_position(conn: &Connection, moves: &[String], filter: Option<&crate::explorer::PlayerFilter>) -> Result<u32, String> {
+    let (from, where_clause, params) = position_from_and_where(moves, filter);
+    let sql = format!("SELECT COUNT(*) FROM {from} {where_clause}");
+    let params_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
+    let count: i64 = conn.query_row(&sql, params_refs.as_slice(), |row| row.get(0)).map_err(|e| e.to_string())?;
+    Ok(count as u32)
+}
+
+/// Parties de la base de reference passant exactement par cette position,
+/// les plus recentes d'abord, optionnellement restreintes a un seul
+/// joueur/couleur. Utilise pour le panneau "parties dans cette position" de
+/// l'explorateur d'ouvertures.
+pub fn games_at_position(
+    conn: &Connection,
+    moves: &[String],
+    filter: Option<&crate::explorer::PlayerFilter>,
+    limit: u32,
+    offset: u32,
+) -> Result<Vec<GameSummary>, String> {
+    let (from, where_clause, mut params) = position_from_and_where(moves, filter);
+    let limit_ph = params.len() + 1;
+    let offset_ph = params.len() + 2;
+    params.push(Box::new(limit));
+    params.push(Box::new(offset));
+    let sql = format!(
+        "SELECT id, white, black, date_played, result, event, time_control
+         FROM {from} {where_clause}
+         ORDER BY id DESC LIMIT ?{limit_ph} OFFSET ?{offset_ph}"
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let params_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
+    let rows = stmt
+        .query_map(params_refs.as_slice(), map_game_summary_row)
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string());
+    rows
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PlayerSummary {
+    pub name: String,
+    pub games: u32,
+}
+
+/// Reconstruit entierement player_stats a partir des parties actuelles :
+/// necessaire apres un import en masse, ou pour la premiere ouverture d'une
+/// base importee avant l'ajout de cette table (voir migrate_player_stats).
+/// Un seul passage sur white/black, agrege en Rust (HashMap) plutot que par
+/// un GROUP BY SQL sur l'union des deux colonnes -- sur la base de reference
+/// de l'utilisateur (~10M parties), la version SQL restait bloquee plusieurs
+/// minutes (pas d'index utilisable pour un GROUP BY sur toutes les valeurs
+/// distinctes), le seul cout ici est celui d'un aller-retour sur la table
+/// (meme ordre de grandeur qu'un COUNT(*)). La cle du HashMap est la version
+/// en minuscules du nom (les deux colonnes de l'index sont en COLLATE
+/// NOCASE, donc "Kasparov,G" et "kasparov,g" doivent fusionner) ; la valeur
+/// garde l'orthographe rencontree en premier pour l'affichage.
+pub fn rebuild_player_stats(conn: &mut Connection) -> Result<(), String> {
+    let tally = {
+        let mut stmt = conn.prepare("SELECT white, black FROM games").map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, Option<String>>(1)?)))
+            .map_err(|e| e.to_string())?;
+
+        let mut tally: HashMap<String, (String, u64)> = HashMap::new();
+        for row in rows {
+            let (white, black) = row.map_err(|e| e.to_string())?;
+            for name in [white, black].into_iter().flatten() {
+                if name.is_empty() || name == "?" {
+                    continue;
+                }
+                let entry = tally.entry(name.to_lowercase()).or_insert_with(|| (name.clone(), 0));
+                entry.1 += 1;
+            }
+        }
+        tally
+    };
+
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM player_stats", []).map_err(|e| e.to_string())?;
+    {
+        let mut insert = tx.prepare("INSERT INTO player_stats (name, games) VALUES (?1, ?2)").map_err(|e| e.to_string())?;
+        for (display_name, cnt) in tally.values() {
+            insert.execute(params![display_name, *cnt as i64]).map_err(|e| e.to_string())?;
+        }
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// A appeler juste apres l'ajout d'une partie : ajuste player_stats sans tout
+/// recalculer (symetrique de explorer::increment_prefix_stats).
+fn increment_player_stats(conn: &Connection, white: &str, black: &str) -> Result<(), String> {
+    for name in [white, black] {
+        if name.is_empty() || name == "?" {
+            continue;
+        }
+        conn.execute(
+            "INSERT INTO player_stats (name, games) VALUES (?1, 1)
+             ON CONFLICT(name) DO UPDATE SET games = games + 1",
+            params![name],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Symetrique de increment_player_stats, a appeler juste avant une
+/// suppression ou un remplacement de partie.
+fn decrement_player_stats(conn: &Connection, white: &str, black: &str) -> Result<(), String> {
+    for name in [white, black] {
+        if name.is_empty() || name == "?" {
+            continue;
+        }
+        conn.execute("UPDATE player_stats SET games = games - 1 WHERE name = ?1 AND games > 0", params![name])
+            .map_err(|e| e.to_string())?;
+    }
+    conn.execute("DELETE FROM player_stats WHERE games <= 0", []).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Nombre de joueurs distincts (Blancs ou Noirs) correspondant au prefixe de
+/// recherche, ou de la base entiere si `search` est vide. Lit player_stats
+/// (precalcule) plutot que d'agreger games a la volee.
+pub fn count_players(conn: &Connection, search: &str) -> Result<u32, String> {
+    let count: i64 = if search.is_empty() {
+        conn.query_row("SELECT COUNT(*) FROM player_stats", [], |row| row.get(0))
+    } else {
+        let (lo, hi) = prefix_bounds(search);
+        conn.query_row(
+            "SELECT COUNT(*) FROM player_stats WHERE name >= ?1 AND name < ?2",
+            params![lo, hi],
+            |row| row.get(0),
+        )
+    }
+    .map_err(|e| e.to_string())?;
+    Ok(count as u32)
+}
+
+fn map_player_row(row: &rusqlite::Row) -> rusqlite::Result<PlayerSummary> {
+    Ok(PlayerSummary { name: row.get(0)?, games: row.get::<_, i64>(1)? as u32 })
+}
+
+/// player_stats reste petit (une ligne par joueur distinct, pas par partie)
+/// meme sur une base de plusieurs millions de parties : contrairement au
+/// decompte par nom (voir count_players), trier par nombre de parties sans
+/// index dedie reste largement assez rapide ici.
+fn players_order_by_clause(sort_by: &str, sort_dir: &str) -> &'static str {
+    let desc = sort_dir != "asc";
+    match (sort_by, desc) {
+        ("name", false) => "ORDER BY name ASC",
+        ("name", true) => "ORDER BY name DESC",
+        ("games", false) => "ORDER BY games ASC, name ASC",
+        _ => "ORDER BY games DESC, name ASC",
+    }
+}
+
+/// Page de joueurs (nom + nombre de parties, Blancs+Noirs confondus), triee
+/// selon `sort_by`/`sort_dir` (par defaut : les plus actifs d'abord).
+pub fn list_players_page(
+    conn: &Connection,
+    search: &str,
+    sort_by: &str,
+    sort_dir: &str,
+    limit: u32,
+    offset: u32,
+) -> Result<Vec<PlayerSummary>, String> {
+    let order_by = players_order_by_clause(sort_by, sort_dir);
+    if search.is_empty() {
+        let sql = format!("SELECT name, games FROM player_stats {order_by} LIMIT ?1 OFFSET ?2");
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![limit, offset], map_player_row)
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    } else {
+        let (lo, hi) = prefix_bounds(search);
+        let sql = format!("SELECT name, games FROM player_stats WHERE name >= ?1 AND name < ?2 {order_by} LIMIT ?3 OFFSET ?4");
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![lo, hi, limit, offset], map_player_row)
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    }
+}
+
 /// Cherche une partie deja presente dans la base avec les memes Blancs/Noirs/Date/Resultat
 /// et la meme suite de coups (SAN) que celle donnee. Utilise pour alerter l'utilisateur
 /// sans jamais bloquer la sauvegarde (voir save_game_to cote lib.rs).
@@ -668,6 +948,106 @@ mod tests {
         // coups identiques : doublon detecte
         let same_moves = vec!["e4".to_string(), "e5".to_string()];
         assert!(find_duplicate(&conn, &tags, &same_moves).unwrap().is_some());
+    }
+
+    #[test]
+    fn games_at_position_matches_exact_and_continuations_only() {
+        let conn = open(Path::new(":memory:")).unwrap();
+
+        // s'arrete pile a "e4 e5" : doit apparaitre pour le prefixe "e4 e5"
+        save_game(&conn, "1. e4 e5 *", &base_tags("Alice", "Bob", "2024.01.01", "*"), "e4 e5").unwrap();
+        // continue au-dela de "e4 e5" : doit aussi apparaitre
+        save_game(&conn, "1. e4 e5 2. Nf3 *", &base_tags("Carol", "Dave", "2024.01.02", "*"), "e4 e5 Nf3").unwrap();
+        // autre position : ne doit pas apparaitre
+        save_game(&conn, "1. d4 d5 *", &base_tags("Erin", "Frank", "2024.01.03", "*"), "d4 d5").unwrap();
+
+        let moves = vec!["e4".to_string(), "e5".to_string()];
+        assert_eq!(count_games_at_position(&conn, &moves, None).unwrap(), 2);
+        let games = games_at_position(&conn, &moves, None, 10, 0).unwrap();
+        let whites: Vec<&str> = games.iter().map(|g| g.white.as_str()).collect();
+        assert_eq!(whites.len(), 2);
+        assert!(whites.contains(&"Alice"));
+        assert!(whites.contains(&"Carol"));
+
+        // position de depart (prefixe vide) : toutes les parties
+        assert_eq!(count_games_at_position(&conn, &[], None).unwrap(), 3);
+    }
+
+    #[test]
+    fn games_at_position_respects_player_filter() {
+        let conn = open(Path::new(":memory:")).unwrap();
+
+        save_game(&conn, "1. e4 e5 *", &base_tags("Alice", "Bob", "2024.01.01", "*"), "e4 e5").unwrap();
+        save_game(&conn, "1. e4 e5 *", &base_tags("Carol", "Alice", "2024.01.02", "*"), "e4 e5").unwrap();
+
+        let moves = vec!["e4".to_string(), "e5".to_string()];
+
+        // Alice en Blancs : seulement la premiere partie
+        let white_filter = crate::explorer::PlayerFilter { name: "Alice".to_string(), white: true };
+        assert_eq!(count_games_at_position(&conn, &moves, Some(&white_filter)).unwrap(), 1);
+        let games = games_at_position(&conn, &moves, Some(&white_filter), 10, 0).unwrap();
+        assert_eq!(games.len(), 1);
+        assert_eq!(games[0].white, "Alice");
+
+        // Alice en Noirs : seulement la seconde
+        let black_filter = crate::explorer::PlayerFilter { name: "Alice".to_string(), white: false };
+        assert_eq!(count_games_at_position(&conn, &moves, Some(&black_filter)).unwrap(), 1);
+        let games = games_at_position(&conn, &moves, Some(&black_filter), 10, 0).unwrap();
+        assert_eq!(games[0].black, "Alice");
+    }
+
+    #[test]
+    fn list_players_page_aggregates_white_and_black_across_games() {
+        let conn = open(Path::new(":memory:")).unwrap();
+
+        save_game(&conn, "1. e4 *", &base_tags("Alice", "Bob", "2024.01.01", "*"), "e4").unwrap();
+        save_game(&conn, "1. e4 *", &base_tags("Bob", "Alice", "2024.01.02", "*"), "e4").unwrap();
+        save_game(&conn, "1. e4 *", &base_tags("Carol", "Alice", "2024.01.03", "*"), "e4").unwrap();
+
+        assert_eq!(count_players(&conn, "").unwrap(), 3);
+        let players = list_players_page(&conn, "", "", "", 10, 0).unwrap();
+        // Alice apparait dans les 3 parties (2x Blancs+Noirs melanges) : la plus active, en tete
+        assert_eq!(players[0].name, "Alice");
+        assert_eq!(players[0].games, 3);
+        let bob = players.iter().find(|p| p.name == "Bob").unwrap();
+        assert_eq!(bob.games, 2);
+
+        // recherche par prefixe : ne garde que Carol
+        assert_eq!(count_players(&conn, "Car").unwrap(), 1);
+        let filtered = list_players_page(&conn, "Car", "", "", 10, 0).unwrap();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].name, "Carol");
+
+        // tri alphabetique explicite
+        let alpha = list_players_page(&conn, "", "name", "asc", 10, 0).unwrap();
+        assert_eq!(alpha.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), vec!["Alice", "Bob", "Carol"]);
+        let alpha_desc = list_players_page(&conn, "", "name", "desc", 10, 0).unwrap();
+        assert_eq!(alpha_desc.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), vec!["Carol", "Bob", "Alice"]);
+    }
+
+    #[test]
+    fn rebuild_player_stats_merges_names_case_insensitively() {
+        // insertion SQL directe (pas save_game) : simule une base existante
+        // ouverte pour la premiere fois apres l'ajout de player_stats, dont
+        // le seul peuplement possible est le rebuild complet fait par
+        // migrate_player_stats.
+        let mut conn = open(Path::new(":memory:")).unwrap();
+        conn.execute("DELETE FROM player_stats", []).unwrap();
+        conn.execute_batch(
+            "INSERT INTO games (white, black, pgn_moves, mainline_sans, created_at, last_modified)
+             VALUES ('Kasparov,G', 'Karpov,A', '1. e4 *', 'e4', 0, 0),
+                    ('kasparov,g', 'Short,N', '1. e4 *', 'e4', 0, 0);",
+        )
+        .unwrap();
+
+        rebuild_player_stats(&mut conn).unwrap();
+
+        // Kasparov (fusionne), Karpov, Short : 3 joueurs distincts
+        assert_eq!(count_players(&conn, "").unwrap(), 3);
+        let players = list_players_page(&conn, "", "", "", 10, 0).unwrap();
+        // "Kasparov,G" et "kasparov,g" fusionnent (COLLATE NOCASE) en un seul joueur, 2 parties
+        let kasparov = players.iter().find(|p| p.name.eq_ignore_ascii_case("kasparov,g")).unwrap();
+        assert_eq!(kasparov.games, 2);
     }
 
     fn opening_count(conn: &Connection, prefix: &str, next_move: &str) -> i64 {

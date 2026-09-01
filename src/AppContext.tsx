@@ -1,6 +1,6 @@
 import { createContext, useContext } from "react";
 import type { Dests, Key } from "@lichess-org/chessground/types";
-import type { EngineInfo, NodeDto, OpeningMoveStat, ShapeDto, TreeDto } from "./types";
+import type { EngineInfo, GameSummary, NodeDto, OpeningMoveStat, ShapeDto, TreeDto } from "./types";
 
 export interface AppContextValue {
   tree: TreeDto | null;
@@ -20,6 +20,23 @@ export interface AppContextValue {
   explorerStats: OpeningMoveStat[];
   explorerError: string | null;
   handleExplorerMove: (san: string) => void;
+
+  explorerGames: GameSummary[];
+  explorerGamesTotal: number;
+  explorerGamesPage: number;
+  explorerGamesLoading: boolean;
+  explorerGamesError: string | null;
+  onExplorerGamesPageChange: (page: number) => void;
+
+  previewGameId: number | null;
+  previewTree: TreeDto | null;
+  previewNodeId: number | null;
+  previewError: string | null;
+  onSelectPreviewGame: (id: number) => void;
+  onSelectPreviewNode: (id: number) => void;
+  onPreviewStep: (direction: "start" | "prev" | "next" | "end") => void;
+  onOpenPreviewGame: () => void;
+  onClosePreview: () => void;
 
   enginePath: string;
   setEnginePath: (path: string) => void;

@@ -12,10 +12,13 @@ import {
   type GamesSortColumn,
   type HomeActiveSource,
   type HomeContextValue,
+  type PlayersSort,
+  type PlayersSortColumn,
 } from "./HomeContext";
+import { persistDockviewLayout, syncPanelCheckedStates, tryRestoreDockviewLayout } from "./dockviewPersistence";
 import { homeDockviewComponents } from "./HomeDockPanels";
 import { MoveGameBasePicker } from "./components/MoveGameBasePicker";
-import type { BaseInfo, GameSummary, PgnGameSummary, SaveResult } from "./types";
+import type { BaseInfo, GameSummary, PgnGameSummary, PlayerSummary, PlayersPage, SaveResult } from "./types";
 import "dockview-react/dist/styles/dockview.css";
 import "./App.css";
 
@@ -26,18 +29,22 @@ interface HomeDockviewProps {
   onOpenPgnGame: (path: string, index: number) => void;
   onImportNewFile: () => Promise<void>;
   basesVersion: number;
+  onPrepareAgainstPlayer: (name: string, white: boolean) => void;
 }
 
 interface HomePanelPrefs {
   bases: boolean;
   pgn: boolean;
   parties: boolean;
+  players: boolean;
 }
 
 const HOME_PANELS_KEY = "homePanels";
+const HOME_LAYOUT_KEY = "homeDockviewLayout";
+const HOME_PANEL_IDS = ["bases", "pgn", "parties", "players"];
 
 function loadHomePanelPrefs(): HomePanelPrefs {
-  const defaults: HomePanelPrefs = { bases: true, pgn: true, parties: true };
+  const defaults: HomePanelPrefs = { bases: true, pgn: true, parties: true, players: true };
   try {
     const raw = localStorage.getItem(HOME_PANELS_KEY);
     if (!raw) return defaults;
@@ -45,10 +52,6 @@ function loadHomePanelPrefs(): HomePanelPrefs {
   } catch {
     return defaults;
   }
-}
-
-function saveHomePanelPrefs(prefs: HomePanelPrefs) {
-  localStorage.setItem(HOME_PANELS_KEY, JSON.stringify(prefs));
 }
 
 function useDockviewTheme(): string {
@@ -70,6 +73,7 @@ function baseNameFromPath(path: string): string {
 }
 
 const GAMES_PAGE_SIZE = 200;
+const PLAYERS_PAGE_SIZE = 200;
 
 export function HomeDockview({
   focusBasePath,
@@ -78,6 +82,7 @@ export function HomeDockview({
   onOpenPgnGame,
   onImportNewFile,
   basesVersion,
+  onPrepareAgainstPlayer,
 }: HomeDockviewProps) {
   const { t } = useTranslation();
   const theme = useDockviewTheme();
@@ -91,6 +96,7 @@ export function HomeDockview({
     dockviewApi.getPanel("bases")?.api.setTitle(t("home.panel.bases"));
     dockviewApi.getPanel("pgn")?.api.setTitle(t("home.panel.pgn"));
     dockviewApi.getPanel("parties")?.api.setTitle(t("home.panel.games"));
+    dockviewApi.getPanel("players")?.api.setTitle(t("home.panel.players"));
   }, [dockviewApi, t]);
 
   const [bases, setBases] = useState<BaseInfo[]>([]);
@@ -110,6 +116,19 @@ export function HomeDockview({
   const [selectedGameIds, setSelectedGameIds] = useState<Set<number>>(new Set());
 
   const [pgnGames, setPgnGames] = useState<PgnGameSummary[]>([]);
+
+  const [players, setPlayers] = useState<PlayerSummary[]>([]);
+  const [playersTotal, setPlayersTotal] = useState(0);
+  const [playersLoading, setPlayersLoading] = useState(false);
+  const [playersPage, setPlayersPage] = useState(0);
+  const [playersSearchInput, setPlayersSearchInput] = useState("");
+  const [playersSearch, setPlayersSearch] = useState("");
+  const [playersSort, setPlayersSort] = useState<PlayersSort | null>(null);
+
+  const onPlayersSortChange = useCallback((column: PlayersSortColumn) => {
+    setPlayersSort((prev) => (prev?.column === column ? { column, dir: prev.dir === "asc" ? "desc" : "asc" } : { column, dir: "asc" }));
+    setPlayersPage(0);
+  }, []);
 
   const [error, setError] = useState<string | null>(null);
 
@@ -174,7 +193,16 @@ export function HomeDockview({
     setGamesAdvancedInput(EMPTY_GAMES_ADVANCED_FILTER);
     setGamesAdvancedFilter(EMPTY_GAMES_ADVANCED_FILTER);
     setSelectedGameIds(new Set());
+    setPlayersPage(0);
+    setPlayersSearchInput("");
+    setPlayersSearch("");
+    setPlayersSort(null);
   }, [activeBasePath]);
+
+  const commitPlayersFilter = useCallback(() => {
+    setPlayersSearch(playersSearchInput);
+    setPlayersPage(0);
+  }, [playersSearchInput]);
 
   const onGamesSortChange = useCallback((column: GamesSortColumn) => {
     setGamesSort((prev) => (prev?.column === column ? { column, dir: prev.dir === "asc" ? "desc" : "asc" } : { column, dir: "asc" }));
@@ -260,6 +288,55 @@ export function HomeDockview({
       .then(setPgnGames)
       .catch((e) => setError(String(e)));
   }, [activePgnPath]);
+
+  // meme logique de garde-fou que la liste des parties (voir gamesRequestIdRef) :
+  // sans filtre de recherche, agreger les joueurs d'une base de plusieurs
+  // millions de parties peut prendre plusieurs secondes.
+  const playersRequestIdRef = useRef(0);
+  useEffect(() => {
+    if (!activeBasePath || activeBaseMissing) {
+      setPlayers([]);
+      setPlayersTotal(0);
+      setPlayersLoading(false);
+      return;
+    }
+    const requestId = ++playersRequestIdRef.current;
+    setPlayersLoading(true);
+    invoke<PlayersPage>("list_players_in_base", {
+      path: activeBasePath,
+      search: playersSearch,
+      sortBy: playersSort?.column ?? "",
+      sortDir: playersSort?.dir ?? "",
+      offset: playersPage * PLAYERS_PAGE_SIZE,
+      limit: PLAYERS_PAGE_SIZE,
+    })
+      .then((res) => {
+        if (playersRequestIdRef.current !== requestId) return;
+        setPlayers(res.players);
+        setPlayersTotal(res.total);
+      })
+      .catch((e) => {
+        if (playersRequestIdRef.current !== requestId) return;
+        setError(String(e));
+      })
+      .finally(() => {
+        if (playersRequestIdRef.current === requestId) setPlayersLoading(false);
+      });
+  }, [activeBasePath, activeBaseMissing, playersSearch, playersPage, playersSort]);
+
+  const handleSelectPlayer = useCallback(
+    (name: string) => {
+      const api = dockviewApi;
+      setGamesAdvancedOpen(false);
+      setGamesAdvancedInput(EMPTY_GAMES_ADVANCED_FILTER);
+      setGamesAdvancedFilter(EMPTY_GAMES_ADVANCED_FILTER);
+      setGamesSearchInput(name);
+      setGamesSearch(name);
+      setGamesPage(0);
+      api?.getPanel("parties")?.api.setActive();
+    },
+    [dockviewApi]
+  );
 
   const handleCreateBase = useCallback(async () => {
     try {
@@ -454,7 +531,7 @@ export function HomeDockview({
 
   // --- panneaux : visibilite persistee, pilotee par le menu natif Affichage ---
   const setPanelVisible = useCallback(
-    (id: "bases" | "pgn" | "parties", visible: boolean) => {
+    (id: "bases" | "pgn" | "parties" | "players", visible: boolean) => {
       const api = dockviewApi;
       if (!api) return;
       const existing = api.getPanel(id);
@@ -473,13 +550,21 @@ export function HomeDockview({
             title: t("home.panel.pgn"),
             position: bases ? { direction: "below", referencePanel: "bases" } : undefined,
           });
-        } else {
+        } else if (id === "parties") {
           const bases = api.getPanel("bases");
           api.addPanel({
             id: "parties",
             component: "parties",
             title: t("home.panel.games"),
             position: bases ? { direction: "right", referencePanel: "bases" } : undefined,
+          });
+        } else {
+          const parties = api.getPanel("parties");
+          api.addPanel({
+            id: "players",
+            component: "players",
+            title: t("home.panel.players"),
+            position: parties ? { direction: "within", referencePanel: "parties" } : undefined,
           });
         }
       } else {
@@ -490,22 +575,32 @@ export function HomeDockview({
   );
 
   useEffect(() => {
-    const unlistenPromises = (["bases", "pgn", "parties"] as const).map((id) =>
+    const unlistenPromises = (["bases", "pgn", "parties", "players"] as const).map((id) =>
       listen(`menu-toggle-panel-${id}`, () => {
-        const prefs = loadHomePanelPrefs();
-        const next = { ...prefs, [id]: !prefs[id] };
-        saveHomePanelPrefs(next);
-        setPanelVisible(id, next[id]);
+        const isVisible = !!dockviewApi?.getPanel(id);
+        setPanelVisible(id, !isVisible);
       })
     );
     return () => {
       unlistenPromises.forEach((p) => p.then((unlisten) => unlisten()));
     };
-  }, [setPanelVisible]);
+  }, [dockviewApi, setPanelVisible]);
+
+  // Persiste la disposition (taille/position/ordre des panneaux, pas
+  // seulement leur visibilite) a chaque changement, pour la retrouver telle
+  // quelle a la prochaine ouverture de l'accueil.
+  useEffect(() => {
+    if (!dockviewApi) return;
+    return persistDockviewLayout(dockviewApi, HOME_LAYOUT_KEY, HOME_PANEL_IDS);
+  }, [dockviewApi]);
 
   const onDockviewReady = useCallback((event: DockviewReadyEvent) => {
     setDockviewApi(event.api);
     const api = event.api;
+    if (tryRestoreDockviewLayout(api, HOME_LAYOUT_KEY)) {
+      syncPanelCheckedStates(api, HOME_PANEL_IDS);
+      return;
+    }
     const prefs = loadHomePanelPrefs();
     if (prefs.bases) api.addPanel({ id: "bases", component: "bases", title: t("home.panel.bases") });
     if (prefs.pgn) {
@@ -526,7 +621,17 @@ export function HomeDockview({
         position: basesPanel ? { direction: "right", referencePanel: "bases" } : undefined,
       });
     }
+    if (prefs.players) {
+      const partiesPanel = api.getPanel("parties");
+      api.addPanel({
+        id: "players",
+        component: "players",
+        title: t("home.panel.players"),
+        position: partiesPanel ? { direction: "within", referencePanel: "parties" } : undefined,
+      });
+    }
     api.getPanel("bases")?.api.setActive();
+    syncPanelCheckedStates(api, HOME_PANEL_IDS);
   }, [t]);
 
   const contextValue: HomeContextValue = {
@@ -565,6 +670,18 @@ export function HomeDockview({
     onGamesSelectionChange: setSelectedGameIds,
     pgnGames,
     onOpenPgnGame: handleOpenPgnGame,
+    players,
+    playersTotal,
+    playersLoading,
+    playersPage,
+    playersSearchInput,
+    onPlayersSearchChange: setPlayersSearchInput,
+    onPlayersPageChange: setPlayersPage,
+    onPlayersFilterCommit: commitPlayersFilter,
+    onSelectPlayer: handleSelectPlayer,
+    playersSort,
+    onPlayersSortChange,
+    onPrepareAgainstPlayer,
   };
 
   return (

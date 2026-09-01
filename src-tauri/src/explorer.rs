@@ -1,6 +1,19 @@
-use rusqlite::Connection;
+use rusqlite::{Connection, ToSql};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap};
+
+/// Restreint l'explorateur aux parties d'un seul joueur, dans une seule
+/// couleur (preparation d'adversaire : voir lib.rs::open_player_prep_tab).
+/// Un filtre actif desactive le cache precalcule opening_prefix_stats, qui
+/// couvre la base entiere, pas un joueur en particulier -- sans consequence
+/// sur les temps de reponse, les parties d'un seul joueur restant une
+/// fraction infime de la base meme sur une reference de plusieurs millions
+/// de parties.
+#[derive(Clone)]
+pub struct PlayerFilter {
+    pub name: String,
+    pub white: bool,
+}
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -191,9 +204,9 @@ pub fn rebuild_prefix_stats(conn: &mut Connection) -> Result<(), String> {
 /// seconde contre plusieurs dizaines de secondes. Le filtrage par prefixe
 /// (LIKE 'prefixe %') s'appuie sur idx_games_mainline pour eviter un
 /// balayage complet des que des coups sont deja joues.
-pub fn explore(conn: &Connection, moves: &[String]) -> Result<Vec<OpeningMoveStat>, String> {
+pub fn explore(conn: &Connection, moves: &[String], filter: Option<&PlayerFilter>) -> Result<Vec<OpeningMoveStat>, String> {
     let prefix = moves.join(" ");
-    if moves.len() <= PRECOMPUTED_MAX_DEPTH {
+    if filter.is_none() && moves.len() <= PRECOMPUTED_MAX_DEPTH {
         if let Ok(stats) = precomputed_stats(conn, &prefix) {
             return Ok(stats);
         }
@@ -213,19 +226,46 @@ pub fn explore(conn: &Connection, moves: &[String]) -> Result<Vec<OpeningMoveSta
         )
     };
 
-    let mut stmt = conn
-        .prepare(
-            "SELECT
-                CASE WHEN INSTR(rest, ' ') = 0 THEN rest ELSE SUBSTR(rest, 1, INSTR(rest, ' ') - 1) END AS next_move,
-                result,
-                COUNT(*) AS cnt
-             FROM (SELECT SUBSTR(mainline_sans, ?1) AS rest, result FROM games WHERE mainline_sans >= ?2 AND mainline_sans < ?3)
-             GROUP BY next_move, result",
-        )
-        .map_err(|e| e.to_string())?;
+    // Avec un filtre joueur, le prefixe de coups (souvent vide ou tres court
+    // dans un onglet de preparation qui vient de s'ouvrir) n'est en general
+    // pas selectif : mainline_sans >= '' AND < '￿' matche presque toute
+    // la base. La condition qui compte alors, c'est l'egalite sur white/black
+    // (un seul joueur = une fraction infime de la base), d'ou l'index force
+    // sur idx_games_white/idx_games_black plutot que idx_games_mainline --
+    // sans ca, SQLite scanne la table entiere avant de filtrer par joueur
+    // (observe en pratique : explorateur bloque plusieurs minutes sur une
+    // base de reference de 10M parties).
+    let (from, mut params): (String, Vec<Box<dyn ToSql>>) = match filter {
+        Some(f) => {
+            let index = if f.white { "idx_games_white" } else { "idx_games_black" };
+            let column = if f.white { "white" } else { "black" };
+            (
+                format!("games INDEXED BY {index} WHERE {column} = ?1 AND"),
+                vec![Box::new(f.name.clone())],
+            )
+        }
+        None => ("games WHERE".to_string(), vec![]),
+    };
+    let rest_start_ph = params.len() + 1;
+    let lo_ph = params.len() + 2;
+    let hi_ph = params.len() + 3;
+    params.push(Box::new(rest_start));
+    params.push(Box::new(lo));
+    params.push(Box::new(hi));
 
+    let sql = format!(
+        "SELECT
+            CASE WHEN INSTR(rest, ' ') = 0 THEN rest ELSE SUBSTR(rest, 1, INSTR(rest, ' ') - 1) END AS next_move,
+            result,
+            COUNT(*) AS cnt
+         FROM (SELECT SUBSTR(mainline_sans, ?{rest_start_ph}) AS rest, result FROM {from} mainline_sans >= ?{lo_ph} AND mainline_sans < ?{hi_ph})
+         GROUP BY next_move, result"
+    );
+
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let params_refs: Vec<&dyn ToSql> = params.iter().map(|b| b.as_ref()).collect();
     let rows = stmt
-        .query_map(rusqlite::params![rest_start, lo, hi], |row| {
+        .query_map(params_refs.as_slice(), |row| {
             let next_move: String = row.get(0)?;
             let result: Option<String> = row.get(1)?;
             let cnt: u32 = row.get(2)?;
@@ -241,6 +281,7 @@ mod tests {
     use super::*;
     use crate::db;
     use std::collections::BTreeMap;
+    use std::path::Path;
 
     fn conn_with_games(games: &[(&str, &str, &str)]) -> Connection {
         let conn = Connection::open_in_memory().unwrap();
@@ -273,7 +314,7 @@ mod tests {
             ("Dave", "d4 d5", "1-0"), // ne correspond pas au prefixe
         ]);
 
-        let stats = explore(&conn, &["e4".to_string(), "e5".to_string()]).unwrap();
+        let stats = explore(&conn, &["e4".to_string(), "e5".to_string()], None).unwrap();
         assert_eq!(stats.len(), 2);
 
         let nf3 = stats.iter().find(|s| s.san == "Nf3").unwrap();
@@ -284,6 +325,33 @@ mod tests {
         let bc4 = stats.iter().find(|s| s.san == "Bc4").unwrap();
         assert_eq!(bc4.games, 1);
         assert_eq!(bc4.draws, 1);
+    }
+
+    #[test]
+    fn explore_with_player_filter_only_considers_that_player() {
+        // db::open (pas conn_with_games) : le filtre joueur force
+        // idx_games_white/idx_games_black, absents du schema minimal utilise
+        // par les autres tests de ce module.
+        let conn = db::open(Path::new(":memory:")).unwrap();
+        let mut tags = BTreeMap::new();
+        tags.insert("White".to_string(), "Alice".to_string());
+        tags.insert("Black".to_string(), "Carol".to_string());
+        tags.insert("Result".to_string(), "1-0".to_string());
+        db::save_game(&conn, "1. e4 *", &tags, "e4 e5 Nf3").unwrap();
+        let mut tags = BTreeMap::new();
+        tags.insert("White".to_string(), "Bob".to_string());
+        tags.insert("Black".to_string(), "Dave".to_string());
+        tags.insert("Result".to_string(), "0-1".to_string());
+        db::save_game(&conn, "1. e4 *", &tags, "e4 e5 Bc4").unwrap();
+
+        let filter = PlayerFilter { name: "Alice".to_string(), white: true };
+        let stats = explore(&conn, &["e4".to_string(), "e5".to_string()], Some(&filter)).unwrap();
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].san, "Nf3");
+
+        // meme prefixe precalcule (profondeur 2) mais sans filtre : les deux parties
+        let all = explore(&conn, &["e4".to_string(), "e5".to_string()], None).unwrap();
+        assert_eq!(all.len(), 2);
     }
 
     #[test]
@@ -304,7 +372,7 @@ mod tests {
         rebuild_prefix_stats(&mut conn).unwrap();
 
         // profondeur 0 (position de depart) : precalcule
-        let opening = explore(&conn, &[]).unwrap();
+        let opening = explore(&conn, &[], None).unwrap();
         assert_eq!(opening.len(), 2);
         let e4 = opening.iter().find(|s| s.san == "e4").unwrap();
         assert_eq!(e4.games, 3);
@@ -312,7 +380,7 @@ mod tests {
         assert_eq!(d4.games, 1);
 
         // profondeur 1 : precalcule
-        let after_e4 = explore(&conn, &["e4".to_string()]).unwrap();
+        let after_e4 = explore(&conn, &["e4".to_string()], None).unwrap();
         assert_eq!(after_e4.len(), 2);
         let e5 = after_e4.iter().find(|s| s.san == "e5").unwrap();
         assert_eq!(e5.games, 2);

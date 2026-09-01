@@ -69,6 +69,10 @@ body,
   cursor: pointer;
   font-size: 0.9em;
   white-space: nowrap;
+  /* sans ceci, les onglets se compressent (flex-shrink par defaut) au lieu
+     de faire apparaitre la scrollbar horizontale de .game-tabs-bar quand la
+     fenetre est retrecie */
+  flex-shrink: 0;
 }
 
 .game-tab--active {
@@ -171,6 +175,23 @@ body,
   opacity: 0.7;
 }
 
+.games-pagination .page-jump {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  opacity: 1;
+}
+
+.games-pagination .page-jump input[type="number"] {
+  font: inherit;
+  border-radius: 6px;
+  border: 1px solid rgba(128, 128, 128, 0.4);
+  padding: 4px 6px;
+  background: transparent;
+  color: inherit;
+  width: 70px;
+}
+
 .games-loading {
   opacity: 0.9;
   font-style: italic;
@@ -252,6 +273,98 @@ body,
 
 .explorer-table-row--selected {
   background-color: rgba(100, 108, 255, 0.25);
+}
+
+/* Panneau Explorateur : deux colonnes separees par une ligne verticale --
+   a gauche l'arborescence (stats + liste des parties dans la position), a
+   droite l'apercu (echiquier + notation) de la partie selectionnee. */
+.dock-panel-content.explorer-panel {
+  flex-direction: row;
+  gap: 0;
+  overflow: hidden;
+}
+
+.explorer-panel-col {
+  min-width: 0;
+  overflow: auto;
+}
+
+.explorer-panel-col--left {
+  flex: 1 1 55%;
+  padding-right: 12px;
+}
+
+.explorer-panel-col--right {
+  flex: 1 1 45%;
+  padding-left: 12px;
+  border-left: 1px solid rgba(128, 128, 128, 0.3);
+  display: flex;
+  flex-direction: column;
+}
+
+.explorer-games {
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(128, 128, 128, 0.3);
+  flex-shrink: 0;
+}
+
+.explorer-games-title {
+  margin: 0 0 6px;
+  font-size: 0.9em;
+  opacity: 0.8;
+}
+
+.explorer-games-table {
+  max-height: 220px;
+  overflow-y: auto;
+  display: block;
+}
+
+.explorer-games-table thead,
+.explorer-games-table tbody {
+  display: table;
+  width: 100%;
+  table-layout: fixed;
+}
+
+.explorer-preview {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.explorer-preview--empty {
+  align-items: flex-start;
+  padding-top: 10px;
+}
+
+.explorer-preview-board {
+  width: 100%;
+  max-width: 260px;
+  aspect-ratio: 1 / 1;
+}
+
+.explorer-preview-controls {
+  display: flex;
+  gap: 6px;
+}
+
+.explorer-preview-controls button {
+  cursor: pointer;
+  border: 1px solid rgba(128, 128, 128, 0.4);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  padding: 4px 10px;
+  font: inherit;
+}
+
+.explorer-preview-notation {
+  width: 100%;
+  min-height: 0;
+  overflow: auto;
 }
 
 .explorer-table-row--drop-target {

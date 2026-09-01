@@ -1,10 +1,13 @@
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useHomeContext } from "./HomeContext";
 import { BasesTable } from "./components/BasesTable";
-import type { ContextMenuItem } from "./components/ContextMenu";
+import { ContextMenu, type ContextMenuItem } from "./components/ContextMenu";
 import { GamesTable, type GameRow } from "./components/GamesTable";
+import { PageNav } from "./components/PageNav";
 
 const GAMES_PAGE_SIZE = 200;
+const PLAYERS_PAGE_SIZE = 200;
 
 export function BasesPanelView() {
   const { t } = useTranslation();
@@ -152,28 +155,14 @@ export function PartiesPanelView() {
           <button className="games-advanced-toggle" onClick={onToggleGamesAdvanced}>
             {t("home.advancedFilters")} {gamesAdvancedOpen ? "▲" : "▼"}
           </button>
-          {gamesLoading ? (
-            <span className="games-loading">⏳ {t("home.searching")}</span>
-          ) : (
-            <span>
-              {gamesTotal === 0
-                ? t("home.noGames")
-                : t("home.pageOf", {
-                    from: gamesPage * GAMES_PAGE_SIZE + 1,
-                    to: Math.min((gamesPage + 1) * GAMES_PAGE_SIZE, gamesTotal),
-                    total: gamesTotal,
-                  })}
-            </span>
-          )}
-          <button disabled={gamesLoading || gamesPage === 0} onClick={() => onGamesPageChange(gamesPage - 1)}>
-            {t("home.previous")}
-          </button>
-          <button
-            disabled={gamesLoading || (gamesPage + 1) * GAMES_PAGE_SIZE >= gamesTotal}
-            onClick={() => onGamesPageChange(gamesPage + 1)}
-          >
-            {t("home.next")}
-          </button>
+          <PageNav
+            page={gamesPage}
+            pageSize={GAMES_PAGE_SIZE}
+            total={gamesTotal}
+            loading={gamesLoading}
+            onPageChange={onGamesPageChange}
+            emptyLabel={t("home.noGames")}
+          />
         </div>
       )}
       {!base.missing && gamesAdvancedOpen && (
@@ -260,8 +249,112 @@ export function PartiesPanelView() {
   );
 }
 
+export function PlayersPanelView() {
+  const { t } = useTranslation();
+  const {
+    activeSource,
+    players,
+    playersTotal,
+    playersLoading,
+    playersPage,
+    playersSearchInput,
+    onPlayersSearchChange,
+    onPlayersPageChange,
+    onPlayersFilterCommit,
+    onSelectPlayer,
+    playersSort,
+    onPlayersSortChange,
+    onPrepareAgainstPlayer,
+  } = useHomeContext();
+  const [menu, setMenu] = useState<{ x: number; y: number; name: string } | null>(null);
+
+  if (activeSource?.kind !== "base") {
+    return (
+      <div className="dock-panel-content">
+        <p className="notation-empty">{t("home.selectBaseOrPgn")}</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="dock-panel-content">
+      <div className="games-pagination">
+        <input
+          type="search"
+          placeholder={t("home.searchNamePlaceholder")}
+          value={playersSearchInput}
+          onChange={(e) => onPlayersSearchChange(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") onPlayersFilterCommit();
+          }}
+        />
+        <button disabled={playersLoading} onClick={onPlayersFilterCommit}>
+          {t("home.search")}
+        </button>
+        <PageNav
+          page={playersPage}
+          pageSize={PLAYERS_PAGE_SIZE}
+          total={playersTotal}
+          loading={playersLoading}
+          onPageChange={onPlayersPageChange}
+          emptyLabel={t("home.noGames")}
+        />
+      </div>
+      {players.length === 0 ? (
+        <p className="notation-empty">{t("home.noPlayers")}</p>
+      ) : (
+        <table className="explorer-table">
+          <thead>
+            <tr>
+              <th className="games-table-sortable" onClick={() => onPlayersSortChange("name")}>
+                {t("home.playerName")} {playersSort?.column === "name" ? (playersSort.dir === "asc" ? "▲" : "▼") : ""}
+              </th>
+              <th className="games-table-sortable" onClick={() => onPlayersSortChange("games")}>
+                {t("explorer.games")} {playersSort?.column === "games" ? (playersSort.dir === "asc" ? "▲" : "▼") : ""}
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {players.map((p) => (
+              <tr
+                key={p.name}
+                onClick={() => onSelectPlayer(p.name)}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  setMenu({ x: e.clientX, y: e.clientY, name: p.name });
+                }}
+              >
+                <td>{p.name}</td>
+                <td>{p.games}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          onClose={() => setMenu(null)}
+          items={[
+            {
+              label: t("home.prepareAgainstWhite"),
+              onClick: () => onPrepareAgainstPlayer(menu.name, true),
+            },
+            {
+              label: t("home.prepareAgainstBlack"),
+              onClick: () => onPrepareAgainstPlayer(menu.name, false),
+            },
+          ]}
+        />
+      )}
+    </div>
+  );
+}
+
 export const homeDockviewComponents = {
   bases: BasesPanelView,
   pgn: PgnPanelView,
   parties: PartiesPanelView,
+  players: PlayersPanelView,
 };

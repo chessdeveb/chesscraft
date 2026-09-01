@@ -7,9 +7,21 @@ import type { Dests, Key } from "@lichess-org/chessground/types";
 import { useTranslation } from "react-i18next";
 import { AppContext, type AppContextValue } from "./AppContext";
 import { dockviewComponents } from "./DockPanels";
+import { persistDockviewLayout, syncPanelCheckedStates, tryRestoreDockviewLayout } from "./dockviewPersistence";
 import { EVAL_NAG_CODES, MOVE_NAG_CODES } from "./nag";
 import { SaveBasePicker } from "./components/SaveBasePicker";
-import type { EngineInfo, MoveDto, NodeDto, OpeningMoveStat, SaveResult, ShapeDto, TreeDto } from "./types";
+import type {
+  EngineInfo,
+  ExplorerGamesPage,
+  GameSummary,
+  MoveDto,
+  NodeDto,
+  OpeningMoveStat,
+  SaveResult,
+  ShapeDto,
+  TabDto,
+  TreeDto,
+} from "./types";
 import "@lichess-org/chessground/assets/chessground.base.css";
 import "@lichess-org/chessground/assets/chessground.brown.css";
 import "@lichess-org/chessground/assets/chessground.cburnett.css";
@@ -20,6 +32,7 @@ import "./App.css";
 interface GameTabProps {
   tabId: number;
   active: boolean;
+  isPlayerPrep?: boolean;
   onTreeChange?: (tabId: number, tree: TreeDto) => void;
 }
 
@@ -43,6 +56,20 @@ function buildDests(moves: MoveDto[]): Dests {
   return dests;
 }
 
+// Retrouve dans l'arbre d'une partie de l'explorateur le noeud a la
+// profondeur donnee en suivant la ligne principale (premier enfant a chaque
+// noeud) : c'est cette meme ligne qui est comparee cote base (mainline_sans)
+// pour selectionner les parties passant par la position courante, donc les
+// `depth` premiers coups y correspondent forcement.
+function mainlineNodeAt(tree: TreeDto, depth: number): number {
+  const byId = new Map(tree.nodes.map((n) => [n.id, n]));
+  let node = byId.get(tree.root);
+  for (let i = 0; i < depth && node && node.children.length > 0; i++) {
+    node = byId.get(node.children[0]);
+  }
+  return node ? node.id : tree.root;
+}
+
 function pathSans(tree: TreeDto, nodeId: number): string[] {
   const byId = new Map(tree.nodes.map((n) => [n.id, n]));
   const sans: string[] = [];
@@ -61,6 +88,9 @@ interface GamePanelPrefs {
 }
 
 const GAME_PANELS_KEY = "gamePanels";
+const GAME_LAYOUT_KEY = "gameDockviewLayout";
+const GAME_LAYOUT_KEY_PREP = "gameDockviewLayoutPrep";
+const GAME_PANEL_IDS = ["notation", "explorer", "engine"];
 
 function loadGamePanelPrefs(): GamePanelPrefs {
   const defaults: GamePanelPrefs = { notation: true, explorer: false, engine: false };
@@ -71,10 +101,6 @@ function loadGamePanelPrefs(): GamePanelPrefs {
   } catch {
     return defaults;
   }
-}
-
-function saveGamePanelPrefs(prefs: GamePanelPrefs) {
-  localStorage.setItem(GAME_PANELS_KEY, JSON.stringify(prefs));
 }
 
 function useDockviewTheme(): string {
@@ -90,7 +116,7 @@ function useDockviewTheme(): string {
   return theme;
 }
 
-export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab({ tabId, active, onTreeChange }, ref) {
+export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab({ tabId, active, isPlayerPrep = false, onTreeChange }, ref) {
   const { t } = useTranslation();
   const [activeBasePath, setActiveBasePath] = useState<string | null>(null);
   const [showSaveBasePicker, setShowSaveBasePicker] = useState(false);
@@ -106,6 +132,7 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
   const [highlightedIndex, setHighlightedIndex] = useState(0);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const dockviewApiRef = useRef<DockviewApi | null>(null);
+  const gameLayoutCleanupRef = useRef<(() => void) | null>(null);
   const theme = useDockviewTheme();
   const [boardTheme, setBoardThemeState] = useState(() => localStorage.getItem("boardTheme") ?? "brown");
   const setBoardTheme = useCallback((value: string) => {
@@ -277,12 +304,16 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
   );
 
   const requestClose = useCallback((): Promise<boolean> => {
-    if (!isDirty) return Promise.resolve(true);
+    // un onglet de preparation n'a pas vocation a etre sauvegarde : naviguer
+    // dans l'explorateur y joue de vrais coups sur l'echiquier (isDirty
+    // passe donc a true des le premier coup consulte), sans que ce soit une
+    // "modification" au sens ou l'entend l'utilisateur pour une partie.
+    if (isPlayerPrep || !isDirty) return Promise.resolve(true);
     return new Promise<boolean>((resolve) => {
       closeResolveRef.current = resolve;
       setCloseConfirmOpen(true);
     });
-  }, [isDirty]);
+  }, [isPlayerPrep, isDirty]);
 
   useImperativeHandle(ref, () => ({ requestClose }), [requestClose]);
 
@@ -397,10 +428,8 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
 
   const toggleGamePanel = useCallback(
     (id: "notation" | "explorer" | "engine") => {
-      const prefs = loadGamePanelPrefs();
-      const next = { ...prefs, [id]: !prefs[id] };
-      saveGamePanelPrefs(next);
-      setPanelVisible(id, next[id]);
+      const isVisible = !!dockviewApiRef.current?.getPanel(id);
+      setPanelVisible(id, !isVisible);
     },
     [setPanelVisible]
   );
@@ -442,7 +471,7 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
   // --- Explorateur d'ouvertures ---
   const [explorerStats, setExplorerStats] = useState<OpeningMoveStat[]>([]);
   const [explorerError, setExplorerError] = useState<string | null>(null);
-  const [explorerVisible, setExplorerVisible] = useState(() => loadGamePanelPrefs().explorer);
+  const [explorerVisible, setExplorerVisible] = useState(() => isPlayerPrep || loadGamePanelPrefs().explorer);
 
   useEffect(() => {
     // ne pas interroger la base de reference tant que le panneau n'est pas
@@ -451,7 +480,7 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
     // Rust), inutile de payer ce cout a chaque coup si personne ne regarde.
     if (!tree || !explorerVisible) return;
     const moves = pathSans(tree, currentNodeId);
-    invoke<OpeningMoveStat[]>("opening_explorer", { moves })
+    invoke<OpeningMoveStat[]>("opening_explorer", { tabId, moves })
       .then((stats) => {
         setExplorerStats(stats);
         setExplorerError(null);
@@ -472,6 +501,129 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
     },
     [tabId, currentNodeId, handleMove]
   );
+
+  // --- Explorateur : parties passant par la position courante ---
+  const EXPLORER_GAMES_PAGE_SIZE = 20;
+  const [explorerGames, setExplorerGames] = useState<GameSummary[]>([]);
+  const [explorerGamesTotal, setExplorerGamesTotal] = useState(0);
+  const [explorerGamesPage, setExplorerGamesPage] = useState(0);
+  const [explorerGamesLoading, setExplorerGamesLoading] = useState(false);
+  const [explorerGamesError, setExplorerGamesError] = useState<string | null>(null);
+  const [explorerGamesBasePath, setExplorerGamesBasePath] = useState<string | null>(null);
+
+  const [previewGameId, setPreviewGameId] = useState<number | null>(null);
+  const [previewTree, setPreviewTree] = useState<TreeDto | null>(null);
+  const [previewNodeId, setPreviewNodeId] = useState<number | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+
+  const handleClosePreview = useCallback(() => {
+    setPreviewGameId(null);
+    setPreviewTree(null);
+    setPreviewNodeId(null);
+    setPreviewError(null);
+  }, []);
+
+  // changer de position dans l'arbre invalide la liste/l'aperçu precedents
+  useEffect(() => {
+    setExplorerGamesPage(0);
+    handleClosePreview();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentNodeId]);
+
+  useEffect(() => {
+    if (!tree || !explorerVisible) return;
+    const moves = pathSans(tree, currentNodeId);
+    let cancelled = false;
+    setExplorerGamesLoading(true);
+    invoke<ExplorerGamesPage>("opening_explorer_games", {
+      tabId,
+      moves,
+      offset: explorerGamesPage * EXPLORER_GAMES_PAGE_SIZE,
+      limit: EXPLORER_GAMES_PAGE_SIZE,
+    })
+      .then((page) => {
+        if (cancelled) return;
+        setExplorerGames(page.games);
+        setExplorerGamesTotal(page.total);
+        setExplorerGamesBasePath(page.basePath);
+        setExplorerGamesError(null);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setExplorerGamesError(String(e));
+      })
+      .finally(() => {
+        if (!cancelled) setExplorerGamesLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tabId, tree, currentNodeId, explorerVisible, explorerGamesPage]);
+
+  const handleSelectPreviewGame = useCallback(
+    async (id: number) => {
+      // fixe l'id selectionne tout de suite (pas seulement en cas de succes) :
+      // sinon, si l'invoke echoue, ni l'echiquier ni le message d'erreur ne
+      // s'affichent puisque tout le bloc apercu est conditionne a un id non nul.
+      setPreviewGameId(id);
+      setPreviewTree(null);
+      setPreviewNodeId(null);
+      setPreviewError(null);
+      try {
+        const previewedTree = await invoke<TreeDto>("opening_explorer_preview_game", { id });
+        setPreviewTree(previewedTree);
+        // demarre l'apercu a la meme position que le grand echiquier plutot
+        // qu'au tout debut de la partie : c'est justement cette position qui
+        // a amene cette partie dans la liste.
+        const depth = tree ? pathSans(tree, currentNodeId).length : 0;
+        setPreviewNodeId(mainlineNodeAt(previewedTree, depth));
+      } catch (e) {
+        setPreviewError(String(e));
+      }
+    },
+    [tree, currentNodeId]
+  );
+
+  const handleSelectPreviewNode = useCallback((id: number) => {
+    setPreviewNodeId(id);
+  }, []);
+
+  const handlePreviewStep = useCallback(
+    (direction: "start" | "prev" | "next" | "end") => {
+      if (!previewTree || previewNodeId === null) return;
+      const byId = new Map(previewTree.nodes.map((n) => [n.id, n]));
+      if (direction === "start") {
+        setPreviewNodeId(previewTree.root);
+        return;
+      }
+      if (direction === "end") {
+        let node = byId.get(previewTree.root);
+        while (node && node.children.length > 0) {
+          node = byId.get(node.children[0]);
+        }
+        if (node) setPreviewNodeId(node.id);
+        return;
+      }
+      const node = byId.get(previewNodeId);
+      if (!node) return;
+      if (direction === "prev" && node.parent !== null) {
+        setPreviewNodeId(node.parent);
+      } else if (direction === "next" && node.children.length > 0) {
+        setPreviewNodeId(node.children[0]);
+      }
+    },
+    [previewTree, previewNodeId]
+  );
+
+  const handleOpenPreviewGame = useCallback(async () => {
+    if (previewGameId === null || !explorerGamesBasePath) return;
+    try {
+      const tab = await invoke<TabDto>("open_game", { path: explorerGamesBasePath, id: previewGameId });
+      await emit("game-tab-opened", tab);
+    } catch (e) {
+      setPreviewError(String(e));
+    }
+  }, [previewGameId, explorerGamesBasePath]);
 
   // --- Menus natifs : n'agissent que sur l'onglet actif ---
   useEffect(() => {
@@ -540,14 +692,48 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
       dockviewApiRef.current = event.api;
       const api = event.api;
       api.addPanel({ id: "board", component: "board", title: t("gameTab.panel.board") });
+      if (isPlayerPrep) {
+        // onglet de preparation d'adversaire : pas de coups a lister (partie
+        // vide), l'explorateur (deja filtre sur ce joueur) est ce qu'on est
+        // venu voir -- disposition par defaut differente d'une partie
+        // normale, et memorisee separement (cle dediee) pour ne pas melanger
+        // les deux.
+        if (!tryRestoreDockviewLayout(api, GAME_LAYOUT_KEY_PREP)) {
+          setPanelVisible("explorer", true);
+          api.getPanel("explorer")?.api.setActive();
+        } else {
+          setExplorerVisible(!!api.getPanel("explorer"));
+        }
+        syncPanelCheckedStates(api, GAME_PANEL_IDS);
+        gameLayoutCleanupRef.current = persistDockviewLayout(api, GAME_LAYOUT_KEY_PREP, GAME_PANEL_IDS);
+        return;
+      }
+      if (tryRestoreDockviewLayout(api, GAME_LAYOUT_KEY)) {
+        setExplorerVisible(!!api.getPanel("explorer"));
+        syncPanelCheckedStates(api, GAME_PANEL_IDS);
+        gameLayoutCleanupRef.current = persistDockviewLayout(api, GAME_LAYOUT_KEY, GAME_PANEL_IDS);
+        return;
+      }
       const prefs = loadGamePanelPrefs();
       if (prefs.notation) setPanelVisible("notation", true);
       if (prefs.explorer) setPanelVisible("explorer", true);
       if (prefs.engine) setPanelVisible("engine", true);
       api.getPanel("notation")?.api.setActive();
+      syncPanelCheckedStates(api, GAME_PANEL_IDS);
+      gameLayoutCleanupRef.current = persistDockviewLayout(api, GAME_LAYOUT_KEY, GAME_PANEL_IDS);
     },
-    [setPanelVisible, t]
+    [isPlayerPrep, setPanelVisible, t]
   );
+
+  useEffect(() => () => gameLayoutCleanupRef.current?.(), []);
+
+  // plusieurs onglets partagent un seul menu natif : en changer d'actif doit
+  // resynchroniser les cases "Affichage > panneau" sur celui-ci, sinon elles
+  // restent celles du precedent onglet actif.
+  useEffect(() => {
+    if (!active || !dockviewApiRef.current) return;
+    syncPanelCheckedStates(dockviewApiRef.current, GAME_PANEL_IDS);
+  }, [active]);
 
   // le titre d'un panneau dockview est fige au moment de addPanel() (API
   // imperative, pas reactive) : sans ceci, changer de langue ne renommerait
@@ -579,6 +765,21 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
     explorerStats,
     explorerError,
     handleExplorerMove,
+    explorerGames,
+    explorerGamesTotal,
+    explorerGamesPage,
+    explorerGamesLoading,
+    explorerGamesError,
+    onExplorerGamesPageChange: setExplorerGamesPage,
+    previewGameId,
+    previewTree,
+    previewNodeId,
+    previewError,
+    onSelectPreviewGame: handleSelectPreviewGame,
+    onSelectPreviewNode: handleSelectPreviewNode,
+    onPreviewStep: handlePreviewStep,
+    onOpenPreviewGame: handleOpenPreviewGame,
+    onClosePreview: handleClosePreview,
     enginePath,
     setEnginePath,
     engineRunning,

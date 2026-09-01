@@ -35,7 +35,7 @@ async function openTabInGameWindow(tab: TabDto): Promise<void> {
     return;
   }
   const win = new WebviewWindow("game", {
-    url: `/?window=game&tabId=${tab.tabId}`,
+    url: `/?window=game&tabId=${tab.tabId}${tab.isPlayerPrep ? "&prep=1" : ""}`,
     title: i18n.t("homeWindow.gameWindowTitle"),
     width: 1100,
     height: 750,
@@ -70,6 +70,16 @@ export function HomeWindow() {
   const handleOpenGame = useCallback(async (path: string, id: number) => {
     try {
       const tab = await invoke<TabDto>("open_game", { path, id });
+      await openTabInGameWindow(tab);
+      setError(null);
+    } catch (e) {
+      setError(String(e));
+    }
+  }, []);
+
+  const handlePrepareAgainstPlayer = useCallback(async (name: string, white: boolean) => {
+    try {
+      const tab = await invoke<TabDto>("open_player_prep_tab", { name, white });
       await openTabInGameWindow(tab);
       setError(null);
     } catch (e) {
@@ -223,6 +233,7 @@ export function HomeWindow() {
         onOpenPgnGame={importGameAt}
         onImportNewFile={handleImport}
         basesVersion={basesVersion}
+        onPrepareAgainstPlayer={handlePrepareAgainstPlayer}
       />
       {bulkImportPgnPath && (
         <ImportBasePicker
