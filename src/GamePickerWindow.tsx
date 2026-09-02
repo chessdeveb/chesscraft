@@ -4,11 +4,15 @@ import { emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useTranslation } from "react-i18next";
 import { useSyncLanguage } from "./i18n";
+import { useSyncBoardTheme } from "./boardTheme";
+import { useSyncColorScheme } from "./colorScheme";
 import type { PgnGameSummary } from "./types";
 import "./App.css";
 
 export function GamePickerWindow() {
   useSyncLanguage();
+  useSyncBoardTheme();
+  useSyncColorScheme();
   const { t } = useTranslation();
   const params = new URLSearchParams(window.location.search);
   const path = params.get("path") ?? "";

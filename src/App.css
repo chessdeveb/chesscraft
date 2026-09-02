@@ -1,11 +1,14 @@
+@import "./fonts.css";
+@import "./tokens.css";
+
 :root {
-  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
-  font-size: 16px;
-  line-height: 24px;
+  font-family: var(--font-sans);
+  font-size: var(--t-base);
+  line-height: 1.55;
   font-weight: 400;
 
-  color: #0f0f0f;
-  background-color: #f6f6f6;
+  color: var(--ink-1);
+  background-color: var(--ground);
   /* permet aux controles natifs (select, etc.) de rendre correctement leurs
      couleurs selon le theme clair/sombre au lieu de garder un rendu par defaut */
   color-scheme: light dark;
@@ -17,11 +20,15 @@
   -webkit-text-size-adjust: 100%;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    color: #f6f6f6;
-    background-color: #2f2f2f;
-  }
+/* Un choix explicite (bouton clair/sombre, voir colorScheme.ts) doit aussi
+   forcer le rendu des controles natifs (select...), pas seulement nos
+   propres jetons -- sinon un systeme sombre force au clair garderait des
+   menus deroulants au rendu sombre du systeme. */
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
 }
 
 html,
@@ -29,6 +36,76 @@ body,
 #root {
   height: 100%;
   margin: 0;
+  background-color: var(--ground);
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-serif);
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  text-wrap: balance;
+  margin: 0 0 var(--s3);
+}
+h1 {
+  font-size: 1.75rem;
+  letter-spacing: -0.02em;
+}
+h2 {
+  font-size: 1.375rem;
+}
+h3 {
+  font-size: 1.0625rem;
+}
+
+code,
+kbd,
+.mono {
+  font-family: var(--font-mono);
+}
+
+button {
+  font-family: inherit;
+  border-radius: var(--r-md);
+}
+
+input,
+select,
+textarea {
+  font-family: inherit;
+  border-radius: var(--r-sm);
+}
+
+/* Pont vers dockview : la bibliotheque a son propre theme integre
+   (.dockview-theme-dark/-light, importe via dockview.css), avec ses
+   couleurs a lui (#1e1e1e, #252526...) completement independantes de nos
+   jetons -- sans ce pont, dockview peint tout l'essentiel de l'ecran
+   (fond des panneaux, bandeaux d'onglets) avec SES couleurs, et le
+   reste de cette feuille de style n'a plus grand-chose a redessiner :
+   c'est pour ca qu'un changement de palette pouvait sembler ne rien
+   faire. `:root .dockview-theme-X` (plutot que `.dockview-theme-X` seul)
+   pour l'emporter sur la regle d'origine quel que soit l'ordre
+   d'injection des styles en dev. Un seul bloc pour les deux classes :
+   nos jetons resolvent deja la bonne valeur clair/sombre tout seuls. */
+:root .dockview-theme-dark,
+:root .dockview-theme-light {
+  --dv-group-view-background-color: var(--panel);
+  --dv-tabs-and-actions-container-background-color: var(--raised);
+  --dv-activegroup-visiblepanel-tab-background-color: var(--panel);
+  --dv-activegroup-hiddenpanel-tab-background-color: var(--raised);
+  --dv-inactivegroup-visiblepanel-tab-background-color: var(--panel);
+  --dv-inactivegroup-hiddenpanel-tab-background-color: var(--raised);
+  --dv-tab-divider-color: var(--line);
+  --dv-activegroup-visiblepanel-tab-color: var(--ink-1);
+  --dv-activegroup-hiddenpanel-tab-color: var(--ink-2);
+  --dv-inactivegroup-visiblepanel-tab-color: var(--ink-2);
+  --dv-inactivegroup-hiddenpanel-tab-color: var(--ink-3);
+  --dv-separator-border: var(--line);
+  --dv-paneview-header-border-color: var(--line);
+  --dv-icon-hover-background-color: var(--accent-weak);
+  --dv-drag-over-background-color: var(--accent-weak);
+  --dv-tabs-container-scrollbar-color: var(--line-strong);
 }
 
 .app-layout {
@@ -52,7 +129,7 @@ body,
   gap: 2px;
   padding: 4px 6px 0;
   flex-shrink: 0;
-  border-bottom: 1px solid rgba(128, 128, 128, 0.3);
+  border-bottom: 1px solid var(--line);
   overflow-x: auto;
 }
 
@@ -61,9 +138,9 @@ body,
   align-items: center;
   gap: 6px;
   padding: 6px 10px;
-  border: 1px solid rgba(128, 128, 128, 0.3);
+  border: 1px solid var(--line);
   border-bottom: none;
-  border-radius: 6px 6px 0 0;
+  border-radius: var(--r-md) var(--r-md) 0 0;
   background: transparent;
   color: inherit;
   cursor: pointer;
@@ -76,7 +153,7 @@ body,
 }
 
 .game-tab--active {
-  background-color: rgba(100, 108, 255, 0.2);
+  background-color: var(--accent-weak);
   font-weight: 600;
 }
 
@@ -88,12 +165,12 @@ body,
   cursor: pointer;
   padding: 0 2px;
   font-size: 0.85em;
-  border-radius: 4px;
+  border-radius: var(--r-sm);
 }
 
 .game-tab-close:hover {
   opacity: 1;
-  background-color: rgba(211, 51, 51, 0.2);
+  background-color: var(--danger-weak);
 }
 
 .game-tab-content {
@@ -122,7 +199,7 @@ body,
   gap: 8px;
   flex: 1;
   min-height: 0;
-  border: 1px solid rgba(128, 128, 128, 0.3);
+  border: 1px solid var(--line);
   border-radius: 8px;
   padding: 12px;
   overflow: auto;
@@ -140,8 +217,8 @@ body,
 
 .home-toolbar button {
   cursor: pointer;
-  border: 1px solid rgba(128, 128, 128, 0.4);
-  border-radius: 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
   background: transparent;
   color: inherit;
   padding: 6px 12px;
@@ -149,7 +226,24 @@ body,
 }
 
 .home-toolbar button:hover {
-  background-color: rgba(100, 108, 255, 0.2);
+  background-color: var(--accent-weak);
+}
+
+.home-toolbar button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.fide-status {
+  color: var(--ink-2);
+  font-size: 0.85em;
+  flex: 1;
+}
+
+.fide-table-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
 }
 
 .games-pagination {
@@ -163,8 +257,8 @@ body,
 
 .games-pagination input[type="search"] {
   font: inherit;
-  border-radius: 6px;
-  border: 1px solid rgba(128, 128, 128, 0.4);
+  border-radius: var(--r-md);
+  border: 1px solid var(--line-strong);
   padding: 4px 8px;
   background: transparent;
   color: inherit;
@@ -184,8 +278,8 @@ body,
 
 .games-pagination .page-jump input[type="number"] {
   font: inherit;
-  border-radius: 6px;
-  border: 1px solid rgba(128, 128, 128, 0.4);
+  border-radius: var(--r-md);
+  border: 1px solid var(--line-strong);
   padding: 4px 6px;
   background: transparent;
   color: inherit;
@@ -199,8 +293,8 @@ body,
 
 .games-pagination button {
   cursor: pointer;
-  border: 1px solid rgba(128, 128, 128, 0.4);
-  border-radius: 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
   background: transparent;
   color: inherit;
   padding: 4px 10px;
@@ -213,7 +307,7 @@ body,
 }
 
 .games-pagination button:not(:disabled):hover {
-  background-color: rgba(100, 108, 255, 0.2);
+  background-color: var(--accent-weak);
 }
 
 .games-advanced-filters {
@@ -229,8 +323,8 @@ body,
 .games-advanced-filters input,
 .games-advanced-filters select {
   font: inherit;
-  border-radius: 6px;
-  border: 1px solid rgba(128, 128, 128, 0.4);
+  border-radius: var(--r-md);
+  border: 1px solid var(--line-strong);
   padding: 4px 8px;
   background: transparent;
   color: inherit;
@@ -253,8 +347,8 @@ body,
 
 .games-advanced-filters button {
   cursor: pointer;
-  border: 1px solid rgba(128, 128, 128, 0.4);
-  border-radius: 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
   background: transparent;
   color: inherit;
   padding: 4px 10px;
@@ -262,7 +356,7 @@ body,
 }
 
 .games-advanced-filters button:hover {
-  background-color: rgba(100, 108, 255, 0.2);
+  background-color: var(--accent-weak);
 }
 
 .bases-table-path {
@@ -272,7 +366,7 @@ body,
 }
 
 .explorer-table-row--selected {
-  background-color: rgba(100, 108, 255, 0.25);
+  background-color: var(--accent-weak);
 }
 
 /* Panneau Explorateur : deux colonnes separees par une ligne verticale --
@@ -297,7 +391,7 @@ body,
 .explorer-panel-col--right {
   flex: 1 1 45%;
   padding-left: 12px;
-  border-left: 1px solid rgba(128, 128, 128, 0.3);
+  border-left: 1px solid var(--line);
   display: flex;
   flex-direction: column;
 }
@@ -305,7 +399,7 @@ body,
 .explorer-games {
   margin-top: 14px;
   padding-top: 10px;
-  border-top: 1px solid rgba(128, 128, 128, 0.3);
+  border-top: 1px solid var(--line);
   flex-shrink: 0;
 }
 
@@ -353,12 +447,14 @@ body,
 
 .explorer-preview-controls button {
   cursor: pointer;
-  border: 1px solid rgba(128, 128, 128, 0.4);
-  border-radius: 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
   background: transparent;
   color: inherit;
-  padding: 4px 10px;
-  font: inherit;
+  padding: 2px 7px;
+  font-family: inherit;
+  font-size: var(--t-xs);
+  line-height: 1.4;
 }
 
 .explorer-preview-notation {
@@ -368,16 +464,16 @@ body,
 }
 
 .explorer-table-row--drop-target {
-  outline: 2px dashed rgba(51, 133, 211, 0.8);
+  outline: 2px dashed var(--accent);
   outline-offset: -2px;
-  background-color: rgba(51, 133, 211, 0.15);
+  background-color: var(--accent-weak);
 }
 
 .context-menu {
   position: fixed;
   z-index: 1000;
-  background-color: Canvas;
-  color: CanvasText;
+  background-color: var(--panel);
+  color: var(--ink-1);
   border-radius: 8px;
   box-shadow: 0 8px 30px rgba(0, 0, 0, 0.3);
   padding: 4px;
@@ -393,12 +489,12 @@ body,
   color: inherit;
   text-align: left;
   padding: 6px 10px;
-  border-radius: 4px;
+  border-radius: var(--r-sm);
   font-size: 0.9em;
 }
 
 .context-menu-item:hover:not(:disabled) {
-  background-color: rgba(100, 108, 255, 0.2);
+  background-color: var(--accent-weak);
 }
 
 .context-menu-item:disabled {
@@ -407,7 +503,7 @@ body,
 }
 
 .context-menu-item--danger:hover:not(:disabled) {
-  background-color: rgba(211, 51, 51, 0.2);
+  background-color: var(--danger-weak);
 }
 
 .dockview-container {
@@ -439,7 +535,7 @@ body,
   flex-shrink: 0;
   padding-bottom: 8px;
   margin-bottom: 8px;
-  border-bottom: 1px solid rgba(128, 128, 128, 0.3);
+  border-bottom: 1px solid var(--line);
 }
 
 .notation-header-players {
@@ -465,6 +561,41 @@ body,
   justify-content: center;
 }
 
+.board-panel {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.board-panel-board {
+  flex: 1;
+  min-height: 0;
+}
+
+.transport {
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 0 2px;
+  flex-shrink: 0;
+}
+
+.transport button {
+  cursor: pointer;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  background: transparent;
+  color: inherit;
+  padding: 4px 12px;
+  font: inherit;
+  font-size: 0.95em;
+}
+
+.transport button:hover {
+  background-color: var(--accent-weak);
+}
+
 .explorer-table {
   width: 100%;
   border-collapse: collapse;
@@ -475,7 +606,44 @@ body,
 .explorer-table td {
   text-align: left;
   padding: 4px 6px;
-  border-bottom: 1px solid rgba(128, 128, 128, 0.2);
+  border-bottom: 1px solid var(--line);
+  /* tronque plutot que de passer a la ligne : sans ca, un nom long
+     (frequent sur les bases de parties d'ordinateur, ex. "Millennium
+     Chess - the King") s'enroule sur plusieurs lignes et la ligne du
+     tableau parait se chevaucher avec les colonnes voisines. max-width:0
+     force l'ellipsis a respecter la largeur de colonne sous table-layout:
+     fixed plutot que de laisser le contenu l'imposer. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 0;
+}
+
+/* Table FIDE : beaucoup de colonnes etroites (Sexe, Titre...), pas deux
+   comme la liste de parties de l'explorateur -- la troncature ci-dessus
+   la rendrait illisible. .fide-table-wrap fait defiler horizontalement a
+   la place, chaque colonne gardant sa largeur naturelle. */
+.fide-table-wrap .explorer-table th,
+.fide-table-wrap .explorer-table td {
+  white-space: nowrap;
+  overflow: visible;
+  text-overflow: clip;
+  max-width: none;
+}
+
+.explorer-games-table th:nth-child(1),
+.explorer-games-table td:nth-child(1),
+.explorer-games-table th:nth-child(2),
+.explorer-games-table td:nth-child(2) {
+  width: 32%;
+}
+.explorer-games-table th:nth-child(3),
+.explorer-games-table td:nth-child(3) {
+  width: 22%;
+}
+.explorer-games-table th:nth-child(4),
+.explorer-games-table td:nth-child(4) {
+  width: 14%;
 }
 
 .explorer-table tbody tr {
@@ -492,7 +660,7 @@ body,
 }
 
 .explorer-table tbody tr:hover {
-  background-color: rgba(100, 108, 255, 0.15);
+  background-color: var(--accent-weak);
 }
 
 .explorer-move {
@@ -507,12 +675,12 @@ body,
   opacity: 0.6;
   font-size: 0.9em;
   padding: 2px 6px;
-  border-radius: 4px;
+  border-radius: var(--r-sm);
 }
 
 .games-table-delete:hover {
   opacity: 1;
-  background-color: rgba(211, 51, 51, 0.2);
+  background-color: var(--danger-weak);
 }
 
 .games-table-move {
@@ -523,13 +691,13 @@ body,
   opacity: 0.6;
   font-size: 0.9em;
   padding: 2px 6px;
-  border-radius: 4px;
+  border-radius: var(--r-sm);
   margin-right: 4px;
 }
 
 .games-table-move:hover {
   opacity: 1;
-  background-color: rgba(51, 133, 211, 0.2);
+  background-color: var(--accent-weak);
 }
 
 .modal-overlay {
@@ -543,9 +711,9 @@ body,
 }
 
 .modal {
-  background-color: Canvas;
-  color: CanvasText;
-  border-radius: 10px;
+  background-color: var(--panel);
+  color: var(--ink-1);
+  border-radius: var(--r-lg);
   padding: 16px;
   max-width: 90vw;
   max-height: 80vh;
@@ -577,11 +745,11 @@ body,
 .save-game-info input,
 .save-game-info select {
   font: inherit;
-  border-radius: 6px;
-  border: 1px solid rgba(128, 128, 128, 0.4);
+  border-radius: var(--r-md);
+  border: 1px solid var(--line-strong);
   padding: 4px 6px;
-  background-color: Field;
-  color: FieldText;
+  background-color: var(--panel);
+  color: var(--ink-1);
 }
 
 .modal-table-wrap {
@@ -595,8 +763,8 @@ body,
 
 .modal-actions button {
   cursor: pointer;
-  border: 1px solid rgba(128, 128, 128, 0.4);
-  border-radius: 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
   background: transparent;
   color: inherit;
   padding: 6px 12px;
@@ -617,6 +785,108 @@ body,
   margin: 0;
 }
 
+.position-editor {
+  padding: var(--s4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  height: 100%;
+  box-sizing: border-box;
+}
+
+.position-editor h2 {
+  margin: 0;
+}
+
+.position-editor-body {
+  display: flex;
+  gap: var(--s4);
+  flex: 1;
+  min-height: 0;
+}
+
+.position-editor-board-col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  flex-shrink: 0;
+}
+
+.position-editor-cg-wrap {
+  width: 320px;
+  height: 320px;
+}
+
+.position-editor-palette {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.position-editor-palette-row {
+  display: flex;
+  gap: var(--s2);
+}
+
+.position-editor-swatch {
+  position: relative;
+  width: 40px;
+  height: 40px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  background: var(--sunken);
+  cursor: grab;
+}
+
+.position-editor-swatch piece {
+  position: static;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.position-editor-controls {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+  flex: 1;
+  min-width: 0;
+}
+
+.position-editor-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+}
+
+.position-editor-section label {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  font-size: var(--t-sm);
+}
+
+.position-editor-section-title {
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin-bottom: var(--s1);
+}
+
+.position-editor-reset-buttons {
+  flex-direction: row;
+  gap: var(--s2);
+}
+
+.position-editor-actions {
+  margin-top: auto;
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--s2);
+}
+
 .notation {
   flex: 1;
   overflow-y: auto;
@@ -626,7 +896,7 @@ body,
 
 .annotate-bar {
   flex-shrink: 0;
-  border-top: 1px solid rgba(128, 128, 128, 0.3);
+  border-top: 1px solid var(--line);
   padding-top: 8px;
   margin-top: 8px;
   display: flex;
@@ -651,31 +921,43 @@ body,
 .move {
   cursor: pointer;
   padding: 1px 3px;
-  border-radius: 4px;
+  border-radius: var(--r-sm);
 }
 
 .move:hover {
-  background-color: rgba(100, 108, 255, 0.2);
+  background-color: var(--accent-weak);
 }
 
 .move--current {
-  background-color: rgba(100, 108, 255, 0.5);
+  background-color: var(--accent-strong);
   font-weight: 600;
 }
 
 .variation {
-  opacity: 0.75;
-  font-size: 0.92em;
+  /* color plutot qu'opacity : les variantes s'imbriquent (variante dans une
+     variante), et une opacity sur chaque niveau se multiplie avec celle du
+     parent -- au bout de 3-4 niveaux (frequent sur les parties tres
+     annotees), le texte devient quasi illisible. color ne compose pas de
+     cette facon : meme tres imbriquee, une variante reste au meme ton.
+     Meme raisonnement pour la taille : em se recalcule par rapport au
+     parent, donc se retrecit encore a chaque niveau d'imbrication ; rem se
+     base uniquement sur la racine, taille fixe quelle que soit la
+     profondeur. */
+  color: var(--ink-2);
+  font-size: 0.92rem;
 }
 
 .comment {
   font-style: italic;
-  opacity: 0.75;
+  /* var(--ink-2) plutot qu'une opacite : une opacite reduit le contraste de
+     facon imprevisible selon ce qu'il y a derriere, alors que --ink-2 est
+     calibre pour rester lisible en clair comme en sombre. */
+  color: var(--ink-2);
   white-space: pre-wrap;
 }
 
 .error {
-  color: #d33;
+  color: var(--danger);
   margin-top: 8px;
 }
 
@@ -702,15 +984,15 @@ body,
   height: 30px;
   line-height: 1;
   font-size: 1em;
-  border-radius: 6px;
-  border: 1px solid rgba(128, 128, 128, 0.4);
+  border-radius: var(--r-md);
+  border: 1px solid var(--line-strong);
   background: transparent;
   color: inherit;
   cursor: pointer;
 }
 
 .engine-toolbar button:hover {
-  background-color: rgba(100, 108, 255, 0.2);
+  background-color: var(--accent-weak);
 }
 
 .engine-toolbar button:disabled {
@@ -719,15 +1001,15 @@ body,
 }
 
 .engine-toolbar .icon-toggle--active {
-  background-color: rgba(100, 108, 255, 0.3);
-  border-color: rgba(100, 108, 255, 0.7);
+  background-color: var(--accent-line);
+  border-color: var(--accent);
 }
 
 .engine-settings {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  border-top: 1px solid rgba(128, 128, 128, 0.2);
+  border-top: 1px solid var(--line);
   padding-top: 8px;
 }
 
@@ -746,8 +1028,8 @@ body,
   flex: 1;
   min-width: 120px;
   font: inherit;
-  border-radius: 6px;
-  border: 1px solid rgba(128, 128, 128, 0.4);
+  border-radius: var(--r-md);
+  border: 1px solid var(--line-strong);
   padding: 4px 6px;
   background: transparent;
   color: inherit;
@@ -755,8 +1037,8 @@ body,
 
 .engine-path-row button {
   font: inherit;
-  border-radius: 6px;
-  border: 1px solid rgba(128, 128, 128, 0.4);
+  border-radius: var(--r-md);
+  border: 1px solid var(--line-strong);
   padding: 4px 8px;
   background: transparent;
   color: inherit;
@@ -777,11 +1059,11 @@ body,
 
 .engine-field select {
   font: inherit;
-  border-radius: 6px;
-  border: 1px solid rgba(128, 128, 128, 0.5);
+  border-radius: var(--r-md);
+  border: 1px solid var(--line-strong);
   padding: 3px 6px;
-  background-color: Field;
-  color: FieldText;
+  background-color: var(--panel);
+  color: var(--ink-1);
   cursor: pointer;
 }
 
@@ -792,11 +1074,12 @@ body,
 }
 
 .engine-result {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: baseline;
-  border-top: 1px solid rgba(128, 128, 128, 0.2);
+  /* Pas de flex ici expres : avec flex-wrap, un item qui deborde saute
+     entierement a la ligne suivante (l'evaluation se retrouvait seule sur
+     sa ligne). En flux inline normal, le score reste colle au debut des
+     coups sur la 1ere ligne, et seul le texte des coups s'enroule ensuite
+     -- la suite reste lisible au lieu d'etre tronquee. */
+  border-top: 1px solid var(--line);
   padding-top: 6px;
 }
 
@@ -808,15 +1091,10 @@ body,
 .engine-score {
   font-weight: 700;
   font-size: 1.1em;
-}
-
-.engine-depth {
-  opacity: 0.6;
-  font-size: 0.85em;
+  margin-right: 8px;
 }
 
 .engine-line {
-  width: 100%;
   margin: 0;
   opacity: 0.85;
 }
@@ -828,8 +1106,8 @@ body,
 
 .nag-button {
   cursor: pointer;
-  border: 1px solid rgba(128, 128, 128, 0.4);
-  border-radius: 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
   background: transparent;
   color: inherit;
   padding: 2px 6px;
@@ -839,12 +1117,12 @@ body,
 }
 
 .nag-button:hover {
-  background-color: rgba(100, 108, 255, 0.2);
+  background-color: var(--accent-weak);
 }
 
 .nag-button--active {
-  background-color: rgba(100, 108, 255, 0.5);
-  border-color: rgba(100, 108, 255, 0.8);
+  background-color: var(--accent-strong);
+  border-color: var(--accent);
   font-weight: 600;
 }
 
@@ -858,14 +1136,14 @@ body,
 .annotate-toolbar-sep {
   width: 1px;
   align-self: stretch;
-  background-color: rgba(128, 128, 128, 0.3);
+  background-color: var(--line);
   margin: 0 4px;
 }
 
 .annotate-icon {
   cursor: pointer;
-  border: 1px solid rgba(128, 128, 128, 0.4);
-  border-radius: 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
   background: transparent;
   color: inherit;
   font: inherit;
@@ -874,12 +1152,12 @@ body,
 }
 
 .annotate-icon:hover {
-  background-color: rgba(100, 108, 255, 0.2);
+  background-color: var(--accent-weak);
 }
 
 .annotate-icon--active {
-  background-color: rgba(100, 108, 255, 0.5);
-  border-color: rgba(100, 108, 255, 0.8);
+  background-color: var(--accent-strong);
+  border-color: var(--accent);
   font-weight: 600;
 }
 
@@ -894,8 +1172,8 @@ body,
   font: inherit;
   font-style: normal;
   resize: vertical;
-  border-radius: 6px;
-  border: 1px solid rgba(128, 128, 128, 0.4);
+  border-radius: var(--r-md);
+  border: 1px solid var(--line-strong);
   padding: 4px 6px;
   background: transparent;
   color: inherit;
@@ -904,15 +1182,15 @@ body,
 
 .comment-editor-inline button {
   cursor: pointer;
-  border: 1px solid rgba(128, 128, 128, 0.4);
-  border-radius: 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
   background: transparent;
   color: inherit;
   padding: 2px 6px;
 }
 
 .variation-choice {
-  border: 1px solid rgba(100, 108, 255, 0.5);
+  border: 1px solid var(--accent-strong);
   border-radius: 8px;
   padding: 8px 10px;
   margin-bottom: 10px;
@@ -932,8 +1210,8 @@ body,
 
 .variation-choice-options button {
   cursor: pointer;
-  border: 1px solid rgba(100, 108, 255, 0.6);
-  border-radius: 6px;
+  border: 1px solid var(--accent);
+  border-radius: var(--r-md);
   background: transparent;
   color: inherit;
   padding: 4px 10px;
@@ -941,10 +1219,10 @@ body,
 }
 
 .variation-choice-options button:hover {
-  background-color: rgba(100, 108, 255, 0.2);
+  background-color: var(--accent-weak);
 }
 
 .variation-choice-highlighted {
-  background-color: rgba(100, 108, 255, 0.4) !important;
+  background-color: var(--accent-line) !important;
   font-weight: 600;
 }

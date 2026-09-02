@@ -93,6 +93,31 @@ export interface PlayersPage {
   total: number;
 }
 
+export interface FidePlayer {
+  fideId: string;
+  name: string;
+  fed: string;
+  sex: string;
+  title: string;
+  wTitle: string;
+  oTitle: string;
+  stdRating: number | null;
+  rapidRating: number | null;
+  blitzRating: number | null;
+  birthYear: number | null;
+  flag: string;
+}
+
+export interface FidePlayersPage {
+  players: FidePlayer[];
+  total: number;
+}
+
+export interface FideStatus {
+  lastUpdated: string | null;
+  total: number;
+}
+
 export interface TabDto {
   tabId: number;
   tree: TreeDto;

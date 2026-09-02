@@ -7,7 +7,7 @@ import type { Dests, Key } from "@lichess-org/chessground/types";
 import { useTranslation } from "react-i18next";
 import { AppContext, type AppContextValue } from "./AppContext";
 import { dockviewComponents } from "./DockPanels";
-import { persistDockviewLayout, syncPanelCheckedStates, tryRestoreDockviewLayout } from "./dockviewPersistence";
+import { persistDockviewLayout, syncPanelCheckedStates, tryRestoreDockviewLayout, useDockviewTheme } from "./dockviewPersistence";
 import { EVAL_NAG_CODES, MOVE_NAG_CODES } from "./nag";
 import { SaveBasePicker } from "./components/SaveBasePicker";
 import type {
@@ -90,7 +90,7 @@ interface GamePanelPrefs {
 const GAME_PANELS_KEY = "gamePanels";
 const GAME_LAYOUT_KEY = "gameDockviewLayout";
 const GAME_LAYOUT_KEY_PREP = "gameDockviewLayoutPrep";
-const GAME_PANEL_IDS = ["notation", "explorer", "engine"];
+const GAME_PANEL_IDS = ["board", "notation", "explorer", "engine"];
 
 function loadGamePanelPrefs(): GamePanelPrefs {
   const defaults: GamePanelPrefs = { notation: true, explorer: false, engine: false };
@@ -101,19 +101,6 @@ function loadGamePanelPrefs(): GamePanelPrefs {
   } catch {
     return defaults;
   }
-}
-
-function useDockviewTheme(): string {
-  const [theme, setTheme] = useState(() =>
-    window.matchMedia("(prefers-color-scheme: dark)").matches ? "dockview-theme-dark" : "dockview-theme-light"
-  );
-  useEffect(() => {
-    const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    const handler = (e: MediaQueryListEvent) => setTheme(e.matches ? "dockview-theme-dark" : "dockview-theme-light");
-    mq.addEventListener("change", handler);
-    return () => mq.removeEventListener("change", handler);
-  }, []);
-  return theme;
 }
 
 export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab({ tabId, active, isPlayerPrep = false, onTreeChange }, ref) {
@@ -199,6 +186,50 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
     setCurrentNodeId(id);
     setVariationChoice(null);
   }, []);
+
+  // Navigation dans l'arbre, factorisee pour etre partagee par les
+  // raccourcis clavier (fleches) et les boutons de transport sous
+  // l'echiquier -- meme logique, deux declencheurs.
+  const handleStep = useCallback(
+    (direction: "start" | "prev" | "next" | "end") => {
+      if (!tree) return;
+      const byId = new Map(tree.nodes.map((n) => [n.id, n]));
+
+      if (direction === "start") {
+        setCurrentNodeId(tree.root);
+        setVariationChoice(null);
+        return;
+      }
+      if (direction === "end") {
+        let node = byId.get(tree.root);
+        while (node && node.children.length > 0) {
+          node = byId.get(node.children[0]);
+        }
+        if (node) setCurrentNodeId(node.id);
+        setVariationChoice(null);
+        return;
+      }
+
+      const node = byId.get(currentNodeId);
+      if (!node) return;
+      if (direction === "prev" && node.parent !== null) {
+        setCurrentNodeId(node.parent);
+        setVariationChoice(null);
+      } else if (direction === "next" && node.children.length > 0) {
+        if (node.children.length === 1) {
+          setCurrentNodeId(node.children[0]);
+          setVariationChoice(null);
+        } else {
+          const options = node.children
+            .map((childId) => byId.get(childId))
+            .filter((n): n is NodeDto => n !== undefined);
+          setHighlightedIndex(0);
+          setVariationChoice(options);
+        }
+      }
+    },
+    [tree, currentNodeId]
+  );
 
   const refreshTree = useCallback(async () => {
     const newTree = await invoke<TreeDto>("get_tree", { tabId });
@@ -387,7 +418,7 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
     setEnginePaused(false);
   }, []);
 
-  const setPanelVisible = useCallback((id: "notation" | "explorer" | "engine", visible: boolean) => {
+  const setPanelVisible = useCallback((id: "board" | "notation" | "explorer" | "engine", visible: boolean) => {
     if (id === "explorer") setExplorerVisible(visible);
     const api = dockviewApiRef.current;
     if (!api) return;
@@ -397,7 +428,12 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
         existing.api.setActive();
         return;
       }
-      if (id === "notation") {
+      if (id === "board") {
+        // pas de `position` : redevient le panneau d'ancrage, comme au tout
+        // premier onglet (voir onDockviewReady) -- l'echiquier n'a pas de
+        // "referencePanel" naturel puisque c'est lui que les autres visent.
+        api.addPanel({ id: "board", component: "board", title: t("gameTab.panel.board") });
+      } else if (id === "notation") {
         api.addPanel({
           id: "notation",
           component: "notation",
@@ -427,7 +463,7 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
   }, [t]);
 
   const toggleGamePanel = useCallback(
-    (id: "notation" | "explorer" | "engine") => {
+    (id: "board" | "notation" | "explorer" | "engine") => {
       const isVisible = !!dockviewApiRef.current?.getPanel(id);
       setPanelVisible(id, !isVisible);
     },
@@ -632,6 +668,7 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
       listen("menu-export-pgn", () => handleExport()),
       listen("menu-save-game", () => handleSave()),
       listen<string>("menu-set-board-theme", (event) => setBoardTheme(event.payload)),
+      listen("menu-toggle-panel-board", () => toggleGamePanel("board")),
       listen("menu-toggle-panel-notation", () => toggleGamePanel("notation")),
       listen("menu-toggle-panel-explorer", () => toggleGamePanel("explorer")),
       listen("menu-toggle-panel-engine", () => toggleGamePanel("engine")),
@@ -664,28 +701,17 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
         return;
       }
 
-      const node = tree.nodes.find((n) => n.id === currentNodeId);
-      if (!node) return;
-
-      if (e.key === "ArrowLeft" && node.parent !== null) {
+      if (e.key === "ArrowLeft") {
         e.preventDefault();
-        setCurrentNodeId(node.parent);
-      } else if (e.key === "ArrowRight" && node.children.length > 0) {
+        handleStep("prev");
+      } else if (e.key === "ArrowRight") {
         e.preventDefault();
-        if (node.children.length === 1) {
-          setCurrentNodeId(node.children[0]);
-        } else {
-          const options = node.children
-            .map((childId) => tree.nodes.find((n) => n.id === childId))
-            .filter((n): n is NodeDto => n !== undefined);
-          setHighlightedIndex(0);
-          setVariationChoice(options);
-        }
+        handleStep("next");
       }
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [active, tree, currentNodeId, variationChoice, highlightedIndex, chooseVariation]);
+  }, [active, tree, currentNodeId, variationChoice, highlightedIndex, chooseVariation, handleStep]);
 
   const onDockviewReady = useCallback(
     (event: DockviewReadyEvent) => {
@@ -702,6 +728,12 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
           setPanelVisible("explorer", true);
           api.getPanel("explorer")?.api.setActive();
         } else {
+          // une disposition sauvegardee remplace entierement les panneaux
+          // (fromJSON) -- si l'echiquier avait ete ferme avant la sauvegarde
+          // (fermeture accidentelle de son onglet dockview, qui n'a pas de
+          // case a cocher a l'epoque), il resterait sinon introuvable pour
+          // toujours : on le regarantit toujours present.
+          if (!api.getPanel("board")) setPanelVisible("board", true);
           setExplorerVisible(!!api.getPanel("explorer"));
         }
         syncPanelCheckedStates(api, GAME_PANEL_IDS);
@@ -709,6 +741,7 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
         return;
       }
       if (tryRestoreDockviewLayout(api, GAME_LAYOUT_KEY)) {
+        if (!api.getPanel("board")) setPanelVisible("board", true);
         setExplorerVisible(!!api.getPanel("explorer"));
         syncPanelCheckedStates(api, GAME_PANEL_IDS);
         gameLayoutCleanupRef.current = persistDockviewLayout(api, GAME_LAYOUT_KEY, GAME_PANEL_IDS);
@@ -757,6 +790,7 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
     handleMove,
     handleShapesChange,
     handleSelect,
+    onStep: handleStep,
     variationChoice,
     highlightedIndex,
     chooseVariation,
@@ -805,8 +839,8 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
       <main className="app-layout">
         {statusMessage && <p className="status-message">{statusMessage}</p>}
         {error && <p className="error">{error}</p>}
-        <div className={"dockview-container " + theme}>
-          <DockviewReact components={dockviewComponents} onReady={onDockviewReady} />
+        <div className={"dockview-container " + theme.className}>
+          <DockviewReact components={dockviewComponents} onReady={onDockviewReady} theme={theme} />
         </div>
       </main>
       {showSaveBasePicker && (

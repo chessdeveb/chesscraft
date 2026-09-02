@@ -1,0 +1,158 @@
+/* ============================================================
+   Jetons de design — palette, tons derives.
+
+   Principe : l'accent de toute l'interface vient de la couleur des
+   cases de l'echiquier (reglage deja existant, Preferences > Couleurs),
+   pas d'une couleur de marque plaquee par-dessus. Chaque theme
+   d'echiquier definit une paire d'accents calibres (clair/sombre) ;
+   le media query choisit laquelle s'applique. `data-board` est pose
+   sur <html> par useSyncBoardTheme() dans chaque fenetre.
+
+   Les neutres, eux, ne dependent JAMAIS du theme d'echiquier : ils
+   doivent rester coherents sous les cinq accents, sinon l'appli
+   changerait de caractere a chaque reglage plutot que de simplement
+   changer d'accent.
+   ============================================================ */
+
+:root,
+:root[data-board="brown"] {
+  --accent-l: #8a5733;
+  --accent-d: #c29060;
+}
+:root[data-board="blue"] {
+  --accent-l: #2b6082;
+  --accent-d: #6fa8c9;
+}
+:root[data-board="green"] {
+  --accent-l: #4e7838;
+  --accent-d: #8db86d;
+}
+:root[data-board="grey"] {
+  --accent-l: #4a4a4a;
+  --accent-d: #b0b0b0;
+}
+:root[data-board="wood"] {
+  --accent-l: #99633a;
+  --accent-d: #cc9663;
+}
+
+:root {
+  --accent: var(--accent-l);
+  --on-accent: #ffffff;
+
+  /* legerement assombris par rapport a un blanc pur (retour utilisateur :
+     "le fond est trop blanc") -- --panel restait a #ffffff, ce qui rend
+     la plupart des ecrans (tableaux, panneaux) eblouissants sur un moniteur
+     lumineux. Hierarchie relative (panel > ground > sunken > raised)
+     inchangee, juste toute la gamme un peu plus douce. */
+  --ground: #f4f3f1;
+  --panel: #fafaf8;
+  --raised: #e8e6e3;
+  --sunken: #eeece9;
+  --line: #e0dfdc;
+  --line-strong: #cbcac6;
+
+  --ink-1: #141613;
+  --ink-2: #585b57;
+  --ink-3: #8c8f8a;
+
+  --danger: #a8422f;
+  --danger-weak: #f6e7e3;
+
+  /* tons d'accent derives : remplacent la dizaine d'opacites de bleu
+     choisies au hasard dans l'ancienne feuille de style par trois
+     paliers nommes, qui suivent automatiquement l'accent actif. */
+  --accent-weak: color-mix(in srgb, var(--accent) 15%, transparent);
+  --accent-line: color-mix(in srgb, var(--accent) 35%, transparent);
+  --accent-strong: color-mix(in srgb, var(--accent) 55%, transparent);
+
+  /* marque : constante, hors de tout theme d'echiquier (voir logo.svg —
+     un logo qui change de teinte selon les preferences de chacun n'est
+     ni imprimable, ni memorisable). */
+  --brand-ink: #17191b;
+  --brand-reverse: #ffffff;
+  --mark: var(--brand-ink);
+
+  /* typographie */
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-serif: "IBM Plex Serif", Georgia, serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
+  --t-xs: 0.6875rem;
+  --t-sm: 0.8125rem;
+  --t-base: 0.875rem;
+  --t-lg: 1rem;
+
+  /* espacements et rayons */
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s6: 24px;
+  --s8: 32px;
+  --r-sm: 4px;
+  --r-md: 6px;
+  --r-lg: 10px;
+
+  --shadow-pop: 0 1px 2px rgba(20, 22, 19, 0.06), 0 8px 24px -6px rgba(20, 22, 19, 0.16);
+}
+
+/* Sombre par defaut = systeme (media query), mais un choix explicite
+   (data-theme, pose par useSyncColorScheme via le bouton clair/sombre)
+   doit gagner dans les deux sens : :not([data-theme="light"]) laisse un
+   clair explicite echapper a un systeme sombre, et le bloc
+   [data-theme="dark"] applique le sombre meme sur un systeme clair. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --accent: var(--accent-d);
+    --on-accent: #0c1410;
+    --mark: var(--brand-reverse);
+
+    /* graphite, pas noir : un fond quasi-noir fait halo autour du texte
+       clair et fatigue sur une session de lecture longue. */
+    --ground: #1f2221;
+    --panel: #272a29;
+    --raised: #313533;
+    --sunken: #191c1b;
+    --line: #3a3e3c;
+    --line-strong: #50554f;
+
+    --ink-1: #eceeeb;
+    --ink-2: #a9aea9;
+    --ink-3: #797e79;
+
+    --danger: #d9765f;
+    --danger-weak: #2c1b17;
+
+    --accent-weak: color-mix(in srgb, var(--accent) 18%, transparent);
+    --accent-line: color-mix(in srgb, var(--accent) 38%, transparent);
+    --accent-strong: color-mix(in srgb, var(--accent) 58%, transparent);
+
+    --shadow-pop: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px -6px rgba(0, 0, 0, 0.6);
+  }
+}
+
+:root[data-theme="dark"] {
+  --accent: var(--accent-d);
+  --on-accent: #0c1410;
+  --mark: var(--brand-reverse);
+
+  --ground: #1f2221;
+  --panel: #272a29;
+  --raised: #313533;
+  --sunken: #191c1b;
+  --line: #3a3e3c;
+  --line-strong: #50554f;
+
+  --ink-1: #eceeeb;
+  --ink-2: #a9aea9;
+  --ink-3: #797e79;
+
+  --danger: #d9765f;
+  --danger-weak: #2c1b17;
+
+  --accent-weak: color-mix(in srgb, var(--accent) 18%, transparent);
+  --accent-line: color-mix(in srgb, var(--accent) 38%, transparent);
+  --accent-strong: color-mix(in srgb, var(--accent) 58%, transparent);
+
+  --shadow-pop: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px -6px rgba(0, 0, 0, 0.6);
+}

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use shakmaty::fen::Fen;
 use shakmaty::san::San;
 use shakmaty::uci::UciMove;
-use shakmaty::{Chess, EnPassantMode, Position, Role, Square};
+use shakmaty::{CastlingMode, Chess, EnPassantMode, Position, Role, Square};
 use std::collections::BTreeMap;
 use std::str::FromStr;
 
@@ -138,6 +138,35 @@ impl GameTree {
 
     pub fn from_nodes(nodes: Vec<Node>, tags: BTreeMap<String, String>) -> Self {
         GameTree { nodes, tags }
+    }
+
+    /// Nouvelle partie dont la racine est une position choisie (editeur de
+    /// position, menu Fichier > Nouvelle position), plutot que le depart
+    /// standard. `fen` est la position seule (Chess::default() reste la
+    /// reference pour une partie normale) ; on rejette a la fois un FEN mal
+    /// forme et une position illegale (roi manquant, pions sur la 1ere/8eme
+    /// rangee...) plutot que de laisser l'echiquier planter plus tard sur un
+    /// coup.
+    pub fn from_fen(fen: &str) -> Result<Self, String> {
+        let setup: Fen = fen.trim().parse().map_err(|e| format!("FEN invalide : {e}"))?;
+        let position: Chess = setup
+            .into_position(CastlingMode::Standard)
+            .map_err(|e| format!("Position illegale : {e}"))?;
+        let root = Node {
+            id: 0,
+            parent: None,
+            children: Vec::new(),
+            san: None,
+            from: None,
+            to: None,
+            promotion: None,
+            position,
+            comment_before: None,
+            comment_after: None,
+            nags: Vec::new(),
+            shapes: Vec::new(),
+        };
+        Ok(GameTree { nodes: vec![root], tags: default_tags() })
     }
 
     pub(crate) fn node(&self, id: u32) -> Option<&Node> {
@@ -336,5 +365,32 @@ impl GameTree {
                 })
                 .collect(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_fen_accepts_a_valid_custom_position() {
+        // position apres 1. e4 e5 2. Nf3, trait aux noirs
+        let tree = GameTree::from_fen("rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2").unwrap();
+        let dto = tree.to_dto();
+        assert_eq!(dto.nodes.len(), 1);
+        assert_eq!(dto.nodes[0].turn, "black");
+        assert!(dto.nodes[0].san.is_none());
+        assert!(dto.nodes[0].parent.is_none());
+    }
+
+    #[test]
+    fn from_fen_rejects_malformed_syntax() {
+        assert!(GameTree::from_fen("pas un fen").is_err());
+    }
+
+    #[test]
+    fn from_fen_rejects_an_illegal_position() {
+        // aucun roi noir : position illegale, pas seulement mal ecrite
+        assert!(GameTree::from_fen("8/8/8/8/8/8/8/4K3 w - - 0 1").is_err());
     }
 }

@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window and the game/game-picker/bases-paths sub-windows",
-  "windows": ["main", "game", "game-picker", "bases-paths"],
+  "description": "Capability for the main window and the game/game-picker/bases-paths/position-editor sub-windows",
+  "windows": ["main", "game", "game-picker", "bases-paths", "position-editor"],
   "permissions": [
     "core:default",
     "opener:default",

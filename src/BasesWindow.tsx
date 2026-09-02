@@ -5,11 +5,15 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useTranslation } from "react-i18next";
 import { BasesTable } from "./components/BasesTable";
 import { useSyncLanguage } from "./i18n";
+import { useSyncBoardTheme } from "./boardTheme";
+import { useSyncColorScheme } from "./colorScheme";
 import type { BaseInfo } from "./types";
 import "./App.css";
 
 export function BasesWindow() {
   useSyncLanguage();
+  useSyncBoardTheme();
+  useSyncColorScheme();
   const { t } = useTranslation();
   const [bases, setBases] = useState<BaseInfo[]>([]);
   const [error, setError] = useState<string | null>(null);

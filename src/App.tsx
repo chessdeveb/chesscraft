@@ -5,6 +5,8 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useTranslation } from "react-i18next";
 import { GameTab, type GameTabHandle } from "./GameTab";
 import i18n, { useSyncLanguage } from "./i18n";
+import { useSyncBoardTheme } from "./boardTheme";
+import { useSyncColorScheme } from "./colorScheme";
 import type { TreeDto } from "./types";
 import "./App.css";
 
@@ -38,6 +40,8 @@ function initialIsPlayerPrep(): boolean {
 
 function App() {
   useSyncLanguage();
+  useSyncBoardTheme();
+  useSyncColorScheme();
   const { t } = useTranslation();
   const [tabs, setTabs] = useState<GameTabInfo[]>([]);
   const [activeTabId, setActiveTabId] = useState<number | null>(null);

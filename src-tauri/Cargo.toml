@@ -26,4 +26,11 @@ shakmaty = "0.30.1"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 pgn-reader = "0.29.0"
 tauri-plugin-dialog = "2.7.2"
+# Liste des joueurs FIDE (Fichier > Preferences, panneau "Joueurs FIDE") :
+# ureq plutot que reqwest -- l'appli est deja entierement synchrone (pas de
+# runtime async ailleurs, le travail de fond passe par std::thread::spawn,
+# voir bulk_import_pgn), ureq evite d'introduire tokio juste pour un
+# telechargement occasionnel.
+ureq = "2"
+zip = "2"
 

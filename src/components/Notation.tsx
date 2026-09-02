@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { EVAL_NAG_CHOICES, EVAL_NAG_CODES, MOVE_NAG_CHOICES, MOVE_NAG_CODES, nagSymbol } from "../nag";
 import type { NodeDto, TreeDto } from "../types";
@@ -49,6 +49,14 @@ export function Notation({ tree, currentNodeId, onSelect, onSetComment, onToggle
   const { t } = useTranslation();
   const byId = new Map(tree.nodes.map((n) => [n.id, n]));
   const [editing, setEditing] = useState<"before" | "after" | null>(null);
+  const currentMoveRef = useRef<HTMLSpanElement | null>(null);
+
+  // navigation clavier (fleches) ou via l'echiquier : le coup courant doit
+  // rester visible sans que l'utilisateur ait a scroller lui-meme dans une
+  // partie longue.
+  useEffect(() => {
+    currentMoveRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [currentNodeId]);
 
   function selectAndReset(id: number) {
     if (id !== currentNodeId) {
@@ -79,7 +87,11 @@ export function Notation({ tree, currentNodeId, onSelect, onSetComment, onToggle
       <span key={node.id}>
         {label && <span className="move-number">{label} </span>}
         {node.commentBefore && <span className="comment">{node.commentBefore} </span>}
-        <span className={"move" + (isCurrent ? " move--current" : "")} onClick={() => selectAndReset(node.id)}>
+        <span
+          ref={isCurrent ? currentMoveRef : undefined}
+          className={"move" + (isCurrent ? " move--current" : "")}
+          onClick={() => selectAndReset(node.id)}
+        >
           {node.san}
           {nagText}
         </span>{" "}

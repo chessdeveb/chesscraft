@@ -12,6 +12,7 @@ interface BoardProps {
   dests: Dests;
   shapes: ShapeDto[];
   theme: string;
+  lastMove?: [Key, Key] | null;
   onMove: (from: Key, to: Key) => void;
   onShapesChange: (shapes: ShapeDto[]) => void;
 }
@@ -32,7 +33,7 @@ function fromDrawShapes(shapes: DrawShape[]): ShapeDto[] {
   }));
 }
 
-export function Board({ fen, turnColor, dests, shapes, theme, onMove, onShapesChange }: BoardProps) {
+export function Board({ fen, turnColor, dests, shapes, theme, lastMove, onMove, onShapesChange }: BoardProps) {
   const outerRef = useRef<HTMLDivElement>(null);
   const elRef = useRef<HTMLDivElement>(null);
   const apiRef = useRef<Api | null>(null);
@@ -47,6 +48,7 @@ export function Board({ fen, turnColor, dests, shapes, theme, onMove, onShapesCh
     const config: Config = {
       fen,
       turnColor,
+      lastMove: lastMove ?? undefined,
       coordinates: true,
       ranksPosition: "right",
       movable: {
@@ -75,10 +77,11 @@ export function Board({ fen, turnColor, dests, shapes, theme, onMove, onShapesCh
     apiRef.current?.set({
       fen,
       turnColor,
+      lastMove: lastMove ?? undefined,
       movable: { color: turnColor, dests },
       drawable: { shapes: toDrawShapes(shapes) },
     });
-  }, [fen, turnColor, dests, shapes]);
+  }, [fen, turnColor, dests, shapes, lastMove]);
 
   // suit la taille du conteneur (panneau dockview redimensionnable) pour
   // garder un echiquier carre qui occupe tout l'espace disponible

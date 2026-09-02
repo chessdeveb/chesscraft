@@ -8,6 +8,7 @@ import { PageNav } from "./components/PageNav";
 
 const GAMES_PAGE_SIZE = 200;
 const PLAYERS_PAGE_SIZE = 200;
+const FIDE_PAGE_SIZE = 200;
 
 export function BasesPanelView() {
   const { t } = useTranslation();
@@ -352,9 +353,127 @@ export function PlayersPanelView() {
   );
 }
 
+function formatLastUpdated(iso: string | null, t: (key: string, opts?: Record<string, unknown>) => string): string {
+  if (!iso) return t("home.fideNeverUpdated");
+  const seconds = Number(iso);
+  if (Number.isNaN(seconds)) return t("home.fideNeverUpdated");
+  const date = new Date(seconds * 1000);
+  return t("home.fideLastUpdated", { date: date.toLocaleDateString() });
+}
+
+export function FidePanelView() {
+  const { t } = useTranslation();
+  const {
+    fidePlayers,
+    fideTotal,
+    fideLoading,
+    fidePage,
+    fideSearchInput,
+    onFideSearchChange,
+    onFidePageChange,
+    onFideFilterCommit,
+    fideSort,
+    onFideSortChange,
+    fideLastUpdated,
+    fideRefreshing,
+    fideRefreshProgress,
+    fideRefreshError,
+    onFideRefresh,
+  } = useHomeContext();
+
+  const sortIndicator = (column: string) => (fideSort?.column === column ? (fideSort.dir === "asc" ? "▲" : "▼") : "");
+
+  return (
+    <div className="dock-panel-content">
+      <div className="home-toolbar">
+        <span className="fide-status">{formatLastUpdated(fideLastUpdated, t)}</span>
+        <button onClick={onFideRefresh} disabled={fideRefreshing}>
+          {fideRefreshing ? t("home.fideRefreshing", { count: fideRefreshProgress.toLocaleString() }) : t("home.fideRefresh")}
+        </button>
+      </div>
+      {fideRefreshError && <p className="error">{fideRefreshError}</p>}
+      <div className="games-pagination">
+        <input
+          type="search"
+          placeholder={t("home.searchNamePlaceholder")}
+          value={fideSearchInput}
+          onChange={(e) => onFideSearchChange(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") onFideFilterCommit();
+          }}
+        />
+        <button disabled={fideLoading} onClick={onFideFilterCommit}>
+          {t("home.search")}
+        </button>
+        <PageNav
+          page={fidePage}
+          pageSize={FIDE_PAGE_SIZE}
+          total={fideTotal}
+          loading={fideLoading}
+          onPageChange={onFidePageChange}
+          emptyLabel={t("home.noGames")}
+        />
+      </div>
+      {fidePlayers.length === 0 ? (
+        <p className="notation-empty">{t("home.noPlayers")}</p>
+      ) : (
+        <div className="fide-table-wrap">
+          <table className="explorer-table">
+            <thead>
+              <tr>
+                <th className="games-table-sortable" onClick={() => onFideSortChange("name")}>
+                  {t("home.playerName")} {sortIndicator("name")}
+                </th>
+                <th className="games-table-sortable" onClick={() => onFideSortChange("fed")}>
+                  {t("home.fideFed")} {sortIndicator("fed")}
+                </th>
+                <th>{t("home.fideSex")}</th>
+                <th>{t("home.fideTitle")}</th>
+                <th>{t("home.fideWTitle")}</th>
+                <th>{t("home.fideOTitle")}</th>
+                <th className="games-table-sortable" onClick={() => onFideSortChange("std")}>
+                  {t("home.fideStd")} {sortIndicator("std")}
+                </th>
+                <th className="games-table-sortable" onClick={() => onFideSortChange("rapid")}>
+                  {t("home.fideRapid")} {sortIndicator("rapid")}
+                </th>
+                <th className="games-table-sortable" onClick={() => onFideSortChange("blitz")}>
+                  {t("home.fideBlitz")} {sortIndicator("blitz")}
+                </th>
+                <th className="games-table-sortable" onClick={() => onFideSortChange("birthYear")}>
+                  {t("home.fideBirthYear")} {sortIndicator("birthYear")}
+                </th>
+                <th>{t("home.fideFlag")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {fidePlayers.map((p) => (
+                <tr key={p.fideId}>
+                  <td>{p.name}</td>
+                  <td>{p.fed}</td>
+                  <td>{p.sex}</td>
+                  <td>{p.title}</td>
+                  <td>{p.wTitle}</td>
+                  <td>{p.oTitle}</td>
+                  <td>{p.stdRating ?? ""}</td>
+                  <td>{p.rapidRating ?? ""}</td>
+                  <td>{p.blitzRating ?? ""}</td>
+                  <td>{p.birthYear ?? ""}</td>
+                  <td>{p.flag}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export const homeDockviewComponents = {
   bases: BasesPanelView,
   pgn: PgnPanelView,
   parties: PartiesPanelView,
   players: PlayersPanelView,
+  fide: FidePanelView,
 };

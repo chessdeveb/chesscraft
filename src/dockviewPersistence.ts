@@ -1,5 +1,22 @@
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { DockviewApi } from "dockview-react";
+import { themeDark, themeLight, type DockviewApi, type DockviewTheme } from "dockview-react";
+
+// <DockviewReact> ne recoit son theme (couleurs, classe CSS posee sur son
+// element .dv-shell interne) que via la prop `theme` -- une classe posee sur
+// un <div> englobant n'atteint jamais cet element interne. Sans cette prop,
+// dockview retombe sur son theme "abyss" par defaut (bleu nuit fonce), ce qui
+// explique un ecran qui ne bouge pas malgre les jetons de couleur de l'appli.
+export function useDockviewTheme(): DockviewTheme {
+  const [dark, setDark] = useState(() => window.matchMedia("(prefers-color-scheme: dark)").matches);
+  useEffect(() => {
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const handler = (e: MediaQueryListEvent) => setDark(e.matches);
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
+  }, []);
+  return dark ? themeDark : themeLight;
+}
 
 function loadDockviewLayout(key: string): unknown | null {
   try {

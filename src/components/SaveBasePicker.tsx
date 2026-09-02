@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
 import { useTranslation } from "react-i18next";
 import { BasesTable } from "./BasesTable";
+import { FideNameInput } from "./FideNameInput";
 import type { BaseInfo } from "../types";
 
 interface SaveBasePickerProps {
@@ -107,7 +108,14 @@ export function SaveBasePicker({ tabId, activeBasePath, tags, onConfirm, onCance
         <div className="save-game-info">
           <label>
             {t("common.white")}
-            <input value={white} onChange={(e) => setWhite(e.target.value)} />
+            <FideNameInput
+              id="save-picker-white"
+              value={white}
+              onChange={setWhite}
+              onSelectPlayer={(p) => {
+                if (p.stdRating) setWhiteElo(String(p.stdRating));
+              }}
+            />
           </label>
           <label>
             {t("savePicker.whiteElo")}
@@ -115,7 +123,14 @@ export function SaveBasePicker({ tabId, activeBasePath, tags, onConfirm, onCance
           </label>
           <label>
             {t("common.black")}
-            <input value={black} onChange={(e) => setBlack(e.target.value)} />
+            <FideNameInput
+              id="save-picker-black"
+              value={black}
+              onChange={setBlack}
+              onSelectPlayer={(p) => {
+                if (p.stdRating) setBlackElo(String(p.stdRating));
+              }}
+            />
           </label>
           <label>
             {t("savePicker.blackElo")}

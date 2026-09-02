@@ -8,6 +8,8 @@ import { useTranslation } from "react-i18next";
 import { HomeDockview } from "./HomeDockview";
 import { ImportBasePicker } from "./components/ImportBasePicker";
 import i18n, { useSyncLanguage } from "./i18n";
+import { useSyncBoardTheme } from "./boardTheme";
+import { useSyncColorScheme } from "./colorScheme";
 import type { BulkImportSummary, PgnGameSummary, TabDto } from "./types";
 import "./App.css";
 
@@ -46,6 +48,8 @@ async function openTabInGameWindow(tab: TabDto): Promise<void> {
 
 export function HomeWindow() {
   useSyncLanguage();
+  useSyncBoardTheme();
+  useSyncColorScheme();
   const { t } = useTranslation();
   const [homeFocusPath, setHomeFocusPath] = useState<string | null>(null);
   const [basesVersion, setBasesVersion] = useState(0);
@@ -90,6 +94,27 @@ export function HomeWindow() {
   const handleNewGame = useCallback(async () => {
     try {
       const tab = await invoke<TabDto>("new_game");
+      await openTabInGameWindow(tab);
+      setError(null);
+    } catch (e) {
+      setError(String(e));
+    }
+  }, []);
+
+  const handleNewPosition = useCallback(() => {
+    const editor = new WebviewWindow("position-editor", {
+      url: "/?window=position-editor",
+      title: t("homeWindow.positionEditorWindowTitle"),
+      width: 620,
+      height: 560,
+      resizable: false,
+    });
+    editor.once("tauri://error", (e) => setError(String(e.payload)));
+  }, [t]);
+
+  const handlePositionEditorConfirmed = useCallback(async (fen: string) => {
+    try {
+      const tab = await invoke<TabDto>("new_game_from_fen", { fen });
       await openTabInGameWindow(tab);
       setError(null);
     } catch (e) {
@@ -202,10 +227,21 @@ export function HomeWindow() {
     };
   }, []);
 
+  // la fenetre Nouvelle position previent l'accueil du FEN choisi une fois validee
+  useEffect(() => {
+    const unlistenPromise = listen<string>("position-editor-confirmed", (event) => {
+      handlePositionEditorConfirmed(event.payload);
+    });
+    return () => {
+      unlistenPromise.then((unlisten) => unlisten());
+    };
+  }, [handlePositionEditorConfirmed]);
+
   // --- Menus natifs ---
   useEffect(() => {
     const unlistenPromises = [
       listen("menu-new-game", () => handleNewGame()),
+      listen("menu-new-position", () => handleNewPosition()),
       listen("menu-import-pgn", () => handleImport()),
       listen("menu-bulk-import-pgn", () => handleBulkImportClick()),
       listen("menu-show-bases-paths", () => {
@@ -221,7 +257,7 @@ export function HomeWindow() {
     return () => {
       unlistenPromises.forEach((p) => p.then((unlisten) => unlisten()));
     };
-  }, [handleNewGame, handleImport, handleBulkImportClick, t]);
+  }, [handleNewGame, handleNewPosition, handleImport, handleBulkImportClick, t]);
 
   return (
     <div className="app-layout">

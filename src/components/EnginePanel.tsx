@@ -164,8 +164,7 @@ export function EnginePanel({
           {lines.map((info) => (
             <div key={info.multipv} className="engine-result">
               <span className="engine-score">{formatScore(info)}</span>
-              <span className="engine-depth">{t("engine.depthLabel")}{info.depth}</span>
-              <p className="engine-line">{info.pvSan.join(" ")}</p>
+              <span className="engine-line">{info.pvSan.join(" ")}</span>
             </div>
           ))}
         </div>

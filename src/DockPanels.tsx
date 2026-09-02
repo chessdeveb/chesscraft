@@ -1,5 +1,5 @@
 import type { IDockviewPanelProps } from "dockview-react";
-import type { Color } from "@lichess-org/chessground/types";
+import type { Color, Key } from "@lichess-org/chessground/types";
 import { useTranslation } from "react-i18next";
 import { useAppContext } from "./AppContext";
 import { Board } from "./components/Board";
@@ -12,18 +12,40 @@ import { OpeningExplorer } from "./components/OpeningExplorer";
 const EXPLORER_GAMES_PAGE_SIZE = 20;
 
 export function BoardPanel() {
-  const { currentNode, dests, boardTheme, handleMove, handleShapesChange } = useAppContext();
+  const { t } = useTranslation();
+  const { currentNode, dests, boardTheme, handleMove, handleShapesChange, onStep } = useAppContext();
   if (!currentNode) return null;
+  const lastMove: [Key, Key] | null =
+    currentNode.from && currentNode.to ? [currentNode.from as Key, currentNode.to as Key] : null;
   return (
-    <Board
-      fen={currentNode.fen}
-      turnColor={currentNode.turn as Color}
-      dests={dests}
-      shapes={currentNode.shapes}
-      theme={boardTheme}
-      onMove={handleMove}
-      onShapesChange={handleShapesChange}
-    />
+    <div className="board-panel">
+      <div className="board-panel-board">
+        <Board
+          fen={currentNode.fen}
+          turnColor={currentNode.turn as Color}
+          dests={dests}
+          shapes={currentNode.shapes}
+          theme={boardTheme}
+          lastMove={lastMove}
+          onMove={handleMove}
+          onShapesChange={handleShapesChange}
+        />
+      </div>
+      <div className="transport">
+        <button onClick={() => onStep("start")} title={t("explorer.previewStart")}>
+          ⏮
+        </button>
+        <button onClick={() => onStep("prev")} title={t("explorer.previewPrev")}>
+          ◀
+        </button>
+        <button onClick={() => onStep("next")} title={t("explorer.previewNext")}>
+          ▶
+        </button>
+        <button onClick={() => onStep("end")} title={t("explorer.previewEnd")}>
+          ⏭
+        </button>
+      </div>
+    </div>
   );
 }
 

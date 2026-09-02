@@ -1,5 +1,5 @@
 import { createContext, useContext } from "react";
-import type { BaseInfo, GameSummary, PgnGameSummary, PlayerSummary } from "./types";
+import type { BaseInfo, FidePlayer, GameSummary, PgnGameSummary, PlayerSummary } from "./types";
 
 export type HomeActiveSource = { kind: "base"; base: BaseInfo } | { kind: "pgn"; pgn: BaseInfo } | null;
 
@@ -12,6 +12,12 @@ export interface GamesSort {
 export type PlayersSortColumn = "name" | "games";
 export interface PlayersSort {
   column: PlayersSortColumn;
+  dir: "asc" | "desc";
+}
+
+export type FideSortColumn = "name" | "fed" | "std" | "rapid" | "blitz" | "birthYear";
+export interface FideSort {
+  column: FideSortColumn;
   dir: "asc" | "desc";
 }
 
@@ -87,6 +93,22 @@ export interface HomeContextValue {
   playersSort: PlayersSort | null;
   onPlayersSortChange: (column: PlayersSortColumn) => void;
   onPrepareAgainstPlayer: (name: string, white: boolean) => void;
+
+  fidePlayers: FidePlayer[];
+  fideTotal: number;
+  fideLoading: boolean;
+  fidePage: number;
+  fideSearchInput: string;
+  onFideSearchChange: (v: string) => void;
+  onFidePageChange: (p: number) => void;
+  onFideFilterCommit: () => void;
+  fideSort: FideSort | null;
+  onFideSortChange: (column: FideSortColumn) => void;
+  fideLastUpdated: string | null;
+  fideRefreshing: boolean;
+  fideRefreshProgress: number;
+  fideRefreshError: string | null;
+  onFideRefresh: () => void;
 }
 
 export const HomeContext = createContext<HomeContextValue | null>(null);

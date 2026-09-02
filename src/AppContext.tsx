@@ -12,6 +12,7 @@ export interface AppContextValue {
   handleMove: (from: Key, to: Key) => void;
   handleShapesChange: (shapes: ShapeDto[]) => void;
   handleSelect: (id: number) => void;
+  onStep: (direction: "start" | "prev" | "next" | "end") => void;
   variationChoice: NodeDto[] | null;
   highlightedIndex: number;
   chooseVariation: (id: number) => void;

@@ -3,6 +3,7 @@ mod bulk_import;
 mod db;
 mod engine;
 mod explorer;
+mod fide;
 mod game_tree;
 mod i18n;
 mod pgn;
@@ -56,6 +57,9 @@ struct AppState {
     // (verrous, transactions qui ne se voient pas mutuellement) et gonflent
     // artificiellement le compteur d'echecs.
     bulk_import_running: Mutex<bool>,
+    // Meme raison que bulk_import_running : empeche deux rafraichissements
+    // simultanes de la liste FIDE (voir refresh_fide_players).
+    fide_refresh_running: Mutex<bool>,
     // Connexion vers la base de reference, reutilisee entre les appels de
     // l'explorateur d'ouvertures : en rouvrir une a chaque coup joue coute
     // tres cher sur une base de plusieurs Go (WAL a re-verifier a chaque
@@ -110,6 +114,17 @@ fn new_game(state: State<AppState>) -> TabDto {
     let tab_id = allocate_tab_id(&state);
     let tree = insert_session(&state, tab_id, GameSession::new());
     TabDto { tab_id, tree, is_player_prep: false }
+}
+
+/// Nouvel onglet demarrant sur une position choisie dans l'editeur de
+/// position (Fichier > Nouvelle position) plutot qu'au depart standard.
+#[tauri::command]
+fn new_game_from_fen(state: State<AppState>, fen: String) -> Result<TabDto, String> {
+    let tab_id = allocate_tab_id(&state);
+    let mut session = GameSession::new();
+    session.tree = GameTree::from_fen(&fen)?;
+    let tree = insert_session(&state, tab_id, session);
+    Ok(TabDto { tab_id, tree, is_player_prep: false })
 }
 
 /// Ouvre un nouvel onglet vierge dont l'explorateur d'ouvertures ne
@@ -284,11 +299,18 @@ fn bulk_import_pgn(app: AppHandle, state: State<AppState>, db_path: String, pgn_
         let progress_app = app.clone();
         let cancel_app = app.clone();
         let result = (|| -> Result<bulk_import::BulkImportSummary, String> {
-            let pgn_text = std::fs::read_to_string(&pgn_path).map_err(|e| e.to_string())?;
+            // en flux (BufReader), pas charge entierement en memoire : des
+            // bases source comme LumbrasGigaBase depassent 8 Go, et
+            // read_to_string() les chargeait integralement avant meme de
+            // commencer -- gros pic memoire, pouvant epuiser la RAM
+            // disponible et interrompre l'import en cours de route (voir
+            // bulk_import::bulk_import).
+            let pgn_file = std::fs::File::open(&pgn_path).map_err(|e| e.to_string())?;
+            let pgn_reader = std::io::BufReader::new(pgn_file);
             let mut conn = db::open(Path::new(&db_path))?;
             let summary = bulk_import::bulk_import(
                 &mut conn,
-                &pgn_text,
+                pgn_reader,
                 move |summary| {
                     let _ = progress_app.emit("bulk-import-progress", summary.clone());
                 },
@@ -327,6 +349,80 @@ fn bulk_import_pgn(app: AppHandle, state: State<AppState>, db_path: String, pgn_
 #[tauri::command]
 fn cancel_bulk_import(state: State<AppState>) {
     *state.bulk_import_cancel.lock().unwrap() = true;
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct FideRefreshDone {
+    count: u32,
+}
+
+/// Telecharge et reimporte entierement la liste des joueurs FIDE (voir
+/// fide::refresh) en tache de fond -- meme mecanique que bulk_import_pgn
+/// (thread dedie, evenements de progression, verrou anti-double-declenchement).
+#[tauri::command]
+fn refresh_fide_players(app: AppHandle, state: State<AppState>) -> Result<(), String> {
+    {
+        let mut running = state.fide_refresh_running.lock().unwrap();
+        if *running {
+            return Err("un rafraichissement de la liste FIDE est deja en cours".to_string());
+        }
+        *running = true;
+    }
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    std::thread::spawn(move || {
+        let progress_app = app.clone();
+        let result = fide::refresh(&app_data_dir, move |count| {
+            let _ = progress_app.emit("fide-refresh-progress", count);
+        });
+        match result {
+            Ok(count) => {
+                let _ = app.emit("fide-refresh-done", FideRefreshDone { count });
+            }
+            Err(e) => {
+                let _ = app.emit("fide-refresh-error", e);
+            }
+        }
+        *app.state::<AppState>().fide_refresh_running.lock().unwrap() = false;
+    });
+    Ok(())
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct FidePlayersPage {
+    players: Vec<fide::FidePlayer>,
+    total: u32,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct FideStatus {
+    last_updated: Option<String>,
+    total: u32,
+}
+
+#[tauri::command]
+fn get_fide_status(app: AppHandle) -> Result<FideStatus, String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let conn = fide::open(&app_data_dir)?;
+    Ok(FideStatus { last_updated: fide::last_updated(&conn), total: fide::count_fide_players(&conn, "")? })
+}
+
+#[tauri::command]
+fn list_fide_players(
+    app: AppHandle,
+    search: String,
+    sort_by: String,
+    sort_dir: String,
+    offset: u32,
+    limit: u32,
+) -> Result<FidePlayersPage, String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let conn = fide::open(&app_data_dir)?;
+    let total = fide::count_fide_players(&conn, &search)?;
+    let players = fide::list_fide_players_page(&conn, &search, &sort_by, &sort_dir, limit, offset)?;
+    Ok(FidePlayersPage { players, total })
 }
 
 #[tauri::command]
@@ -736,6 +832,7 @@ fn build_menu(app: &AppHandle, home_panels: bool, game_panels: bool, lang: &str,
     let t = |key: &str| t.get(key).cloned().unwrap_or_else(|| key.to_string());
 
     let new_game_item = MenuItemBuilder::with_id("new_game", t("menu.file.newGame")).build(app)?;
+    let new_position_item = MenuItemBuilder::with_id("new_position", t("menu.file.newPosition")).build(app)?;
     let import_item = MenuItemBuilder::with_id("import_pgn", t("menu.file.openPgn")).build(app)?;
     let bulk_import_item = MenuItemBuilder::with_id("bulk_import_pgn", t("menu.file.importPgn")).build(app)?;
     let export_item = MenuItemBuilder::with_id("export_pgn", t("menu.file.exportPgn")).build(app)?;
@@ -744,6 +841,7 @@ fn build_menu(app: &AppHandle, home_panels: bool, game_panels: bool, lang: &str,
         .build(app)?;
     let file_menu = SubmenuBuilder::new(app, t("menu.file"))
         .item(&new_game_item)
+        .item(&new_position_item)
         .separator()
         .item(&import_item)
         .item(&bulk_import_item)
@@ -768,6 +866,14 @@ fn build_menu(app: &AppHandle, home_panels: bool, game_panels: bool, lang: &str,
         .enabled(home_panels)
         .checked(home_panels)
         .build(app)?;
+    let panel_fide = CheckMenuItemBuilder::with_id("panel_fide", t("menu.display.fide"))
+        .enabled(home_panels)
+        .checked(home_panels)
+        .build(app)?;
+    let panel_board = CheckMenuItemBuilder::with_id("panel_board", t("menu.display.board"))
+        .enabled(game_panels)
+        .checked(game_panels)
+        .build(app)?;
     let panel_notation = CheckMenuItemBuilder::with_id("panel_notation", t("menu.display.notation"))
         .enabled(game_panels)
         .checked(game_panels)
@@ -785,7 +891,9 @@ fn build_menu(app: &AppHandle, home_panels: bool, game_panels: bool, lang: &str,
         .item(&panel_pgn)
         .item(&panel_parties)
         .item(&panel_players)
+        .item(&panel_fide)
         .separator()
+        .item(&panel_board)
         .item(&panel_notation)
         .item(&panel_explorer)
         .item(&panel_engine)
@@ -802,6 +910,8 @@ fn build_menu(app: &AppHandle, home_panels: bool, game_panels: bool, lang: &str,
             ("panel_pgn", panel_pgn),
             ("panel_parties", panel_parties),
             ("panel_players", panel_players),
+            ("panel_fide", panel_fide),
+            ("panel_board", panel_board),
             ("panel_notation", panel_notation),
             ("panel_explorer", panel_explorer),
             ("panel_engine", panel_engine),
@@ -824,6 +934,19 @@ fn build_menu(app: &AppHandle, home_panels: bool, game_panels: bool, lang: &str,
         .build()?;
     let show_bases_paths_item =
         MenuItemBuilder::with_id("show_bases_paths", t("menu.preferences.basesPaths")).build(app)?;
+    // Pas d'option "Systeme" ici : le systeme ne sert que de valeur par
+    // defaut avant tout choix (voir colorScheme.ts, loadStoredColorScheme
+    // retombe sur "system" tant que rien n'est enregistre) -- une fois que
+    // l'utilisateur a choisi Clair ou Sombre, ce choix reste, sans option
+    // pour "redevenir" suiveur du systeme.
+    let color_scheme_light =
+        MenuItemBuilder::with_id("color-scheme-light", t("menu.preferences.appearance.light")).build(app)?;
+    let color_scheme_dark =
+        MenuItemBuilder::with_id("color-scheme-dark", t("menu.preferences.appearance.dark")).build(app)?;
+    let appearance_menu = SubmenuBuilder::new(app, t("menu.preferences.appearance"))
+        .item(&color_scheme_light)
+        .item(&color_scheme_dark)
+        .build()?;
     let lang_fr_item = CheckMenuItemBuilder::with_id("lang-fr", t("menu.preferences.language.fr"))
         .checked(lang != "en")
         .build(app)?;
@@ -836,6 +959,7 @@ fn build_menu(app: &AppHandle, home_panels: bool, game_panels: bool, lang: &str,
         .build()?;
     let preferences_menu = SubmenuBuilder::new(app, t("menu.preferences"))
         .item(&board_colors_menu)
+        .item(&appearance_menu)
         .separator()
         .item(&show_bases_paths_item)
         .separator()
@@ -948,6 +1072,7 @@ pub fn run() {
                 next_tab_id: Mutex::new(0),
                 bulk_import_cancel: Mutex::new(false),
                 bulk_import_running: Mutex::new(false),
+                fide_refresh_running: Mutex::new(false),
                 reference_conn: Mutex::new(None),
                 explorer_cache: Mutex::new(HashMap::new()),
                 language: Mutex::new(initial_lang.clone()),
@@ -966,12 +1091,17 @@ pub fn run() {
                     let _ = app_handle.emit("menu-set-board-theme", theme);
                     return;
                 }
+                if let Some(scheme) = id.strip_prefix("color-scheme-") {
+                    let _ = app_handle.emit("menu-set-color-scheme", scheme);
+                    return;
+                }
                 if let Some(lang) = id.strip_prefix("lang-") {
                     let _ = apply_language_change(app_handle, lang);
                     return;
                 }
                 let event_name = match id {
                     "new_game" => "menu-new-game",
+                    "new_position" => "menu-new-position",
                     "import_pgn" => "menu-import-pgn",
                     "bulk_import_pgn" => "menu-bulk-import-pgn",
                     "export_pgn" => "menu-export-pgn",
@@ -981,6 +1111,8 @@ pub fn run() {
                     "panel_pgn" => "menu-toggle-panel-pgn",
                     "panel_parties" => "menu-toggle-panel-parties",
                     "panel_players" => "menu-toggle-panel-players",
+                    "panel_fide" => "menu-toggle-panel-fide",
+                    "panel_board" => "menu-toggle-panel-board",
                     "panel_notation" => "menu-toggle-panel-notation",
                     "panel_explorer" => "menu-toggle-panel-explorer",
                     "panel_engine" => "menu-toggle-panel-engine",
@@ -997,6 +1129,10 @@ pub fn run() {
             get_language,
             set_language,
             new_game,
+            new_game_from_fen,
+            refresh_fide_players,
+            get_fide_status,
+            list_fide_players,
             open_player_prep_tab,
             get_active_base_path,
             close_tab,

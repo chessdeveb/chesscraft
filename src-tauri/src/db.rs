@@ -585,6 +585,17 @@ fn position_from_and_where(
     moves: &[String],
     filter: Option<&crate::explorer::PlayerFilter>,
 ) -> (String, String, Vec<Box<dyn rusqlite::ToSql>>) {
+    // A la position de depart sans filtre joueur, les bornes mainline_sans
+    // (>= "" AND < "￿") ne restreignent rien : elles matchent toutes
+    // les parties. Les garder forcait quand meme un INDEXED BY idx_games_mainline
+    // suivi d'un tri complet des 10M lignes par id (ORDER BY id DESC dans
+    // games_at_position) puisque cet index est ordonne par coups, pas par id
+    // -- exactement le ralentissement a l'ouverture de l'explorateur sur une
+    // grosse base. Sans condition, SQLite retombe sur l'ordre naturel de la
+    // clef primaire (id), gratuit pour ORDER BY id DESC LIMIT.
+    if moves.is_empty() && filter.is_none() {
+        return ("games".to_string(), String::new(), Vec::new());
+    }
     let (lo, hi) = position_bounds(moves);
     match filter {
         Some(f) => {

@@ -1,5 +1,5 @@
 use crate::db;
-use pgn_reader::{Nag, Outcome, RawComment, RawTag, Reader, SanPlus, Visitor};
+use pgn_reader::{Nag, Outcome, RawComment, RawTag, Reader, SanPlus, Skip, Visitor};
 use rusqlite::Connection;
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -31,15 +31,22 @@ fn has_name(tags: &BTreeMap<String, String>, tag: &str) -> bool {
 }
 
 /// Visiteur "leger" : ne valide pas les coups (pas de simulation d'echiquier),
-/// se contente de recopier le texte SAN tel que fourni par le parseur. Les
-/// variantes imbriquees sont ignorees (comportement par defaut de pgn-reader)
-/// pour rester rapide sur de tres gros fichiers ; la ligne principale, les
-/// commentaires et les NAG sont conserves.
+/// se contente de recopier le texte SAN tel que fourni par le parseur.
+/// `san_tokens` (utilise pour mainline_sans, l'index de position et la
+/// detection de doublon) ne doit contenir QUE la ligne principale -- `depth`
+/// suit la profondeur d'imbrication des variantes ( ... ) pour ne pousser
+/// dans san_tokens/numeroter les coups qu'a profondeur 0, tout en recopiant
+/// quand meme le texte SAN des variantes dans `movetext` (profondeur > 0)
+/// pour qu'elles survivent dans le PGN stocke. Les numeros de coup ne sont
+/// pas ecrits a l'interieur des variantes : le parseur (ici comme a la
+/// reouverture, voir pgn.rs) ne s'appuie que sur la sequence SAN, jamais sur
+/// les numeros, qui ne sont que decoratifs.
 struct BulkGameVisitor {
     tags: BTreeMap<String, String>,
     movetext: String,
     san_tokens: Vec<String>,
     ply: u32,
+    depth: u32,
 }
 
 impl BulkGameVisitor {
@@ -49,6 +56,7 @@ impl BulkGameVisitor {
             movetext: String::new(),
             san_tokens: Vec::new(),
             ply: 0,
+            depth: 0,
         }
     }
 }
@@ -75,13 +83,27 @@ impl Visitor for BulkGameVisitor {
 
     fn san(&mut self, _movetext: &mut Self::Movetext, san_plus: SanPlus) -> ControlFlow<Self::Output> {
         let text = san_plus.to_string();
-        if self.ply % 2 == 0 {
-            self.movetext.push_str(&format!("{}. ", self.ply / 2 + 1));
+        if self.depth == 0 {
+            if self.ply % 2 == 0 {
+                self.movetext.push_str(&format!("{}. ", self.ply / 2 + 1));
+            }
+            self.san_tokens.push(text.clone());
+            self.ply += 1;
         }
         self.movetext.push_str(&text);
         self.movetext.push(' ');
-        self.san_tokens.push(text);
-        self.ply += 1;
+        ControlFlow::Continue(())
+    }
+
+    fn begin_variation(&mut self, _movetext: &mut Self::Movetext) -> ControlFlow<Self::Output, Skip> {
+        self.movetext.push_str("( ");
+        self.depth += 1;
+        ControlFlow::Continue(Skip(false))
+    }
+
+    fn end_variation(&mut self, _movetext: &mut Self::Movetext) -> ControlFlow<Self::Output> {
+        self.depth = self.depth.saturating_sub(1);
+        self.movetext.push_str(") ");
         ControlFlow::Continue(())
     }
 
@@ -147,12 +169,21 @@ fn process_one_game(tx: &rusqlite::Transaction, visitor: &BulkGameVisitor) -> Re
 /// panique) : seul le lot en cours est perdu, pas tout l'import.
 const BATCH_SIZE: u32 = 2000;
 
-/// Importe toutes les parties d'un texte PGN dans la base, par lots valides
-/// regulierement. `on_progress` est appele regulierement (pas a chaque
-/// partie) avec les compteurs courants.
+/// Importe toutes les parties d'une source PGN dans la base, par lots
+/// valides regulierement. `on_progress` est appele regulierement (pas a
+/// chaque partie) avec les compteurs courants.
+///
+/// `pgn_source` est generique sur `Read` (plutot qu'un `&str` deja charge en
+/// memoire) expres : certaines bases source (LumbrasGigaBase...) depassent
+/// les 8 Go, et `std::fs::read_to_string` les chargeait entierement avant
+/// meme de commencer -- gros pic memoire, et un fichier de cette taille
+/// pouvait epuiser la memoire disponible en cours de route, interrompant
+/// l'import a mi-chemin (voir l'appelant, qui passe maintenant un
+/// `BufReader<File>` : lecture en flux, memoire proportionnelle a une seule
+/// partie a la fois, pas au fichier entier).
 pub fn bulk_import(
     conn: &mut Connection,
-    pgn_text: &str,
+    pgn_source: impl std::io::Read,
     mut on_progress: impl FnMut(&BulkImportSummary),
     mut should_cancel: impl FnMut() -> bool,
 ) -> Result<BulkImportSummary, String> {
@@ -160,7 +191,7 @@ pub fn bulk_import(
     let mut tx = conn.transaction().map_err(|e| e.to_string())?;
     let mut since_commit = 0u32;
 
-    let mut reader = Reader::new(pgn_text.as_bytes());
+    let mut reader = Reader::new(pgn_source);
     loop {
         if summary.total % 200 == 0 && should_cancel() {
             break;
@@ -250,7 +281,7 @@ mod tests {
         )
         .unwrap();
 
-        let summary = bulk_import(&mut conn, pgn, |_| {}, || false).unwrap();
+        let summary = bulk_import(&mut conn, pgn.as_bytes(), |_| {}, || false).unwrap();
         println!(
             "total={} imported={} dup={} failed={}",
             summary.total, summary.imported, summary.skipped_duplicates, summary.failed
@@ -258,6 +289,53 @@ mod tests {
         assert_eq!(summary.total, 2);
         assert_eq!(summary.imported, 2);
         assert_eq!(summary.failed, 0);
+    }
+
+    #[test]
+    fn preserves_nested_variations_in_stored_pgn_without_polluting_mainline() {
+        let pgn = r#"[Event "Test Event"]
+[Site "Test Site"]
+[Date "2024.01.01"]
+[Round "1"]
+[White "Alice"]
+[Black "Bob"]
+[Result "1-0"]
+
+1. e4 e5 2. Nf3 (2. Bc4 Bc5 (2... Nf6 3. d3) 3. Qh5) 2... Nc6 3. Bb5 1-0
+"#;
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE games (
+                id INTEGER PRIMARY KEY,
+                white TEXT, black TEXT, white_elo INTEGER, black_elo INTEGER,
+                result TEXT, event TEXT, site TEXT, round TEXT, date_played TEXT,
+                eco TEXT, opening_name TEXT, ply_count INTEGER, time_control TEXT,
+                pgn_moves TEXT NOT NULL, extra_tags TEXT, mainline_sans TEXT,
+                created_at INTEGER NOT NULL, last_modified INTEGER NOT NULL
+            );",
+        )
+        .unwrap();
+
+        let summary = bulk_import(&mut conn, pgn.as_bytes(), |_| {}, || false).unwrap();
+        assert_eq!(summary.imported, 1);
+
+        let (pgn_moves, mainline_sans): (String, String) = conn
+            .query_row("SELECT pgn_moves, mainline_sans FROM games LIMIT 1", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+
+        // la ligne principale ne doit contenir que les coups joues, pas ceux
+        // des variantes (Bc4, Qh5, d3 ne doivent jamais y figurer)
+        assert_eq!(mainline_sans, "e4 e5 Nf3 Nc6 Bb5");
+
+        // mais le PGN stocke doit conserver les variantes imbriquees pour la
+        // reouverture de la partie (voir pgn.rs)
+        assert!(pgn_moves.contains("Bc4"), "variation move Bc4 missing: {pgn_moves}");
+        assert!(pgn_moves.contains("Qh5"), "variation move Qh5 missing: {pgn_moves}");
+        assert!(pgn_moves.contains("Nf6"), "nested variation move Nf6 missing: {pgn_moves}");
+        assert!(pgn_moves.contains('('), "opening paren missing: {pgn_moves}");
+        assert!(pgn_moves.contains(')'), "closing paren missing: {pgn_moves}");
     }
 
     #[test]
@@ -305,7 +383,7 @@ mod tests {
         )
         .unwrap();
 
-        let summary = bulk_import(&mut conn, pgn, |_| {}, || false).unwrap();
+        let summary = bulk_import(&mut conn, pgn.as_bytes(), |_| {}, || false).unwrap();
         assert_eq!(summary.total, 3);
         assert_eq!(summary.imported, 1);
         assert_eq!(summary.skipped_invalid, 2);
@@ -344,7 +422,7 @@ mod tests {
         }
 
         let mut conn = fresh_conn();
-        let summary = bulk_import(&mut conn, &pgn, |_| {}, || false).unwrap();
+        let summary = bulk_import(&mut conn, pgn.as_bytes(), |_| {}, || false).unwrap();
         assert_eq!(summary.total, count);
         assert_eq!(summary.imported, count);
         assert_eq!(summary.failed, 0);
@@ -368,7 +446,7 @@ mod tests {
         let mut checks = 0u32;
         let summary = bulk_import(
             &mut conn,
-            &pgn,
+            pgn.as_bytes(),
             |_| {},
             move || {
                 checks += 1;

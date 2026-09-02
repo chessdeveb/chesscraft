@@ -49,8 +49,8 @@ export function ExplorerGamesList({
                 className={g.id === selectedGameId ? "explorer-table-row--selected" : ""}
                 onClick={() => onSelectGame(g.id)}
               >
-                <td>{g.white}</td>
-                <td>{g.black}</td>
+                <td title={g.white}>{g.white}</td>
+                <td title={g.black}>{g.black}</td>
                 <td>{g.date}</td>
                 <td>{g.result}</td>
               </tr>

@@ -7,6 +7,8 @@ import { useTranslation } from "react-i18next";
 import {
   EMPTY_GAMES_ADVANCED_FILTER,
   HomeContext,
+  type FideSort,
+  type FideSortColumn,
   type GamesAdvancedFilter,
   type GamesSort,
   type GamesSortColumn,
@@ -15,10 +17,20 @@ import {
   type PlayersSort,
   type PlayersSortColumn,
 } from "./HomeContext";
-import { persistDockviewLayout, syncPanelCheckedStates, tryRestoreDockviewLayout } from "./dockviewPersistence";
+import { persistDockviewLayout, syncPanelCheckedStates, tryRestoreDockviewLayout, useDockviewTheme } from "./dockviewPersistence";
 import { homeDockviewComponents } from "./HomeDockPanels";
 import { MoveGameBasePicker } from "./components/MoveGameBasePicker";
-import type { BaseInfo, GameSummary, PgnGameSummary, PlayerSummary, PlayersPage, SaveResult } from "./types";
+import type {
+  BaseInfo,
+  FidePlayer,
+  FidePlayersPage,
+  FideStatus,
+  GameSummary,
+  PgnGameSummary,
+  PlayerSummary,
+  PlayersPage,
+  SaveResult,
+} from "./types";
 import "dockview-react/dist/styles/dockview.css";
 import "./App.css";
 
@@ -37,14 +49,15 @@ interface HomePanelPrefs {
   pgn: boolean;
   parties: boolean;
   players: boolean;
+  fide: boolean;
 }
 
 const HOME_PANELS_KEY = "homePanels";
 const HOME_LAYOUT_KEY = "homeDockviewLayout";
-const HOME_PANEL_IDS = ["bases", "pgn", "parties", "players"];
+const HOME_PANEL_IDS = ["bases", "pgn", "parties", "players", "fide"];
 
 function loadHomePanelPrefs(): HomePanelPrefs {
-  const defaults: HomePanelPrefs = { bases: true, pgn: true, parties: true, players: true };
+  const defaults: HomePanelPrefs = { bases: true, pgn: true, parties: true, players: true, fide: true };
   try {
     const raw = localStorage.getItem(HOME_PANELS_KEY);
     if (!raw) return defaults;
@@ -54,19 +67,6 @@ function loadHomePanelPrefs(): HomePanelPrefs {
   }
 }
 
-function useDockviewTheme(): string {
-  const [theme, setTheme] = useState(() =>
-    window.matchMedia("(prefers-color-scheme: dark)").matches ? "dockview-theme-dark" : "dockview-theme-light"
-  );
-  useEffect(() => {
-    const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    const handler = (e: MediaQueryListEvent) => setTheme(e.matches ? "dockview-theme-dark" : "dockview-theme-light");
-    mq.addEventListener("change", handler);
-    return () => mq.removeEventListener("change", handler);
-  }, []);
-  return theme;
-}
-
 function baseNameFromPath(path: string): string {
   const fileName = path.split(/[\\/]/).pop() ?? path;
   return fileName.replace(/\.sqlite$/i, "");
@@ -74,6 +74,7 @@ function baseNameFromPath(path: string): string {
 
 const GAMES_PAGE_SIZE = 200;
 const PLAYERS_PAGE_SIZE = 200;
+const FIDE_PAGE_SIZE = 200;
 
 export function HomeDockview({
   focusBasePath,
@@ -97,6 +98,7 @@ export function HomeDockview({
     dockviewApi.getPanel("pgn")?.api.setTitle(t("home.panel.pgn"));
     dockviewApi.getPanel("parties")?.api.setTitle(t("home.panel.games"));
     dockviewApi.getPanel("players")?.api.setTitle(t("home.panel.players"));
+    dockviewApi.getPanel("fide")?.api.setTitle(t("home.panel.fide"));
   }, [dockviewApi, t]);
 
   const [bases, setBases] = useState<BaseInfo[]>([]);
@@ -129,6 +131,31 @@ export function HomeDockview({
     setPlayersSort((prev) => (prev?.column === column ? { column, dir: prev.dir === "asc" ? "desc" : "asc" } : { column, dir: "asc" }));
     setPlayersPage(0);
   }, []);
+
+  // Base FIDE (reference globale, independante de la base de parties
+  // selectionnee -- voir fide.rs) : pas de activeBasePath dans les deps de
+  // son effet de chargement, contrairement a `players` ci-dessus.
+  const [fidePlayers, setFidePlayers] = useState<FidePlayer[]>([]);
+  const [fideTotal, setFideTotal] = useState(0);
+  const [fideLoading, setFideLoading] = useState(false);
+  const [fidePage, setFidePage] = useState(0);
+  const [fideSearchInput, setFideSearchInput] = useState("");
+  const [fideSearch, setFideSearch] = useState("");
+  const [fideSort, setFideSort] = useState<FideSort | null>(null);
+  const [fideLastUpdated, setFideLastUpdated] = useState<string | null>(null);
+  const [fideRefreshing, setFideRefreshing] = useState(false);
+  const [fideRefreshProgress, setFideRefreshProgress] = useState(0);
+  const [fideRefreshError, setFideRefreshError] = useState<string | null>(null);
+
+  const onFideSortChange = useCallback((column: FideSortColumn) => {
+    setFideSort((prev) => (prev?.column === column ? { column, dir: prev.dir === "asc" ? "desc" : "asc" } : { column, dir: "asc" }));
+    setFidePage(0);
+  }, []);
+
+  const commitFideFilter = useCallback(() => {
+    setFideSearch(fideSearchInput);
+    setFidePage(0);
+  }, [fideSearchInput]);
 
   const [error, setError] = useState<string | null>(null);
 
@@ -323,6 +350,74 @@ export function HomeDockview({
         if (playersRequestIdRef.current === requestId) setPlayersLoading(false);
       });
   }, [activeBasePath, activeBaseMissing, playersSearch, playersPage, playersSort]);
+
+  // Distinct de fideTotal (qui reflete la recherche/pagination en cours,
+  // voir plus bas) : ce total-la est celui, non filtre, de toute la table,
+  // affiche a cote de la date de derniere mise a jour.
+  const refreshFideStatus = useCallback(() => {
+    invoke<FideStatus>("get_fide_status")
+      .then((status) => setFideLastUpdated(status.lastUpdated))
+      .catch((e) => setError(String(e)));
+  }, []);
+
+  useEffect(() => {
+    refreshFideStatus();
+  }, [refreshFideStatus]);
+
+  const fideRequestIdRef = useRef(0);
+  useEffect(() => {
+    const requestId = ++fideRequestIdRef.current;
+    setFideLoading(true);
+    invoke<FidePlayersPage>("list_fide_players", {
+      search: fideSearch,
+      sortBy: fideSort?.column ?? "",
+      sortDir: fideSort?.dir ?? "",
+      offset: fidePage * FIDE_PAGE_SIZE,
+      limit: FIDE_PAGE_SIZE,
+    })
+      .then((res) => {
+        if (fideRequestIdRef.current !== requestId) return;
+        setFidePlayers(res.players);
+        setFideTotal(res.total);
+      })
+      .catch((e) => {
+        if (fideRequestIdRef.current !== requestId) return;
+        setError(String(e));
+      })
+      .finally(() => {
+        if (fideRequestIdRef.current === requestId) setFideLoading(false);
+      });
+  }, [fideSearch, fidePage, fideSort]);
+
+  const handleFideRefresh = useCallback(async () => {
+    setFideRefreshError(null);
+    setFideRefreshProgress(0);
+    setFideRefreshing(true);
+    try {
+      await invoke("refresh_fide_players");
+    } catch (e) {
+      setFideRefreshing(false);
+      setFideRefreshError(String(e));
+    }
+  }, []);
+
+  useEffect(() => {
+    const unlistenPromises = [
+      listen<number>("fide-refresh-progress", (event) => setFideRefreshProgress(event.payload)),
+      listen<{ count: number }>("fide-refresh-done", () => {
+        setFideRefreshing(false);
+        setFidePage(0);
+        refreshFideStatus();
+      }),
+      listen<string>("fide-refresh-error", (event) => {
+        setFideRefreshing(false);
+        setFideRefreshError(event.payload);
+      }),
+    ];
+    return () => {
+      unlistenPromises.forEach((p) => p.then((unlisten) => unlisten()));
+    };
+  }, [refreshFideStatus]);
 
   const handleSelectPlayer = useCallback(
     (name: string) => {
@@ -531,7 +626,7 @@ export function HomeDockview({
 
   // --- panneaux : visibilite persistee, pilotee par le menu natif Affichage ---
   const setPanelVisible = useCallback(
-    (id: "bases" | "pgn" | "parties" | "players", visible: boolean) => {
+    (id: "bases" | "pgn" | "parties" | "players" | "fide", visible: boolean) => {
       const api = dockviewApi;
       if (!api) return;
       const existing = api.getPanel(id);
@@ -558,13 +653,21 @@ export function HomeDockview({
             title: t("home.panel.games"),
             position: bases ? { direction: "right", referencePanel: "bases" } : undefined,
           });
-        } else {
+        } else if (id === "players") {
           const parties = api.getPanel("parties");
           api.addPanel({
             id: "players",
             component: "players",
             title: t("home.panel.players"),
             position: parties ? { direction: "within", referencePanel: "parties" } : undefined,
+          });
+        } else {
+          const players = api.getPanel("players");
+          api.addPanel({
+            id: "fide",
+            component: "fide",
+            title: t("home.panel.fide"),
+            position: players ? { direction: "within", referencePanel: "players" } : undefined,
           });
         }
       } else {
@@ -575,7 +678,7 @@ export function HomeDockview({
   );
 
   useEffect(() => {
-    const unlistenPromises = (["bases", "pgn", "parties", "players"] as const).map((id) =>
+    const unlistenPromises = (["bases", "pgn", "parties", "players", "fide"] as const).map((id) =>
       listen(`menu-toggle-panel-${id}`, () => {
         const isVisible = !!dockviewApi?.getPanel(id);
         setPanelVisible(id, !isVisible);
@@ -598,6 +701,20 @@ export function HomeDockview({
     setDockviewApi(event.api);
     const api = event.api;
     if (tryRestoreDockviewLayout(api, HOME_LAYOUT_KEY)) {
+      // une disposition sauvegardee avant l'ajout d'un panneau ne le
+      // contient pas (fromJSON remplace entierement les panneaux) -- sans
+      // ca, un panneau introduit apres coup (ex. "fide") resterait
+      // introuvable pour toujours pour qui a deja une disposition
+      // enregistree (voir le meme correctif applique au plateau, GameTab.tsx).
+      if (!api.getPanel("fide")) {
+        const playersPanel = api.getPanel("players");
+        api.addPanel({
+          id: "fide",
+          component: "fide",
+          title: t("home.panel.fide"),
+          position: playersPanel ? { direction: "within", referencePanel: "players" } : undefined,
+        });
+      }
       syncPanelCheckedStates(api, HOME_PANEL_IDS);
       return;
     }
@@ -628,6 +745,15 @@ export function HomeDockview({
         component: "players",
         title: t("home.panel.players"),
         position: partiesPanel ? { direction: "within", referencePanel: "parties" } : undefined,
+      });
+    }
+    if (prefs.fide) {
+      const playersPanel = api.getPanel("players");
+      api.addPanel({
+        id: "fide",
+        component: "fide",
+        title: t("home.panel.fide"),
+        position: playersPanel ? { direction: "within", referencePanel: "players" } : undefined,
       });
     }
     api.getPanel("bases")?.api.setActive();
@@ -682,12 +808,27 @@ export function HomeDockview({
     playersSort,
     onPlayersSortChange,
     onPrepareAgainstPlayer,
+    fidePlayers,
+    fideTotal,
+    fideLoading,
+    fidePage,
+    fideSearchInput,
+    onFideSearchChange: setFideSearchInput,
+    onFidePageChange: setFidePage,
+    onFideFilterCommit: commitFideFilter,
+    fideSort,
+    onFideSortChange,
+    fideLastUpdated,
+    fideRefreshing,
+    fideRefreshProgress,
+    fideRefreshError,
+    onFideRefresh: handleFideRefresh,
   };
 
   return (
     <HomeContext.Provider value={contextValue}>
-      <div className={"dockview-container " + theme}>
-        <DockviewReact components={homeDockviewComponents} onReady={onDockviewReady} />
+      <div className={"dockview-container " + theme.className}>
+        <DockviewReact components={homeDockviewComponents} onReady={onDockviewReady} theme={theme} />
       </div>
       {transferPicker && activeSource?.kind === "base" && (
         <MoveGameBasePicker

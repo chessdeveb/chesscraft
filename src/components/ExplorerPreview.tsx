@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import type { Color, Dests } from "@lichess-org/chessground/types";
+import type { Color, Dests, Key } from "@lichess-org/chessground/types";
 import { Board } from "./Board";
 import { Notation } from "./Notation";
 import type { TreeDto } from "../types";
@@ -45,6 +45,7 @@ export function ExplorerPreview({ gameId, tree, nodeId, error, onSelectNode, onS
               dests={NO_DESTS}
               shapes={[]}
               theme={boardTheme}
+              lastMove={currentNode.from && currentNode.to ? [currentNode.from as Key, currentNode.to as Key] : null}
               onMove={NO_OP}
               onShapesChange={NO_OP}
             />
@@ -63,7 +64,7 @@ export function ExplorerPreview({ gameId, tree, nodeId, error, onSelectNode, onS
               ⏭
             </button>
             <button onClick={onOpen} title={t("explorer.previewOpen")}>
-              {t("explorer.previewOpen")}
+              {t("explorer.previewOpenShort")}
             </button>
             <button onClick={onClose} title={t("notation.close")}>
               ✕
