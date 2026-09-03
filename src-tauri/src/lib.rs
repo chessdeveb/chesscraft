@@ -290,7 +290,7 @@ fn bulk_import_pgn(app: AppHandle, state: State<AppState>, db_path: String, pgn_
     {
         let mut running = state.bulk_import_running.lock().unwrap();
         if *running {
-            return Err("un import en masse est deja en cours".to_string());
+            return Err("un import en masse est déjà en cours".to_string());
         }
         *running = true;
     }
@@ -365,7 +365,7 @@ fn refresh_fide_players(app: AppHandle, state: State<AppState>) -> Result<(), St
     {
         let mut running = state.fide_refresh_running.lock().unwrap();
         if *running {
-            return Err("un rafraichissement de la liste FIDE est deja en cours".to_string());
+            return Err("un rafraîchissement de la liste FIDE est déjà en cours".to_string());
         }
         *running = true;
     }
@@ -487,7 +487,7 @@ fn analyze_position(
     let session = sessions.get_mut(&tab_id).ok_or_else(|| "onglet introuvable".to_string())?;
     match session.engine.as_mut() {
         Some(handle) => handle.analyze(&fen, depth, multipv, threads),
-        None => Err("le moteur n'est pas demarre".to_string()),
+        None => Err("le moteur n'est pas démarré".to_string()),
     }
 }
 
@@ -504,7 +504,7 @@ fn pause_engine(state: State<AppState>, tab_id: u32) -> Result<(), String> {
     let session = sessions.get_mut(&tab_id).ok_or_else(|| "onglet introuvable".to_string())?;
     match session.engine.as_mut() {
         Some(handle) => handle.pause(),
-        None => Err("le moteur n'est pas demarre".to_string()),
+        None => Err("le moteur n'est pas démarré".to_string()),
     }
 }
 
@@ -518,7 +518,7 @@ fn ensure_reference_conn(app: &AppHandle, state: &State<AppState>) -> Result<(),
     let reference = bases::list_bases(&dir)
         .into_iter()
         .find(|b| b.is_reference && !b.missing)
-        .ok_or_else(|| "aucune base de reference definie (Accueil > clic sur une base > Marquer comme reference)".to_string())?;
+        .ok_or_else(|| "aucune base de référence définie (Accueil > clic sur une base > Marquer comme référence)".to_string())?;
 
     let mut conn_cache = state.reference_conn.lock().unwrap();
     let needs_reopen = !matches!(conn_cache.as_ref(), Some((path, _)) if *path == reference.path);
@@ -994,7 +994,7 @@ fn rebuild_and_attach_menu(app: &AppHandle, lang: &str) -> Result<(), String> {
 fn attach_game_menu(app: AppHandle, state: State<AppState>) -> Result<(), String> {
     let window = app
         .get_webview_window("game")
-        .ok_or_else(|| "fenetre game introuvable".to_string())?;
+        .ok_or_else(|| "fenêtre game introuvable".to_string())?;
     let lang = state.language.lock().unwrap().clone();
     let menu = build_menu(&app, true, true, &lang, "game").map_err(|e| e.to_string())?;
     window.set_menu(menu).map_err(|e| e.to_string())?;

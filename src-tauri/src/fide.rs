@@ -215,14 +215,14 @@ pub fn list_fide_players_page(
 pub fn refresh(app_data_dir: &Path, mut on_progress: impl FnMut(u32)) -> Result<u32, String> {
     let resp = ureq::get(DOWNLOAD_URL)
         .call()
-        .map_err(|e| format!("Telechargement de la liste FIDE echoue : {e}"))?;
+        .map_err(|e| format!("Téléchargement de la liste FIDE échoué : {e}"))?;
     let mut zip_bytes = Vec::new();
     resp.into_reader().read_to_end(&mut zip_bytes).map_err(|e| e.to_string())?;
 
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(zip_bytes)).map_err(|e| e.to_string())?;
     let entry = archive
         .by_name(ARCHIVE_ENTRY_NAME)
-        .map_err(|e| format!("Archive FIDE inattendue (entree {ARCHIVE_ENTRY_NAME} introuvable) : {e}"))?;
+        .map_err(|e| format!("Archive FIDE inattendue (entrée {ARCHIVE_ENTRY_NAME} introuvable) : {e}"))?;
     let reader = BufReader::new(entry);
 
     let mut conn = open(app_data_dir)?;

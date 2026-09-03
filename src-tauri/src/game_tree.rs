@@ -151,7 +151,7 @@ impl GameTree {
         let setup: Fen = fen.trim().parse().map_err(|e| format!("FEN invalide : {e}"))?;
         let position: Chess = setup
             .into_position(CastlingMode::Standard)
-            .map_err(|e| format!("Position illegale : {e}"))?;
+            .map_err(|e| format!("Position illégale : {e}"))?;
         let root = Node {
             id: 0,
             parent: None,
@@ -186,7 +186,7 @@ impl GameTree {
     }
 
     pub fn legal_moves(&self, node_id: u32) -> Result<Vec<MoveDto>, String> {
-        let node = self.node(node_id).ok_or_else(|| "noeud introuvable".to_string())?;
+        let node = self.node(node_id).ok_or_else(|| "nœud introuvable".to_string())?;
         Ok(node
             .position
             .legal_moves()
@@ -212,11 +212,11 @@ impl GameTree {
         to: &str,
         promotion: Option<&str>,
     ) -> Result<u32, String> {
-        let node = self.node(node_id).ok_or_else(|| "noeud introuvable".to_string())?;
+        let node = self.node(node_id).ok_or_else(|| "nœud introuvable".to_string())?;
         let position = node.position.clone();
 
-        let from_sq = Square::from_str(from).map_err(|_| "case de depart invalide".to_string())?;
-        let to_sq = Square::from_str(to).map_err(|_| "case d'arrivee invalide".to_string())?;
+        let from_sq = Square::from_str(from).map_err(|_| "case de départ invalide".to_string())?;
+        let to_sq = Square::from_str(to).map_err(|_| "case d'arrivée invalide".to_string())?;
         let requested_promotion = match promotion {
             Some(p) => Some(str_to_role(p).ok_or_else(|| "promotion invalide".to_string())?),
             None => None,
@@ -241,8 +241,8 @@ impl GameTree {
                 promotion: Some(Role::Queen),
             }
             .to_move(&position)
-            .map_err(|_| "coup illegal".to_string())?,
-            Err(_) => return Err("coup illegal".to_string()),
+            .map_err(|_| "coup illégal".to_string())?,
+            Err(_) => return Err("coup illégal".to_string()),
         };
 
         let chosen_promotion = chosen.promotion().map(role_to_str);
@@ -258,7 +258,7 @@ impl GameTree {
 
         let new_position = position
             .play(chosen)
-            .map_err(|_| "coup illegal".to_string())?;
+            .map_err(|_| "coup illégal".to_string())?;
 
         let new_id = self.nodes.len() as u32;
         self.nodes.push(Node {
@@ -289,7 +289,7 @@ impl GameTree {
         let node = self
             .nodes
             .get_mut(node_id as usize)
-            .ok_or_else(|| "noeud introuvable".to_string())?;
+            .ok_or_else(|| "nœud introuvable".to_string())?;
         node.comment_before = before.filter(|s| !s.is_empty());
         node.comment_after = after.filter(|s| !s.is_empty());
         Ok(())
@@ -309,7 +309,7 @@ impl GameTree {
         let node = self
             .nodes
             .get_mut(node_id as usize)
-            .ok_or_else(|| "noeud introuvable".to_string())?;
+            .ok_or_else(|| "nœud introuvable".to_string())?;
         node.nags = nags;
         Ok(())
     }
@@ -318,7 +318,7 @@ impl GameTree {
         let node = self
             .nodes
             .get_mut(node_id as usize)
-            .ok_or_else(|| "noeud introuvable".to_string())?;
+            .ok_or_else(|| "nœud introuvable".to_string())?;
         node.shapes = shapes
             .into_iter()
             .map(|s| Shape {

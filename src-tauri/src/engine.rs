@@ -180,7 +180,7 @@ fn wait_for(reader: &mut BufReader<std::process::ChildStdout>, token: &str) -> R
     loop {
         line.clear();
         match reader.read_line(&mut line) {
-            Ok(0) => return Err("le moteur s'est arrete de maniere inattendue".to_string()),
+            Ok(0) => return Err("le moteur s'est arrêté de manière inattendue".to_string()),
             Ok(_) => {
                 if line.trim() == token {
                     return Ok(());

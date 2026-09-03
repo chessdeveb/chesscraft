@@ -122,7 +122,7 @@ pub fn parse_game(pgn_text: &str) -> Result<GameTree, String> {
 /// l'application entiere, juste renvoyer une erreur.
 pub fn parse_game_at(pgn_text: &str, index: u32) -> Result<GameTree, String> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| parse_game_at_inner(pgn_text, index)))
-        .unwrap_or_else(|_| Err("partie mal formee (erreur interne du parseur)".to_string()))
+        .unwrap_or_else(|_| Err("partie mal formée (erreur interne du parseur)".to_string()))
 }
 
 fn parse_game_at_inner(pgn_text: &str, index: u32) -> Result<GameTree, String> {
