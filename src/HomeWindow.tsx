@@ -253,6 +253,16 @@ export function HomeWindow() {
         });
         win.once("tauri://error", (e) => setError(String(e.payload)));
       }),
+      listen("menu-show-about", () => {
+        const win = new WebviewWindow("about", {
+          url: "/?window=about",
+          title: t("homeWindow.aboutWindowTitle"),
+          width: 420,
+          height: 320,
+          resizable: false,
+        });
+        win.once("tauri://error", (e) => setError(String(e.payload)));
+      }),
     ];
     return () => {
       unlistenPromises.forEach((p) => p.then((unlisten) => unlisten()));

@@ -7,8 +7,10 @@ interface NotationProps {
   tree: TreeDto;
   currentNodeId: number;
   onSelect: (id: number) => void;
-  onSetComment: (before: string, after: string) => void;
-  onToggleNag: (code: number) => void;
+  onSetComment?: (before: string, after: string) => void;
+  onToggleNag?: (code: number) => void;
+  /** Aperçu en lecture seule (Explorateur) : pas de barre d'annotation. */
+  readOnly?: boolean;
 }
 
 function InlineCommentEditor({
@@ -45,7 +47,7 @@ function InlineCommentEditor({
   );
 }
 
-export function Notation({ tree, currentNodeId, onSelect, onSetComment, onToggleNag }: NotationProps) {
+export function Notation({ tree, currentNodeId, onSelect, onSetComment, onToggleNag, readOnly }: NotationProps) {
   const { t } = useTranslation();
   const byId = new Map(tree.nodes.map((n) => [n.id, n]));
   const [editing, setEditing] = useState<"before" | "after" | null>(null);
@@ -166,7 +168,7 @@ export function Notation({ tree, currentNodeId, onSelect, onSetComment, onToggle
         )}
         {tree.tags.Result && <span className="notation-result">{tree.tags.Result}</span>}
       </div>
-      {currentNode && (
+      {currentNode && !readOnly && (
         <div className="annotate-bar">
           <div className="annotate-toolbar">
             {MOVE_NAG_CHOICES.map((n) => (
@@ -174,7 +176,7 @@ export function Notation({ tree, currentNodeId, onSelect, onSetComment, onToggle
                 key={n.code}
                 title={t(n.labelKey)}
                 className={"nag-button" + (activeMoveNag === n.code ? " nag-button--active" : "")}
-                onClick={() => onToggleNag(n.code)}
+                onClick={() => onToggleNag?.(n.code)}
               >
                 {n.symbol}
               </button>
@@ -185,7 +187,7 @@ export function Notation({ tree, currentNodeId, onSelect, onSetComment, onToggle
                 key={n.code}
                 title={t(n.labelKey)}
                 className={"nag-button" + (activeEvalNag === n.code ? " nag-button--active" : "")}
-                onClick={() => onToggleNag(n.code)}
+                onClick={() => onToggleNag?.(n.code)}
               >
                 {n.symbol}
               </button>
@@ -211,14 +213,14 @@ export function Notation({ tree, currentNodeId, onSelect, onSetComment, onToggle
           {editing === "before" && (
             <InlineCommentEditor
               value={currentNode.commentBefore ?? ""}
-              onSave={(text) => onSetComment(text, currentNode.commentAfter ?? "")}
+              onSave={(text) => onSetComment?.(text, currentNode.commentAfter ?? "")}
               onClose={() => setEditing(null)}
             />
           )}
           {editing === "after" && (
             <InlineCommentEditor
               value={currentNode.commentAfter ?? ""}
-              onSave={(text) => onSetComment(currentNode.commentBefore ?? "", text)}
+              onSave={(text) => onSetComment?.(currentNode.commentBefore ?? "", text)}
               onClose={() => setEditing(null)}
             />
           )}

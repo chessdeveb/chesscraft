@@ -30,6 +30,8 @@
   "menu.preferences.language": "Langue",
   "menu.preferences.language.fr": "Francais",
   "menu.preferences.language.en": "English",
+  "menu.help": "Aide",
+  "menu.help.about": "A propos / Mises a jour...",
 
   "common.white": "Blancs",
   "common.black": "Noirs",
@@ -139,6 +141,7 @@
   "homeWindow.pickerWindowTitle": "Choisir une partie",
   "homeWindow.basesPathsWindowTitle": "Emplacement des bases",
   "homeWindow.positionEditorWindowTitle": "Nouvelle position",
+  "homeWindow.aboutWindowTitle": "A propos",
   "homeWindow.importing": "Import en cours...",
   "homeWindow.importDone": "Import termine",
   "homeWindow.importFailed": "Echec de l'import",
@@ -238,5 +241,19 @@
   "positionEditor.piece.rook": "Tour",
   "positionEditor.piece.bishop": "Fou",
   "positionEditor.piece.knight": "Cavalier",
-  "positionEditor.piece.pawn": "Pion"
+  "positionEditor.piece.pawn": "Pion",
+  "positionEditor.paletteHint": "Cliquez une piece pour la choisir, puis cliquez sur l'echiquier pour la poser (plusieurs fois de suite, remplace une autre piece). Recliquez une case qui porte deja cette piece pour la retirer. Cliquez a nouveau la piece dans la palette pour arreter.",
+  "positionEditor.fenPlaceholder": "Coller un FEN...",
+  "positionEditor.fenLoad": "Charger",
+  "positionEditor.fenInvalid": "FEN invalide : le placement des pieces doit avoir 8 rangees separees par /",
+
+  "about.title": "ChessCraft",
+  "about.version": "Version {{version}}",
+  "about.checkUpdate": "Verifier les mises a jour",
+  "about.checking": "Verification en cours...",
+  "about.upToDate": "Vous avez deja la derniere version.",
+  "about.updateAvailable": "Une nouvelle version est disponible : {{version}}",
+  "about.installUpdate": "Telecharger et installer",
+  "about.downloading": "Telechargement en cours...",
+  "about.downloadingPercent": "Telechargement en cours... ({{percent}}%)"
 }

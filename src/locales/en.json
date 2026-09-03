@@ -30,6 +30,8 @@
   "menu.preferences.language": "Language",
   "menu.preferences.language.fr": "Francais",
   "menu.preferences.language.en": "English",
+  "menu.help": "Help",
+  "menu.help.about": "About / Updates...",
 
   "common.white": "White",
   "common.black": "Black",
@@ -139,6 +141,7 @@
   "homeWindow.pickerWindowTitle": "Choose a game",
   "homeWindow.basesPathsWindowTitle": "Database locations",
   "homeWindow.positionEditorWindowTitle": "New position",
+  "homeWindow.aboutWindowTitle": "About",
   "homeWindow.importing": "Import in progress...",
   "homeWindow.importDone": "Import complete",
   "homeWindow.importFailed": "Import failed",
@@ -238,5 +241,19 @@
   "positionEditor.piece.rook": "Rook",
   "positionEditor.piece.bishop": "Bishop",
   "positionEditor.piece.knight": "Knight",
-  "positionEditor.piece.pawn": "Pawn"
+  "positionEditor.piece.pawn": "Pawn",
+  "positionEditor.paletteHint": "Click a piece to select it, then click the board to place it (repeat as needed, replaces any other piece). Click a square that already has that piece to remove it. Click the piece in the palette again to stop.",
+  "positionEditor.fenPlaceholder": "Paste a FEN...",
+  "positionEditor.fenLoad": "Load",
+  "positionEditor.fenInvalid": "Invalid FEN: the piece placement field must have 8 ranks separated by /",
+
+  "about.title": "ChessCraft",
+  "about.version": "Version {{version}}",
+  "about.checkUpdate": "Check for updates",
+  "about.checking": "Checking...",
+  "about.upToDate": "You already have the latest version.",
+  "about.updateAvailable": "A new version is available: {{version}}",
+  "about.installUpdate": "Download and install",
+  "about.downloading": "Downloading...",
+  "about.downloadingPercent": "Downloading... ({{percent}}%)"
 }

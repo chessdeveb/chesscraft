@@ -638,6 +638,14 @@ pub fn games_at_position(
     limit: u32,
     offset: u32,
 ) -> Result<Vec<GameSummary>, String> {
+    // Prefixe court (1 ou 2 demi-coups), sans filtre joueur : voir
+    // games_at_position_shallow_scan. Le prefixe vide (position de depart)
+    // reste gere par la branche generale ci-dessous, qui a deja son propre
+    // raccourci (position_from_and_where retourne alors un FROM sans WHERE).
+    if filter.is_none() && !moves.is_empty() && moves.len() <= crate::explorer::PRECOMPUTED_MAX_DEPTH {
+        return games_at_position_shallow_scan(conn, &moves.join(" "), limit, offset);
+    }
+
     let (from, where_clause, mut params) = position_from_and_where(moves, filter);
     let limit_ph = params.len() + 1;
     let offset_ph = params.len() + 2;
@@ -656,6 +664,47 @@ pub fn games_at_position(
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string());
     rows
+}
+
+/// Balaie `games` par id decroissant -- l'ordre naturel de la cle primaire,
+/// donc gratuit pour "les plus recentes d'abord", sans le moindre tri -- et
+/// filtre le prefixe cote Rust, en s'arretant des que `limit` correspondances
+/// (apres avoir saute les `offset` premieres) ont ete trouvees.
+///
+/// Reserve aux prefixes courts (1 ou 2 demi-coups, voir l'appelant) : a cette
+/// profondeur, quelques coups d'ouverture usuels couvrent une tres grande
+/// part de la base, donc peu de lignes sont a parcourir avant d'obtenir
+/// `limit` correspondances. Au contraire, forcer `INDEXED BY idx_games_mainline`
+/// (utilise pour un prefixe plus profond/selectif, voir games_at_position)
+/// oblige alors SQLite a materialiser puis trier par id l'ENSEMBLE des lignes
+/// correspondantes avant d'appliquer LIMIT ("USE TEMP B-TREE FOR ORDER BY"
+/// dans EXPLAIN QUERY PLAN) -- sur la base de reference (plusieurs millions
+/// de parties), ce tri portait sur des millions de lignes des le premier
+/// coup clique, mesure ~650x plus lent que ce balayage sur un jeu de test de
+/// 300k parties synthetiques (voir l'ancien probe_shallow_prefix_perf).
+fn games_at_position_shallow_scan(conn: &Connection, prefix: &str, limit: u32, offset: u32) -> Result<Vec<GameSummary>, String> {
+    let with_space = format!("{prefix} ");
+    let mut stmt = conn
+        .prepare("SELECT id, white, black, date_played, result, event, time_control, mainline_sans FROM games ORDER BY id DESC")
+        .map_err(|e| e.to_string())?;
+    let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
+    let mut skipped = 0u32;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+        let mainline: String = row.get(7).map_err(|e| e.to_string())?;
+        if mainline != prefix && !mainline.starts_with(&with_space) {
+            continue;
+        }
+        if skipped < offset {
+            skipped += 1;
+            continue;
+        }
+        out.push(map_game_summary_row(row).map_err(|e| e.to_string())?);
+        if out.len() as u32 >= limit {
+            break;
+        }
+    }
+    Ok(out)
 }
 
 #[derive(Serialize, Clone)]
@@ -959,6 +1008,35 @@ mod tests {
         // coups identiques : doublon detecte
         let same_moves = vec!["e4".to_string(), "e5".to_string()];
         assert!(find_duplicate(&conn, &tags, &same_moves).unwrap().is_some());
+    }
+
+    #[test]
+    fn games_at_position_shallow_prefix_paginates_correctly() {
+        // Prefixe d'un seul demi-coup ("e4") : passe par
+        // games_at_position_shallow_scan plutot que la branche indexee+triee
+        // -- verifie que le filtrage par prefixe et la pagination (offset/limit,
+        // les plus recentes d'abord) y restent corrects, pas seulement rapides.
+        let conn = open(Path::new(":memory:")).unwrap();
+        for i in 0..5 {
+            save_game(&conn, "1. e4 *", &base_tags(&format!("W{i}"), "Bob", "2024.01.01", "*"), "e4 e5").unwrap();
+        }
+        // ne doit jamais apparaitre : autre premier coup
+        save_game(&conn, "1. d4 *", &base_tags("Erin", "Frank", "2024.01.01", "*"), "d4 d5").unwrap();
+
+        let moves = vec!["e4".to_string()];
+        assert_eq!(count_games_at_position(&conn, &moves, None).unwrap(), 5);
+
+        // les plus recentes d'abord (id decroissant) : W4 puis W3
+        let page0 = games_at_position(&conn, &moves, None, 2, 0).unwrap();
+        assert_eq!(page0.iter().map(|g| g.white.as_str()).collect::<Vec<_>>(), vec!["W4", "W3"]);
+
+        // page suivante (offset 2) : W2 puis W1, "d4" jamais inclus
+        let page1 = games_at_position(&conn, &moves, None, 2, 2).unwrap();
+        assert_eq!(page1.iter().map(|g| g.white.as_str()).collect::<Vec<_>>(), vec!["W2", "W1"]);
+
+        // derniere page partielle (offset 4, limit 2) : un seul resultat
+        let page2 = games_at_position(&conn, &moves, None, 2, 4).unwrap();
+        assert_eq!(page2.iter().map(|g| g.white.as_str()).collect::<Vec<_>>(), vec!["W0"]);
     }
 
     #[test]

@@ -67,7 +67,7 @@ fn tally_rows_to_stats(rows: impl Iterator<Item = rusqlite::Result<(String, Opti
 /// dans opening_prefix_stats. Au-dela, une partie de plus en plus petite de
 /// la base correspond au prefixe : la requete a la volee (voir plus bas)
 /// reste rapide sans avoir besoin d'etre precalculee.
-const PRECOMPUTED_MAX_DEPTH: usize = 2;
+pub(crate) const PRECOMPUTED_MAX_DEPTH: usize = 2;
 
 /// "*" pour un resultat manquant/vide : opening_prefix_stats.result est NOT
 /// NULL (necessaire pour la contrainte d'unicite utilisee par les mises a

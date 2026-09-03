@@ -966,7 +966,10 @@ fn build_menu(app: &AppHandle, home_panels: bool, game_panels: bool, lang: &str,
         .item(&language_menu)
         .build()?;
 
-    Menu::with_items(app, &[&file_menu, &display_menu, &preferences_menu])
+    let about_item = MenuItemBuilder::with_id("about", t("menu.help.about")).build(app)?;
+    let help_menu = SubmenuBuilder::new(app, t("menu.help")).item(&about_item).build()?;
+
+    Menu::with_items(app, &[&file_menu, &display_menu, &preferences_menu, &help_menu])
 }
 
 /// Reconstruit le menu dans la langue donnee et le rattache a la fenetre
@@ -1043,6 +1046,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
@@ -1107,6 +1111,7 @@ pub fn run() {
                     "export_pgn" => "menu-export-pgn",
                     "save_game" => "menu-save-game",
                     "show_bases_paths" => "menu-show-bases-paths",
+                    "about" => "menu-show-about",
                     "panel_bases" => "menu-toggle-panel-bases",
                     "panel_pgn" => "menu-toggle-panel-pgn",
                     "panel_parties" => "menu-toggle-panel-parties",

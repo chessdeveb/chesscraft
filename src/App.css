@@ -422,11 +422,18 @@ textarea {
   table-layout: fixed;
 }
 
+/* flex:1/min-height:0 pour occuper toute la hauteur de la colonne
+   (.explorer-panel-col--right, elle-meme en colonne flex) : ainsi echiquier
+   + controles restent fixes en haut et seule .explorer-preview-notation
+   (flex:1 + overflow-y auto plus bas) defile quand on deroule les coups. */
 .explorer-preview {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 8px;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
 }
 
 .explorer-preview--empty {
@@ -438,11 +445,13 @@ textarea {
   width: 100%;
   max-width: 260px;
   aspect-ratio: 1 / 1;
+  flex-shrink: 0;
 }
 
 .explorer-preview-controls {
   display: flex;
   gap: 6px;
+  flex-shrink: 0;
 }
 
 .explorer-preview-controls button {
@@ -459,8 +468,9 @@ textarea {
 
 .explorer-preview-notation {
   width: 100%;
+  flex: 1;
   min-height: 0;
-  overflow: auto;
+  overflow-y: auto;
 }
 
 .explorer-table-row--drop-target {
@@ -785,6 +795,14 @@ textarea {
   margin: 0;
 }
 
+.about-release-notes {
+  white-space: pre-wrap;
+  font-size: 0.9em;
+  opacity: 0.85;
+  border-left: 2px solid var(--line);
+  padding-left: 8px;
+}
+
 .position-editor {
   padding: var(--s4);
   display: flex;
@@ -798,8 +816,21 @@ textarea {
   margin: 0;
 }
 
+.position-editor-fen-row {
+  display: flex;
+  gap: var(--s2);
+}
+
+.position-editor-fen-row input {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+}
+
 .position-editor-body {
   display: flex;
+  align-items: flex-start;
   gap: var(--s4);
   flex: 1;
   min-height: 0;
@@ -835,7 +866,24 @@ textarea {
   border: 1px solid var(--line-strong);
   border-radius: var(--r-sm);
   background: var(--sunken);
-  cursor: grab;
+  cursor: pointer;
+}
+
+.position-editor-swatch--selected {
+  border-color: var(--accent);
+  background: var(--accent-weak);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.position-editor-hint {
+  /* sans largeur bornee, ce texte (long) forcait .position-editor-board-col
+     -- flex-shrink:0, donc jamais retreci en dessous de son contenu -- a
+     s'etirer sur toute sa largeur "preferee" (la phrase sur une seule
+     ligne), ecrasant .position-editor-controls a 0px a cote. */
+  max-width: 320px;
+  margin: 0;
+  font-size: var(--t-xs);
+  color: var(--ink-3);
 }
 
 .position-editor-swatch piece {

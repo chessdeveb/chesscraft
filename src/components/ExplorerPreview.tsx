@@ -71,7 +71,7 @@ export function ExplorerPreview({ gameId, tree, nodeId, error, onSelectNode, onS
             </button>
           </div>
           <div className="explorer-preview-notation">
-            <Notation tree={tree} currentNodeId={nodeId ?? tree.root} onSelect={onSelectNode} onSetComment={NO_OP} onToggleNag={NO_OP} />
+            <Notation tree={tree} currentNodeId={nodeId ?? tree.root} onSelect={onSelectNode} readOnly />
           </div>
         </>
       )}

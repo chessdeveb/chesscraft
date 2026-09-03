@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import { emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useTranslation } from "react-i18next";
-import type { Color as PieceColor, Piece, Role } from "@lichess-org/chessground/types";
+import type { Color as PieceColor, Key, Piece, Role } from "@lichess-org/chessground/types";
 import { PositionEditorBoard, type PositionEditorBoardHandle } from "./components/PositionEditorBoard";
 import { loadStoredBoardTheme } from "./boardTheme";
 import { useSyncLanguage } from "./i18n";
@@ -30,6 +30,10 @@ function castlingField(rights: CastlingRights): string {
   return s || "-";
 }
 
+function parseCastlingField(s: string): CastlingRights {
+  return { wk: s.includes("K"), wq: s.includes("Q"), bk: s.includes("k"), bq: s.includes("q") };
+}
+
 export function PositionEditorWindow() {
   useSyncLanguage();
   useSyncColorScheme();
@@ -39,12 +43,66 @@ export function PositionEditorWindow() {
   const [sideToMove, setSideToMove] = useState<"w" | "b">("w");
   const [castling, setCastling] = useState<CastlingRights>({ wk: true, wq: true, bk: true, bq: true });
   const [error, setError] = useState<string | null>(null);
+  // piece "armee" depuis la palette : reste selectionnee apres la pose pour
+  // pouvoir cliquer plusieurs cases de suite sans repasser par la palette a
+  // chaque fois -- seul un clic sur la palette (meme piece pour desarmer,
+  // autre piece pour changer) y met fin.
+  const [selectedPiece, setSelectedPiece] = useState<Piece | null>(null);
+  const [fenInput, setFenInput] = useState("");
 
-  function handlePaletteDown(role: Role, color: PieceColor) {
-    return (e: React.MouseEvent | React.TouchEvent) => {
-      e.preventDefault();
-      const piece: Piece = { role, color };
-      boardRef.current?.dragNewPiece(piece, e.nativeEvent as MouseEvent | TouchEvent);
+  // Applique un FEN colle : seul le champ "placement des pieces" doit avoir
+  // une forme plausible (8 groupes separes par '/') pour etre accepte ici --
+  // la validation complete (position legale, roi manquant...) reste faite
+  // cote backend a la validation finale (voir GameTree::from_fen), inutile
+  // de la dupliquer pour un simple chargement dans l'editeur.
+  function applyFen(fen: string) {
+    const parts = fen.trim().split(/\s+/);
+    const boardPart = parts[0] ?? "";
+    if (boardPart.split("/").length !== 8) {
+      setError(t("positionEditor.fenInvalid"));
+      return;
+    }
+    boardRef.current?.setBoardFen(boardPart);
+    setSideToMove(parts[1] === "b" ? "b" : "w");
+    setCastling(parts[2] ? parseCastlingField(parts[2]) : { wk: false, wq: false, bk: false, bq: false });
+    setSelectedPiece(null);
+    setError(null);
+  }
+
+  function handleLoadFen() {
+    if (!fenInput.trim()) return;
+    applyFen(fenInput);
+  }
+
+  function handleFenPaste(e: React.ClipboardEvent<HTMLInputElement>) {
+    const pasted = e.clipboardData.getData("text");
+    if (!pasted.trim()) return;
+    e.preventDefault();
+    setFenInput(pasted);
+    applyFen(pasted);
+  }
+
+  function handlePaletteClick(role: Role, color: PieceColor) {
+    return () => {
+      setSelectedPiece((prev) => (prev && prev.role === role && prev.color === color ? null : { role, color }));
+    };
+  }
+
+  function handleSquareClick(key: Key) {
+    if (!selectedPiece) return;
+    boardRef.current?.togglePiece(selectedPiece, key);
+  }
+
+  // capture e.currentTarget.checked synchronement, avant l'appel a
+  // setCastling : React remet currentTarget a null une fois l'evenement
+  // traite, et l'updater fonctionnel passe a setCastling peut s'executer
+  // plus tard (StrictMode le rejoue notamment) -- le lire a l'interieur de
+  // l'updater plantait alors sur `null.checked`, systematiquement en
+  // recochant une case apres un changement de position (Echiquier vide...).
+  function handleCastlingChange(field: keyof CastlingRights) {
+    return (e: React.ChangeEvent<HTMLInputElement>) => {
+      const checked = e.currentTarget.checked;
+      setCastling((c) => ({ ...c, [field]: checked }));
     };
   }
 
@@ -80,19 +138,34 @@ export function PositionEditorWindow() {
     <main className="position-editor">
       <h2>{t("positionEditor.title")}</h2>
       {error && <p className="error">{error}</p>}
+      <div className="position-editor-fen-row">
+        <input
+          type="text"
+          value={fenInput}
+          onChange={(e) => setFenInput(e.target.value)}
+          onPaste={handleFenPaste}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") handleLoadFen();
+          }}
+          placeholder={t("positionEditor.fenPlaceholder")}
+        />
+        <button onClick={handleLoadFen}>{t("positionEditor.fenLoad")}</button>
+      </div>
       <div className="position-editor-body">
         <div className="position-editor-board-col">
-          <PositionEditorBoard ref={boardRef} theme={boardTheme} />
+          <PositionEditorBoard ref={boardRef} theme={boardTheme} onSquareClick={handleSquareClick} />
           <div className="position-editor-palette">
             {(["white", "black"] as PieceColor[]).map((color) => (
               <div className="position-editor-palette-row" key={color}>
                 {PALETTE_ROLES.map((role) => (
                   <div
                     key={role}
-                    className="cg-wrap position-editor-swatch"
+                    className={
+                      "cg-wrap position-editor-swatch" +
+                      (selectedPiece?.role === role && selectedPiece?.color === color ? " position-editor-swatch--selected" : "")
+                    }
                     title={t(`positionEditor.piece.${role}`)}
-                    onMouseDown={handlePaletteDown(role, color)}
-                    onTouchStart={handlePaletteDown(role, color)}
+                    onClick={handlePaletteClick(role, color)}
                   >
                     <piece className={`${role} ${color}`} />
                   </div>
@@ -100,6 +173,7 @@ export function PositionEditorWindow() {
               </div>
             ))}
           </div>
+          <p className="position-editor-hint">{t("positionEditor.paletteHint")}</p>
         </div>
         <div className="position-editor-controls">
           <div className="position-editor-section">
@@ -119,7 +193,7 @@ export function PositionEditorWindow() {
               <input
                 type="checkbox"
                 checked={castling.wk}
-                onChange={(e) => setCastling((c) => ({ ...c, wk: e.currentTarget.checked }))}
+                onChange={handleCastlingChange("wk")}
               />
               {t("positionEditor.castlingWhiteKingside")}
             </label>
@@ -127,7 +201,7 @@ export function PositionEditorWindow() {
               <input
                 type="checkbox"
                 checked={castling.wq}
-                onChange={(e) => setCastling((c) => ({ ...c, wq: e.currentTarget.checked }))}
+                onChange={handleCastlingChange("wq")}
               />
               {t("positionEditor.castlingWhiteQueenside")}
             </label>
@@ -135,7 +209,7 @@ export function PositionEditorWindow() {
               <input
                 type="checkbox"
                 checked={castling.bk}
-                onChange={(e) => setCastling((c) => ({ ...c, bk: e.currentTarget.checked }))}
+                onChange={handleCastlingChange("bk")}
               />
               {t("positionEditor.castlingBlackKingside")}
             </label>
@@ -143,7 +217,7 @@ export function PositionEditorWindow() {
               <input
                 type="checkbox"
                 checked={castling.bq}
-                onChange={(e) => setCastling((c) => ({ ...c, bq: e.currentTarget.checked }))}
+                onChange={handleCastlingChange("bq")}
               />
               {t("positionEditor.castlingBlackQueenside")}
             </label>

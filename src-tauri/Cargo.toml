@@ -1,6 +1,6 @@
 [package]
 name = "chesscraft"
-version = "0.1.0"
+version = "0.2.0"
 description = "ChessCraft - gestionnaire de parties d'echecs"
 authors = ["ChessCraft"]
 edition = "2021"
@@ -26,6 +26,13 @@ shakmaty = "0.30.1"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 pgn-reader = "0.29.0"
 tauri-plugin-dialog = "2.7.2"
+# Mises a jour beta-testeurs (menu Aide) : verifie/telecharge/installe une
+# nouvelle version depuis le manifeste JSON publie sur le depot public
+# separe chesscraft-releases (voir tauri.conf.json, plugins.updater). Pas
+# besoin de tauri-plugin-process pour relancer l'appli : sur Windows,
+# Update::downloadAndInstall lance l'installeur MSI puis quitte l'appli
+# elle-meme.
+tauri-plugin-updater = "2"
 # Liste des joueurs FIDE (Fichier > Preferences, panneau "Joueurs FIDE") :
 # ureq plutot que reqwest -- l'appli est deja entierement synchrone (pas de
 # runtime async ailleurs, le travail de fond passe par std::thread::spawn,
