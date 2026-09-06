@@ -13,6 +13,18 @@ interface NotationProps {
   readOnly?: boolean;
 }
 
+const CLOCK_RE = /\[%clk\s+([\d:.]+)\]/;
+
+/** Extrait l'annotation d'horloge "[%clk H:MM:SS]" d'un commentaire PGN
+    (convention lichess/chess.com, coup joue par coup) -- renvoie l'heure
+    telle quelle pour l'affichage, et le reste du commentaire debarrasse de
+    cette annotation (jamais affichee telle quelle, illisible en brut). */
+function parseClock(comment: string | null): { clock: string | null; rest: string } {
+  if (!comment) return { clock: null, rest: "" };
+  const match = comment.match(CLOCK_RE);
+  return { clock: match ? match[1] : null, rest: comment.replace(CLOCK_RE, "").trim() };
+}
+
 function InlineCommentEditor({
   value,
   onSave,
@@ -84,11 +96,14 @@ export function Notation({ tree, currentNodeId, onSelect, onSetComment, onToggle
     const label = isWhite ? `${moveNumber}.` : showEllipsis ? `${moveNumber}...` : "";
     const nagText = node.nags.map(nagSymbol).join("");
     const isCurrent = node.id === currentNodeId;
+    const before = parseClock(node.commentBefore);
+    const after = parseClock(node.commentAfter);
 
     return (
       <span key={node.id}>
         {label && <span className="move-number">{label} </span>}
-        {node.commentBefore && <span className="comment">{node.commentBefore} </span>}
+        {before.rest && <span className="comment">{before.rest} </span>}
+        {before.clock && <span className="move-clock">🕐{before.clock} </span>}
         <span
           ref={isCurrent ? currentMoveRef : undefined}
           className={"move" + (isCurrent ? " move--current" : "")}
@@ -97,7 +112,8 @@ export function Notation({ tree, currentNodeId, onSelect, onSetComment, onToggle
           {node.san}
           {nagText}
         </span>{" "}
-        {node.commentAfter && <span className="comment">{node.commentAfter} </span>}
+        {after.clock && <span className="move-clock">🕐{after.clock} </span>}
+        {after.rest && <span className="comment">{after.rest} </span>}
       </span>
     );
   }

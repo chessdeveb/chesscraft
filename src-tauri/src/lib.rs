@@ -1,6 +1,7 @@
 mod bases;
 mod bulk_import;
 mod db;
+mod eco;
 mod engine;
 mod explorer;
 mod fide;
@@ -60,6 +61,10 @@ struct AppState {
     // Meme raison que bulk_import_running : empeche deux rafraichissements
     // simultanes de la liste FIDE (voir refresh_fide_players).
     fide_refresh_running: Mutex<bool>,
+    // Empeche deux nettoyages "+"/"#" simultanes de la meme base de reference
+    // (voir maybe_start_check_suffix_cleanup) -- meme raison que
+    // bulk_import_running/fide_refresh_running.
+    check_suffixes_cleanup_running: Mutex<bool>,
     // Connexion vers la base de reference, reutilisee entre les appels de
     // l'explorateur d'ouvertures : en rouvrir une a chaque coup joue coute
     // tres cher sur une base de plusieurs Go (WAL a re-verifier a chaque
@@ -137,7 +142,7 @@ fn open_player_prep_tab(state: State<AppState>, name: String, white: bool) -> Ta
     let tab_id = allocate_tab_id(&state);
     let mut session = GameSession::new();
     session.tree.tags.insert(if white { "White" } else { "Black" }.to_string(), name.clone());
-    session.explorer_player_filter = Some(explorer::PlayerFilter { name, white });
+    session.explorer_player_filter = Some(explorer::PlayerFilter { name, white, exact: true });
     let tree = insert_session(&state, tab_id, session);
     TabDto { tab_id, tree, is_player_prep: true }
 }
@@ -223,8 +228,12 @@ fn set_tags(state: State<AppState>, tab_id: u32, tags: std::collections::BTreeMa
 
 #[tauri::command]
 fn list_pgn_games(app: AppHandle, path: String) -> Result<Vec<PgnGameSummary>, String> {
-    let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    let games = pgn::list_games(&text)?;
+    // std::fs::read (octets bruts), pas read_to_string : un fichier PGN
+    // importe n'est pas forcement en UTF-8 (Latin-1/Windows-1252 courant sur
+    // les noms accentues) -- read_to_string plantait alors avec "stream did
+    // not contain valid UTF-8" des l'ouverture. Voir pgn::list_games.
+    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+    let games = pgn::list_games(&bytes)?;
     if let Ok(dir) = app.path().app_data_dir() {
         let _ = recent_pgns::add_recent(&dir, &path);
     }
@@ -233,8 +242,8 @@ fn list_pgn_games(app: AppHandle, path: String) -> Result<Vec<PgnGameSummary>, S
 
 #[tauri::command]
 fn import_pgn(state: State<AppState>, path: String, index: u32) -> Result<TabDto, String> {
-    let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    let parsed = pgn::parse_game_at(&text, index)?;
+    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+    let parsed = pgn::parse_game_at(&bytes, index)?;
     let mut session = GameSession::new();
     session.tree = parsed;
     let tab_id = allocate_tab_id(&state);
@@ -308,6 +317,31 @@ fn bulk_import_pgn(app: AppHandle, state: State<AppState>, db_path: String, pgn_
             let pgn_file = std::fs::File::open(&pgn_path).map_err(|e| e.to_string())?;
             let pgn_reader = std::io::BufReader::new(pgn_file);
             let mut conn = db::open(Path::new(&db_path))?;
+
+            // Reecrit Blancs/Noirs vers leur forme canonique FIDE quand elle
+            // est resolue sans ambiguite (voir fide::canonicalize_name,
+            // departage par Elo en cas d'homonymie -- ex. "Giri, Anish" vs
+            // "Giri, Andrea") -- memorise par (nom, indice Elo) deja vu
+            // (fide_name_cache) : une base source rejoue tres souvent les
+            // memes joueurs a un Elo proche, inutile de refaire la recherche
+            // FIDE a chaque partie (meme principe que
+            // rebuild_player_stats/rebuild_prefix_stats). Base FIDE absente
+            // ou pas encore telechargee (voir refresh_fide_players) :
+            // fide_conn est alors None et canonicalize_name ne fait rien,
+            // l'import se deroule normalement.
+            let fide_conn = app.path().app_data_dir().ok().and_then(|dir| fide::open(&dir).ok());
+            let mut fide_name_cache: HashMap<(String, Option<i32>), Option<String>> = HashMap::new();
+            let canonicalize_name = move |raw: &str, elo_hint: Option<i32>| -> Option<String> {
+                let conn = fide_conn.as_ref()?;
+                let cache_key = (raw.to_string(), elo_hint);
+                if let Some(cached) = fide_name_cache.get(&cache_key) {
+                    return cached.clone();
+                }
+                let resolved = fide::canonicalize_name(conn, raw, elo_hint);
+                fide_name_cache.insert(cache_key, resolved.clone());
+                resolved
+            };
+
             let summary = bulk_import::bulk_import(
                 &mut conn,
                 pgn_reader,
@@ -315,6 +349,7 @@ fn bulk_import_pgn(app: AppHandle, state: State<AppState>, db_path: String, pgn_
                     let _ = progress_app.emit("bulk-import-progress", summary.clone());
                 },
                 move || *cancel_app.state::<AppState>().bulk_import_cancel.lock().unwrap(),
+                canonicalize_name,
             )?;
             // recalcule les stats precalculees de l'explorateur d'ouvertures
             // (voir explorer::rebuild_prefix_stats) : cout marginal a cote de
@@ -435,9 +470,9 @@ fn list_recent_pgns(app: AppHandle) -> Result<Vec<BaseInfo>, String> {
             .and_then(|s| s.to_str())
             .unwrap_or(&path)
             .to_string();
-        let games = std::fs::read_to_string(&path)
+        let games = std::fs::read(&path)
             .ok()
-            .and_then(|text| pgn::list_games(&text).ok())
+            .and_then(|bytes| pgn::list_games(&bytes).ok())
             .map(|g| g.len() as u32)
             .unwrap_or(0);
         out.push(BaseInfo { name, path, games, is_reference: false, missing: false });
@@ -524,10 +559,59 @@ fn ensure_reference_conn(app: &AppHandle, state: &State<AppState>) -> Result<(),
     let needs_reopen = !matches!(conn_cache.as_ref(), Some((path, _)) if *path == reference.path);
     if needs_reopen {
         let conn = db::open(Path::new(&reference.path))?;
+        maybe_start_check_suffix_cleanup(app, state, &conn, &reference.path);
         *conn_cache = Some((reference.path.clone(), conn));
         state.explorer_cache.lock().unwrap().clear();
     }
     Ok(())
+}
+
+/// Nettoie en tache de fond le "+"/"#" laisse par un import en masse anterieur
+/// a la correction de bulk_import (voir db::strip_check_suffixes) -- sans
+/// quoi un coup donnant echec/mat reste introuvable par l'explorateur
+/// d'ouvertures une fois rejoue. Verifie a chaque (re)ouverture de la base de
+/// reference (donc rarement, pas a chaque coup), sur la connexion qu'on vient
+/// d'ouvrir -- lecture ponctuelle bon marche (un seul SELECT indexe). Tourne
+/// ensuite sur SA PROPRE connexion, separee de celle mise en cache dans
+/// reference_conn : sur une base de plusieurs millions de parties ce
+/// nettoyage peut prendre plusieurs minutes, et ne doit jamais retenir le
+/// verrou partage avec les commandes de l'explorateur (c'est precisement ce
+/// qui geleait l'explorateur dans une premiere version de ce correctif, ou le
+/// nettoyage tournait de facon synchrone dans db::open lui-meme).
+fn maybe_start_check_suffix_cleanup(app: &AppHandle, state: &State<AppState>, conn: &Connection, path: &str) {
+    if db::already_check_suffixes_cleaned(conn).unwrap_or(true) {
+        return;
+    }
+    let mut running = state.check_suffixes_cleanup_running.lock().unwrap();
+    if *running {
+        return;
+    }
+    *running = true;
+    drop(running);
+
+    let app = app.clone();
+    let path = path.to_string();
+    std::thread::spawn(move || {
+        let result = db::open(Path::new(&path)).and_then(|mut cleanup_conn| {
+            let progress_app = app.clone();
+            db::strip_check_suffixes(
+                &mut cleanup_conn,
+                move |count| {
+                    let _ = progress_app.emit("check-suffixes-progress", count);
+                },
+                || false,
+            )
+        });
+        match result {
+            Ok(count) => {
+                let _ = app.emit("check-suffixes-done", count);
+            }
+            Err(e) => {
+                let _ = app.emit("check-suffixes-error", e);
+            }
+        }
+        *app.state::<AppState>().check_suffixes_cleanup_running.lock().unwrap() = false;
+    });
 }
 
 /// Filtre de preparation d'adversaire actif sur cet onglet, le cas echeant
@@ -536,35 +620,92 @@ fn player_filter_for_tab(state: &State<AppState>, tab_id: u32) -> Option<explore
     state.sessions.lock().unwrap().get(&tab_id).and_then(|s| s.explorer_player_filter.clone())
 }
 
+/// Combine le filtre joueur de preparation d'adversaire (propre a l'onglet,
+/// verrouille des l'ouverture -- voir player_filter_for_tab) avec les
+/// filtres ad-hoc du panneau explorateur (reglables librement par
+/// l'utilisateur, envoyes a chaque appel plutot que stockes cote session --
+/// pas besoin d'une commande separee pour les modifier). Le filtre joueur de
+/// preparation, s'il existe, l'emporte : un onglet de preparation ne montre
+/// pas les controles de filtre joueur ad-hoc, les deux ne devraient donc
+/// jamais etre actifs simultanement en pratique.
+fn build_explorer_filters(
+    state: &State<AppState>,
+    tab_id: u32,
+    player_name: Option<String>,
+    player_white: Option<bool>,
+    rating_min: Option<i32>,
+    rating_max: Option<i32>,
+    year_min: Option<i32>,
+    year_max: Option<i32>,
+) -> explorer::ExplorerFilters {
+    let player = player_filter_for_tab(state, tab_id).or_else(|| {
+        let name = player_name?;
+        if name.trim().is_empty() {
+            return None;
+        }
+        Some(explorer::PlayerFilter { name, white: player_white.unwrap_or(true), exact: false })
+    });
+    let rating_range = match (rating_min, rating_max) {
+        (Some(min), Some(max)) => Some((min, max)),
+        _ => None,
+    };
+    let year_range = match (year_min, year_max) {
+        (Some(min), Some(max)) => Some((min, max)),
+        _ => None,
+    };
+    explorer::ExplorerFilters { player, rating_range, year_range }
+}
+
+/// Nom/code ECO de la position atteinte par `moves`, pour l'en-tete du
+/// panneau explorateur -- ne depend d'aucune base (referentiel embarque dans
+/// le binaire, voir eco.rs), donc pas besoin de ensure_reference_conn ici.
 #[tauri::command]
-fn opening_explorer(app: AppHandle, state: State<AppState>, tab_id: u32, moves: Vec<String>) -> Result<Vec<OpeningMoveStat>, String> {
+fn classify_opening(moves: Vec<String>) -> Option<eco::EcoInfo> {
+    eco::classify(&moves)
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+fn opening_explorer(
+    app: AppHandle,
+    state: State<AppState>,
+    tab_id: u32,
+    moves: Vec<String>,
+    player_name: Option<String>,
+    player_white: Option<bool>,
+    rating_min: Option<i32>,
+    rating_max: Option<i32>,
+    year_min: Option<i32>,
+    year_max: Option<i32>,
+) -> Result<Vec<OpeningMoveStat>, String> {
     ensure_reference_conn(&app, &state)?;
-    let filter = player_filter_for_tab(&state, tab_id);
+    let filters = build_explorer_filters(&state, tab_id, player_name, player_white, rating_min, rating_max, year_min, year_max);
 
     // le cache partage (explorer_cache) ne couvre que la vue non filtree,
-    // commune a tous les onglets ; un filtre joueur est propre a un seul
-    // onglet de preparation et reste rapide sans avoir besoin d'etre mis en
-    // cache (voir explorer::PlayerFilter).
-    if filter.is_none() {
+    // commune a tous les onglets ; des que le moindre filtre (preparation ou
+    // ad-hoc) est actif, la reponse est propre a cette combinaison precise
+    // et reste rapide sans avoir besoin d'etre mise en cache (voir
+    // explorer::ExplorerFilters).
+    if filters.is_empty() {
         let key = moves.join(" ");
         if let Some(cached) = state.explorer_cache.lock().unwrap().get(&key) {
             return Ok(cached.clone());
         }
         let conn_cache = state.reference_conn.lock().unwrap();
         let conn = &conn_cache.as_ref().unwrap().1;
-        let stats = explorer::explore(conn, &moves, None)?;
+        let stats = explorer::explore(conn, &moves, &filters)?;
         state.explorer_cache.lock().unwrap().insert(key, stats.clone());
         return Ok(stats);
     }
     let conn_cache = state.reference_conn.lock().unwrap();
     let conn = &conn_cache.as_ref().unwrap().1;
-    explorer::explore(conn, &moves, filter.as_ref())
+    explorer::explore(conn, &moves, &filters)
 }
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct ExplorerGamesPage {
-    games: Vec<db::GameSummary>,
+    games: Vec<db::ExplorerGameSummary>,
     total: u32,
     base_path: String,
 }
@@ -574,6 +715,7 @@ struct ExplorerGamesPage {
 /// stats agregees par coup suivant) pour le panneau "parties dans cette
 /// position".
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 fn opening_explorer_games(
     app: AppHandle,
     state: State<AppState>,
@@ -581,13 +723,21 @@ fn opening_explorer_games(
     moves: Vec<String>,
     offset: u32,
     limit: u32,
+    sort_by: Option<String>,
+    sort_dir: Option<String>,
+    player_name: Option<String>,
+    player_white: Option<bool>,
+    rating_min: Option<i32>,
+    rating_max: Option<i32>,
+    year_min: Option<i32>,
+    year_max: Option<i32>,
 ) -> Result<ExplorerGamesPage, String> {
     ensure_reference_conn(&app, &state)?;
-    let filter = player_filter_for_tab(&state, tab_id);
+    let filters = build_explorer_filters(&state, tab_id, player_name, player_white, rating_min, rating_max, year_min, year_max);
     let conn_cache = state.reference_conn.lock().unwrap();
     let (base_path, conn) = conn_cache.as_ref().unwrap();
-    let total = db::count_games_at_position(conn, &moves, filter.as_ref())?;
-    let games = db::games_at_position(conn, &moves, filter.as_ref(), limit, offset)?;
+    let total = db::count_games_at_position(conn, &moves, &filters)?;
+    let games = db::games_at_position(conn, &moves, &filters, sort_by.as_deref().unwrap_or(""), sort_dir.as_deref().unwrap_or(""), limit, offset)?;
     Ok(ExplorerGamesPage { games, total, base_path: base_path.clone() })
 }
 
@@ -831,11 +981,21 @@ fn build_menu(app: &AppHandle, home_panels: bool, game_panels: bool, lang: &str,
     let t = i18n::translations(lang);
     let t = |key: &str| t.get(key).cloned().unwrap_or_else(|| key.to_string());
 
-    let new_game_item = MenuItemBuilder::with_id("new_game", t("menu.file.newGame")).build(app)?;
-    let new_position_item = MenuItemBuilder::with_id("new_position", t("menu.file.newPosition")).build(app)?;
-    let import_item = MenuItemBuilder::with_id("import_pgn", t("menu.file.openPgn")).build(app)?;
-    let bulk_import_item = MenuItemBuilder::with_id("bulk_import_pgn", t("menu.file.importPgn")).build(app)?;
-    let export_item = MenuItemBuilder::with_id("export_pgn", t("menu.file.exportPgn")).build(app)?;
+    let new_game_item = MenuItemBuilder::with_id("new_game", t("menu.file.newGame"))
+        .accelerator("CmdOrCtrl+N")
+        .build(app)?;
+    let new_position_item = MenuItemBuilder::with_id("new_position", t("menu.file.newPosition"))
+        .accelerator("CmdOrCtrl+P")
+        .build(app)?;
+    let import_item = MenuItemBuilder::with_id("import_pgn", t("menu.file.openPgn"))
+        .accelerator("CmdOrCtrl+O")
+        .build(app)?;
+    let bulk_import_item = MenuItemBuilder::with_id("bulk_import_pgn", t("menu.file.importPgn"))
+        .accelerator("CmdOrCtrl+I")
+        .build(app)?;
+    let export_item = MenuItemBuilder::with_id("export_pgn", t("menu.file.exportPgn"))
+        .accelerator("CmdOrCtrl+E")
+        .build(app)?;
     let save_item = MenuItemBuilder::with_id("save_game", t("menu.file.save"))
         .accelerator("CmdOrCtrl+S")
         .build(app)?;
@@ -932,8 +1092,6 @@ fn build_menu(app: &AppHandle, home_panels: bool, game_panels: bool, lang: &str,
         .item(&board_theme_grey)
         .item(&board_theme_wood)
         .build()?;
-    let show_bases_paths_item =
-        MenuItemBuilder::with_id("show_bases_paths", t("menu.preferences.basesPaths")).build(app)?;
     // Pas d'option "Systeme" ici : le systeme ne sert que de valeur par
     // defaut avant tout choix (voir colorScheme.ts, loadStoredColorScheme
     // retombe sur "system" tant que rien n'est enregistre) -- une fois que
@@ -961,12 +1119,10 @@ fn build_menu(app: &AppHandle, home_panels: bool, game_panels: bool, lang: &str,
         .item(&board_colors_menu)
         .item(&appearance_menu)
         .separator()
-        .item(&show_bases_paths_item)
-        .separator()
         .item(&language_menu)
         .build()?;
 
-    let about_item = MenuItemBuilder::with_id("about", t("menu.help.about")).build(app)?;
+    let about_item = MenuItemBuilder::with_id("about", t("menu.help.about")).accelerator("F1").build(app)?;
     let help_menu = SubmenuBuilder::new(app, t("menu.help")).item(&about_item).build()?;
 
     Menu::with_items(app, &[&file_menu, &display_menu, &preferences_menu, &help_menu])
@@ -1041,12 +1197,39 @@ fn apply_language_change(app: &AppHandle, lang: &str) -> Result<(), String> {
     Ok(())
 }
 
+// WebView2 traite par defaut certains raccourcis clavier comme des
+// "accelerateurs navigateur" (Ctrl+P imprime, Ctrl+N/O/F/G/R... sont avales
+// silencieusement) AVANT meme qu'ils atteignent le tableau d'accelerateurs du
+// menu natif Tauri -- rapporte par l'utilisateur : Ctrl+N/O/I/E (voir
+// build_menu) ne declenchaient rien du tout, Ctrl+P ouvrait l'impression
+// Windows a la place. Seule accroche disponible cote Tauri pour toucher aux
+// reglages bruts de WebView2 (pas de config declarative pour ca) : on_page_load,
+// via PlatformWebview::controller() -> COM WebView2 direct. Appele a chaque
+// chargement de page de chaque fenetre (idempotent, cout negligeable).
+#[cfg(windows)]
+fn disable_browser_accelerator_keys(webview: &tauri::Webview<tauri::Wry>) {
+    let _ = webview.with_webview(|platform_webview| {
+        use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings3;
+        use windows_core::Interface;
+        unsafe {
+            let Ok(core_webview) = platform_webview.controller().CoreWebView2() else { return };
+            let Ok(settings) = core_webview.Settings() else { return };
+            let Ok(settings3) = settings.cast::<ICoreWebView2Settings3>() else { return };
+            let _ = settings3.SetAreBrowserAcceleratorKeysEnabled(false);
+        }
+    });
+}
+
+#[cfg(not(windows))]
+fn disable_browser_accelerator_keys(_webview: &tauri::Webview<tauri::Wry>) {}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .on_page_load(|webview, _payload| disable_browser_accelerator_keys(webview))
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
@@ -1077,6 +1260,7 @@ pub fn run() {
                 bulk_import_cancel: Mutex::new(false),
                 bulk_import_running: Mutex::new(false),
                 fide_refresh_running: Mutex::new(false),
+                check_suffixes_cleanup_running: Mutex::new(false),
                 reference_conn: Mutex::new(None),
                 explorer_cache: Mutex::new(HashMap::new()),
                 language: Mutex::new(initial_lang.clone()),
@@ -1110,7 +1294,6 @@ pub fn run() {
                     "bulk_import_pgn" => "menu-bulk-import-pgn",
                     "export_pgn" => "menu-export-pgn",
                     "save_game" => "menu-save-game",
-                    "show_bases_paths" => "menu-show-bases-paths",
                     "about" => "menu-show-about",
                     "panel_bases" => "menu-toggle-panel-bases",
                     "panel_pgn" => "menu-toggle-panel-pgn",
@@ -1157,6 +1340,7 @@ pub fn run() {
             stop_engine,
             analyze_position,
             pause_engine,
+            classify_opening,
             opening_explorer,
             opening_explorer_games,
             opening_explorer_preview_game,

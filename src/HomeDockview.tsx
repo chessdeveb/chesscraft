@@ -35,9 +35,7 @@ import "dockview-react/dist/styles/dockview.css";
 import "./App.css";
 
 interface HomeDockviewProps {
-  focusBasePath: string | null;
   onOpenGame: (path: string, id: number) => void;
-  onFocusConsumed: () => void;
   onOpenPgnGame: (path: string, index: number) => void;
   onImportNewFile: () => Promise<void>;
   basesVersion: number;
@@ -76,10 +74,22 @@ const GAMES_PAGE_SIZE = 200;
 const PLAYERS_PAGE_SIZE = 200;
 const FIDE_PAGE_SIZE = 200;
 
+// La FIDE publie une nouvelle liste de classement le 1er de chaque mois :
+// last_updated (epoch secondes, voir get_fide_status) date donc du mois en
+// cours des qu'un refresh a ete fait depuis sa publication, quel que soit le
+// nombre de jours ecoules -- une comparaison "il y a plus de N jours" se
+// declencherait trop tot ou trop tard selon la position dans le mois.
+function isCurrentMonthFideUpdate(epochSecondsStr: string | null): boolean {
+  if (!epochSecondsStr) return false;
+  const seconds = Number(epochSecondsStr);
+  if (Number.isNaN(seconds)) return false;
+  const updated = new Date(seconds * 1000);
+  const now = new Date();
+  return updated.getFullYear() === now.getFullYear() && updated.getMonth() === now.getMonth();
+}
+
 export function HomeDockview({
-  focusBasePath,
   onOpenGame,
-  onFocusConsumed,
   onOpenPgnGame,
   onImportNewFile,
   basesVersion,
@@ -186,15 +196,6 @@ export function HomeDockview({
     refreshBases();
     refreshRecentPgns();
   }, [refreshBases, refreshRecentPgns, basesVersion]);
-
-  useEffect(() => {
-    if (!focusBasePath) return;
-    const match = bases.find((b) => b.path === focusBasePath);
-    if (match) {
-      setActiveSource({ kind: "base", base: match });
-      onFocusConsumed();
-    }
-  }, [focusBasePath, bases, onFocusConsumed]);
 
   // recherche/filtres avances valides explicitement (touche Entree) plutot
   // qu'a chaque frappe : sur une base de plusieurs millions de parties, une
@@ -351,14 +352,36 @@ export function HomeDockview({
       });
   }, [activeBasePath, activeBaseMissing, playersSearch, playersPage, playersSort]);
 
+  const handleFideRefresh = useCallback(async () => {
+    setFideRefreshError(null);
+    setFideRefreshProgress(0);
+    setFideRefreshing(true);
+    try {
+      await invoke("refresh_fide_players");
+    } catch (e) {
+      setFideRefreshing(false);
+      setFideRefreshError(String(e));
+    }
+  }, []);
+
   // Distinct de fideTotal (qui reflete la recherche/pagination en cours,
   // voir plus bas) : ce total-la est celui, non filtre, de toute la table,
-  // affiche a cote de la date de derniere mise a jour.
+  // affiche a cote de la date de derniere mise a jour. Declenche aussi
+  // automatiquement une mise a jour si la derniere en local ne date pas du
+  // mois en cours (voir isCurrentMonthFideUpdate) : pas besoin que
+  // l'utilisateur ouvre le panneau FIDE et clique lui-meme. Sans risque de
+  // boucle : apres un refresh, fide-refresh-done rappelle refreshFideStatus,
+  // qui verra alors une date a jour et ne redeclenchera rien.
   const refreshFideStatus = useCallback(() => {
     invoke<FideStatus>("get_fide_status")
-      .then((status) => setFideLastUpdated(status.lastUpdated))
+      .then((status) => {
+        setFideLastUpdated(status.lastUpdated);
+        if (!isCurrentMonthFideUpdate(status.lastUpdated)) {
+          handleFideRefresh();
+        }
+      })
       .catch((e) => setError(String(e)));
-  }, []);
+  }, [handleFideRefresh]);
 
   useEffect(() => {
     refreshFideStatus();
@@ -388,18 +411,6 @@ export function HomeDockview({
         if (fideRequestIdRef.current === requestId) setFideLoading(false);
       });
   }, [fideSearch, fidePage, fideSort]);
-
-  const handleFideRefresh = useCallback(async () => {
-    setFideRefreshError(null);
-    setFideRefreshProgress(0);
-    setFideRefreshing(true);
-    try {
-      await invoke("refresh_fide_players");
-    } catch (e) {
-      setFideRefreshing(false);
-      setFideRefreshError(String(e));
-    }
-  }, []);
 
   useEffect(() => {
     const unlistenPromises = [

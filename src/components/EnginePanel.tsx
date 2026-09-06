@@ -1,7 +1,9 @@
 import { useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useTranslation } from "react-i18next";
-import type { EngineInfo } from "../types";
+import type { Color, Dests, Key } from "@lichess-org/chessground/types";
+import { Board } from "./Board";
+import type { EngineInfo, PvMove } from "../types";
 
 interface EnginePanelProps {
   enginePath: string;
@@ -18,11 +20,25 @@ interface EnginePanelProps {
   maxThreads: number;
   lines: EngineInfo[];
   error: string | null;
+  /** FEN de la position analysee : sert uniquement a numeroter les coups de
+      la ligne principale (trait et numero de coup de depart). */
+  analyzedFen: string | null;
+  boardTheme: string;
   onStart: () => void;
   onStop: () => void;
   onPause: () => void;
   onResume: () => void;
   onClose: () => void;
+}
+
+const NO_DESTS: Dests = new Map();
+
+interface HoverPreview {
+  fen: string;
+  from: string;
+  to: string;
+  x: number;
+  y: number;
 }
 
 function formatScore(info: EngineInfo): string {
@@ -34,6 +50,53 @@ function formatScore(info: EngineInfo): string {
     return info.scoreCp > 0 ? `+${value}` : value;
   }
   return "…";
+}
+
+/** Trait et numero de coup de depart, lus directement dans le FEN analyse
+    (champs 2 et 6) -- evite de dupliquer cote JS une logique d'echecs deja
+    geree cote Rust. */
+function fenMoveContext(fen: string | null): { whiteToMove: boolean; moveNumber: number } {
+  const parts = (fen ?? "").split(" ");
+  const whiteToMove = parts[1] !== "b";
+  const moveNumber = Number(parts[5]) || 1;
+  return { whiteToMove, moveNumber };
+}
+
+// onLeave n'est volontairement PAS pose sur chaque coup individuellement :
+// passer d'un coup au suivant traverse un espace non couvert par les spans
+// (texte brut entre les coups), donc un onMouseLeave par coup declenchait un
+// aller-retour disparition/reapparition de l'apercu a chaque changement de
+// coup survole. Un seul onMouseLeave sur tout le conteneur de la ligne (voir
+// l'appelant) : ne se declenche qu'en quittant reellement toute la variante.
+function renderPv(pv: PvMove[], analyzedFen: string | null, onHover: (move: PvMove, e: React.MouseEvent) => void) {
+  const { whiteToMove, moveNumber } = fenMoveContext(analyzedFen);
+  let number = moveNumber;
+  let isWhite = whiteToMove;
+  const out: React.ReactNode[] = [];
+  pv.forEach((move, i) => {
+    if (isWhite) {
+      out.push(
+        <span className="move-number" key={`n${i}`}>
+          {number}.{" "}
+        </span>
+      );
+    } else if (i === 0) {
+      out.push(
+        <span className="move-number" key={`n${i}`}>
+          {number}...{" "}
+        </span>
+      );
+    }
+    out.push(
+      <span className="engine-pv-move" key={i} onMouseEnter={(e) => onHover(move, e)}>
+        {move.san}
+      </span>,
+      " "
+    );
+    if (!isWhite) number += 1;
+    isWhite = !isWhite;
+  });
+  return out;
 }
 
 export function EnginePanel({
@@ -51,6 +114,8 @@ export function EnginePanel({
   maxThreads,
   lines,
   error,
+  analyzedFen,
+  boardTheme,
   onStart,
   onStop,
   onPause,
@@ -59,6 +124,7 @@ export function EnginePanel({
 }: EnginePanelProps) {
   const { t } = useTranslation();
   const [showSettings, setShowSettings] = useState(() => !enginePath);
+  const [hover, setHover] = useState<HoverPreview | null>(null);
 
   async function handleBrowse() {
     const path = await open({
@@ -66,6 +132,11 @@ export function EnginePanel({
       filters: [{ name: t("engine.executableFilter"), extensions: ["exe"] }],
     });
     if (path) onEnginePathChange(path);
+  }
+
+  function handleMoveHover(move: PvMove, e: React.MouseEvent) {
+    const rect = e.currentTarget.getBoundingClientRect();
+    setHover({ fen: move.fen, from: move.from, to: move.to, x: rect.left, y: rect.bottom });
   }
 
   return (
@@ -164,9 +235,26 @@ export function EnginePanel({
           {lines.map((info) => (
             <div key={info.multipv} className="engine-result">
               <span className="engine-score">{formatScore(info)}</span>
-              <span className="engine-line">{info.pvSan.join(" ")}</span>
+              <span className="engine-line" onMouseLeave={() => setHover(null)}>
+                {renderPv(info.pv, analyzedFen, handleMoveHover)}
+              </span>
             </div>
           ))}
+        </div>
+      )}
+
+      {hover && (
+        <div className="engine-hover-preview" style={{ left: hover.x, top: hover.y }}>
+          <Board
+            fen={hover.fen}
+            turnColor={(hover.fen.split(" ")[1] === "b" ? "black" : "white") as Color}
+            dests={NO_DESTS}
+            shapes={[]}
+            theme={boardTheme}
+            lastMove={hover.from && hover.to ? [hover.from as Key, hover.to as Key] : null}
+            onMove={() => {}}
+            onShapesChange={() => {}}
+          />
         </div>
       )}
     </div>

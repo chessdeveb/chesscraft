@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useTranslation } from "react-i18next";
 import { HomeDockview } from "./HomeDockview";
@@ -51,15 +50,16 @@ export function HomeWindow() {
   useSyncBoardTheme();
   useSyncColorScheme();
   const { t } = useTranslation();
-  const [homeFocusPath, setHomeFocusPath] = useState<string | null>(null);
   const [basesVersion, setBasesVersion] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
   const [bulkImportPgnPath, setBulkImportPgnPath] = useState<string | null>(null);
   const [bulkImportProgress, setBulkImportProgress] = useState<BulkImportSummary | null>(null);
   const [bulkImportResult, setBulkImportResult] = useState<BulkImportResult | null>(null);
-
-  const handleFocusConsumed = useCallback(() => setHomeFocusPath(null), []);
+  // sans indicateur, lire un fichier PGN pas encore synchronise localement
+  // (OneDrive/Dropbox "en ligne uniquement") peut prendre plusieurs secondes
+  // sans aucun retour visuel -- donne l'impression que l'appli a plante.
+  const [pgnLoading, setPgnLoading] = useState(false);
 
   const importGameAt = useCallback(async (path: string, index: number) => {
     try {
@@ -129,6 +129,7 @@ export function HomeWindow() {
         filters: [{ name: "PGN", extensions: ["pgn"] }],
       });
       if (!path) return;
+      setPgnLoading(true);
       const games = await invoke<PgnGameSummary[]>("list_pgn_games", { path });
       if (games.length <= 1) {
         await importGameAt(path, 0);
@@ -143,8 +144,21 @@ export function HomeWindow() {
       picker.once("tauri://error", (e) => setError(String(e.payload)));
     } catch (e) {
       setError(String(e));
+    } finally {
+      setPgnLoading(false);
     }
   }, [importGameAt, t]);
+
+  const handleShowAbout = useCallback(() => {
+    const win = new WebviewWindow("about", {
+      url: "/?window=about",
+      title: t("homeWindow.aboutWindowTitle"),
+      width: 420,
+      height: 320,
+      resizable: false,
+    });
+    win.once("tauri://error", (e) => setError(String(e.payload)));
+  }, [t]);
 
   const handleBulkImportClick = useCallback(async () => {
     try {
@@ -206,17 +220,6 @@ export function HomeWindow() {
     };
   }, [importGameAt]);
 
-  // selection faite dans la fenetre separee "emplacement des bases"
-  useEffect(() => {
-    const unlistenPromise = listen<string>("select-base", (event) => {
-      setHomeFocusPath(event.payload);
-      getCurrentWindow().setFocus();
-    });
-    return () => {
-      unlistenPromise.then((unlisten) => unlisten());
-    };
-  }, []);
-
   // la fenetre Partie previent l'accueil qu'une base a change (sauvegarde, suppression...)
   useEffect(() => {
     const unlistenPromise = listen("bases-changed", () => {
@@ -244,38 +247,54 @@ export function HomeWindow() {
       listen("menu-new-position", () => handleNewPosition()),
       listen("menu-import-pgn", () => handleImport()),
       listen("menu-bulk-import-pgn", () => handleBulkImportClick()),
-      listen("menu-show-bases-paths", () => {
-        const win = new WebviewWindow("bases-paths", {
-          url: "/?window=bases-paths",
-          title: t("homeWindow.basesPathsWindowTitle"),
-          width: 640,
-          height: 420,
-        });
-        win.once("tauri://error", (e) => setError(String(e.payload)));
-      }),
-      listen("menu-show-about", () => {
-        const win = new WebviewWindow("about", {
-          url: "/?window=about",
-          title: t("homeWindow.aboutWindowTitle"),
-          width: 420,
-          height: 320,
-          resizable: false,
-        });
-        win.once("tauri://error", (e) => setError(String(e.payload)));
-      }),
+      listen("menu-show-about", () => handleShowAbout()),
     ];
     return () => {
       unlistenPromises.forEach((p) => p.then((unlisten) => unlisten()));
     };
-  }, [handleNewGame, handleNewPosition, handleImport, handleBulkImportClick, t]);
+  }, [handleNewGame, handleNewPosition, handleImport, handleBulkImportClick, handleShowAbout]);
+
+  // --- Raccourcis clavier ---
+  // Les accelerateurs natifs du menu (voir build_menu, Rust) ne se
+  // declenchent jamais au clavier sous Windows : muda (la lib de menu
+  // utilisee par Tauri) documente que ca necessite un relais TranslateAcceleratorW
+  // dans la boucle de messages Win32, que Tauri ne fournit pas -- seul le clic
+  // sur l'item de menu fonctionne (voir les listeners menu-* ci-dessus). On
+  // implemente donc les raccourcis nous-memes au niveau JS ; l'accelerateur
+  // Rust reste uniquement pour son affichage ("Ctrl+N" a cote du libelle).
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === "F1") {
+        e.preventDefault();
+        handleShowAbout();
+        return;
+      }
+      if (!(e.ctrlKey || e.metaKey)) return;
+      const key = e.key.toLowerCase();
+      if (key === "n") {
+        e.preventDefault();
+        handleNewGame();
+      } else if (key === "p") {
+        e.preventDefault();
+        handleNewPosition();
+      } else if (key === "o") {
+        e.preventDefault();
+        handleImport();
+      } else if (key === "i") {
+        e.preventDefault();
+        handleBulkImportClick();
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [handleNewGame, handleNewPosition, handleImport, handleBulkImportClick, handleShowAbout]);
 
   return (
     <div className="app-layout">
       {error && <p className="error">{error}</p>}
+      {pgnLoading && <p className="status-message">{t("common.loading")}</p>}
       <HomeDockview
-        focusBasePath={homeFocusPath}
         onOpenGame={handleOpenGame}
-        onFocusConsumed={handleFocusConsumed}
         onOpenPgnGame={importGameAt}
         onImportNewFile={handleImport}
         basesVersion={basesVersion}

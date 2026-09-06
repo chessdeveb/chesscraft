@@ -26,7 +26,6 @@
   "menu.preferences.appearance": "Apparence",
   "menu.preferences.appearance.light": "Clair",
   "menu.preferences.appearance.dark": "Sombre",
-  "menu.preferences.basesPaths": "Emplacement des bases...",
   "menu.preferences.language": "Langue",
   "menu.preferences.language.fr": "Français",
   "menu.preferences.language.en": "English",
@@ -55,8 +54,6 @@
 
   "appContext.error": "useAppContext doit être utilisé à l'intérieur de AppContext.Provider",
   "homeContext.error": "useHomeContext doit être utilisé à l'intérieur de HomeContext.Provider",
-
-  "basesWindow.title": "Emplacement des bases",
 
   "dockPanels.continueWith": "Continuer avec :",
 
@@ -115,7 +112,6 @@
   "home.previous": "← Précédent",
   "home.next": "Suivant →",
   "home.rowNumber": "N° ligne",
-  "home.go": "Aller",
   "home.whitePlaceholder": "Blancs commence par... (Entrée)",
   "home.blackPlaceholder": "Noirs commence par... (Entrée)",
   "home.allResults": "Tous résultats",
@@ -139,7 +135,6 @@
   "homeWindow.importSummary": "{{total}} traitées — {{imported}} importées, {{duplicates}} doublons ignorés, {{invalid}} noms manquants ignorés, {{failed}} échecs",
   "homeWindow.gameWindowTitle": "Partie - chesscraft",
   "homeWindow.pickerWindowTitle": "Choisir une partie",
-  "homeWindow.basesPathsWindowTitle": "Emplacement des bases",
   "homeWindow.positionEditorWindowTitle": "Nouvelle position",
   "homeWindow.aboutWindowTitle": "À propos",
   "homeWindow.importing": "Import en cours...",
@@ -207,12 +202,19 @@
   "notation.commentAfterShort": "💬 après",
 
   "explorer.empty": "Aucune partie de la base ne passe par cette position",
+  "explorer.checkSuffixCleanup": "Nettoyage de la base de référence en cours ({{count}} parties traitées) — les résultats peuvent être incomplets pour un coup donnant échec",
+  "explorer.checkSuffixCleanupError": "Nettoyage de la base de référence interrompu : {{error}}. Il reprendra automatiquement au prochain démarrage de l'application.",
   "explorer.move": "Coup",
   "explorer.games": "Parties",
-  "explorer.white": "Blancs",
-  "explorer.draws": "Nulles",
-  "explorer.black": "Noirs",
+  "explorer.whiteDrawBlack": "Blancs / Nulle / Noirs",
+  "explorer.filters": "Filtres",
+  "explorer.filterPlayer": "Joueur",
+  "explorer.filterPlayerPlaceholder": "Nom...",
+  "explorer.filterRating": "Classement",
+  "explorer.filterYear": "Année",
+  "explorer.filterReset": "Réinitialiser les filtres",
   "explorer.gamesHere": "Parties dans cette position",
+  "explorer.elo": "Elo",
   "explorer.previewStart": "Début de la partie",
   "explorer.previewPrev": "Coup précédent",
   "explorer.previewNext": "Coup suivant",
@@ -220,6 +222,9 @@
   "explorer.previewOpen": "Ouvrir cette partie",
   "explorer.previewOpenShort": "Ouvrir",
   "explorer.previewEmpty": "Sélectionnez une partie dans la liste pour la parcourir",
+
+  "board.copyFen": "Copier le FEN de cette position",
+  "board.flip": "Retourner l'échiquier",
 
   "savePicker.title": "Sauvegarder dans quelle base ?",
   "savePicker.whiteElo": "Elo Blancs",

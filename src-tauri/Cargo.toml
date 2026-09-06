@@ -1,6 +1,6 @@
 [package]
 name = "chesscraft"
-version = "0.2.1"
+version = "0.3.0"
 description = "ChessCraft - gestionnaire de parties d'echecs"
 authors = ["ChessCraft"]
 edition = "2021"
@@ -40,4 +40,12 @@ tauri-plugin-updater = "2"
 # telechargement occasionnel.
 ureq = "2"
 zip = "2"
+
+# Desactive les raccourcis clavier "navigateur" par defaut de WebView2 (Ctrl+P
+# imprime, Ctrl+N/O/F/G/R... avales silencieusement) qui empechaient nos
+# propres raccourcis de menu de fonctionner -- voir disable_browser_accelerator_keys
+# dans lib.rs.
+[target.'cfg(windows)'.dependencies]
+webview2-com = "0.38"
+windows-core = "0.61"
 

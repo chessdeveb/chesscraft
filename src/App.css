@@ -291,6 +291,14 @@ textarea {
   font-style: italic;
 }
 
+.explorer-cleanup-status {
+  font-size: 0.8rem;
+  opacity: 0.75;
+  font-style: italic;
+  margin: 0 0 4px;
+  font-variant-numeric: tabular-nums;
+}
+
 .games-pagination button {
   cursor: pointer;
   border: 1px solid var(--line-strong);
@@ -583,6 +591,27 @@ textarea {
   min-height: 0;
 }
 
+.board-clock-row {
+  display: flex;
+  justify-content: flex-end;
+  flex-shrink: 0;
+  padding: 2px 4px;
+  /* reserve la place meme quand ce camp n'a pas encore d'horloge connue a
+     cette position (ex. tout debut de partie) : sans ca, l'echiquier
+     changerait legerement de hauteur des qu'une pendule apparait/disparait
+     en avancant/reculant dans les coups. */
+  min-height: 1.6em;
+}
+
+.board-clock {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  background-color: var(--panel);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  padding: 2px 8px;
+}
+
 .transport {
   display: flex;
   justify-content: center;
@@ -641,19 +670,26 @@ textarea {
   max-width: none;
 }
 
+/* White, WhiteElo, Black, BlackElo, Date, Result (voir ExplorerGamesList.tsx) */
 .explorer-games-table th:nth-child(1),
 .explorer-games-table td:nth-child(1),
-.explorer-games-table th:nth-child(2),
-.explorer-games-table td:nth-child(2) {
-  width: 32%;
-}
 .explorer-games-table th:nth-child(3),
 .explorer-games-table td:nth-child(3) {
-  width: 22%;
+  width: 26%;
 }
+.explorer-games-table th:nth-child(2),
+.explorer-games-table td:nth-child(2),
 .explorer-games-table th:nth-child(4),
 .explorer-games-table td:nth-child(4) {
-  width: 14%;
+  width: 10%;
+}
+.explorer-games-table th:nth-child(5),
+.explorer-games-table td:nth-child(5) {
+  width: 18%;
+}
+.explorer-games-table th:nth-child(6),
+.explorer-games-table td:nth-child(6) {
+  width: 10%;
 }
 
 .explorer-table tbody tr {
@@ -675,6 +711,202 @@ textarea {
 
 .explorer-move {
   font-weight: 600;
+}
+
+.explorer-filters-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--s3);
+  padding: var(--s2) var(--s3);
+  background: var(--sunken);
+  border-radius: var(--r-sm);
+  font-size: var(--t-sm);
+}
+
+.explorer-filter-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--ink-2);
+  font-size: var(--t-xs);
+}
+
+.explorer-filter-field input {
+  font-size: var(--t-sm);
+}
+
+.explorer-filter-field--range input {
+  width: 4.5em;
+}
+
+.explorer-filter-range {
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+  color: var(--ink-3);
+}
+
+.explorer-filter-color {
+  align-self: flex-end;
+  font-size: var(--t-sm);
+}
+
+.explorer-filter-reset {
+  align-self: flex-end;
+  background: transparent;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  color: var(--ink-2);
+  cursor: pointer;
+  padding: 2px 8px;
+}
+
+.explorer-filter-reset:hover {
+  background: var(--raised);
+}
+
+.explorer-filters-toggle {
+  align-self: flex-start;
+  background: transparent;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  color: var(--ink-2);
+  cursor: pointer;
+  padding: 2px 8px;
+  /* espace avant l'en-tete ECO (colore) qui suit -- sans ca le bouton
+     colle directement dessus. */
+  margin-bottom: var(--s2);
+}
+
+.explorer-filters-toggle:hover {
+  background: var(--raised);
+}
+
+.explorer-games-elo {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.explorer-table-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  min-height: 0;
+  /* .explorer-table (partagee, voir plus haut) tronque son contenu par
+     defaut (max-width:0 + ellipsis, pense pour du texte simple) -- ecrase
+     ici pour les stats d'ouverture, dont les cellules (barre, compteur) sont
+     en flex et n'ont pas de semantique d'ellipsis : tronquer les coupait au
+     milieu au lieu de les raccourcir proprement. Le defilement horizontal
+     prend le relais si le panneau est vraiment trop etroit pour tout
+     afficher, plutot que de rogner le contenu. */
+  overflow-x: auto;
+}
+
+.explorer-stats-table {
+  width: auto;
+  min-width: 100%;
+}
+
+.explorer-stats-table th,
+.explorer-stats-table td {
+  white-space: nowrap;
+  overflow: visible;
+  text-overflow: clip;
+  max-width: none;
+}
+
+.explorer-eco-header {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s2);
+  padding: var(--s2) var(--s3);
+  background: var(--accent-weak);
+  border-radius: var(--r-sm);
+}
+
+.explorer-eco-code {
+  font-weight: 700;
+  color: var(--accent);
+  font-size: var(--t-sm);
+}
+
+.explorer-eco-name {
+  font-weight: 600;
+  color: var(--ink-1);
+}
+
+/* .explorer-table-row--top (les coups les plus joues) et
+   .explorer-table-row--total (ligne Sigma) sont propres aux stats
+   d'ouverture : scopees a .explorer-stats-table pour ne jamais affecter la
+   liste de parties/la table FIDE, qui partagent .explorer-table. */
+.explorer-stats-table tbody tr.explorer-table-row--top {
+  background-color: var(--accent-weak);
+}
+
+.explorer-stats-table tbody tr.explorer-table-row--top:hover {
+  background-color: var(--accent-line);
+}
+
+.explorer-stats-table tfoot .explorer-table-row--total td {
+  font-weight: 700;
+  border-bottom: none;
+  border-top: 2px solid var(--line-strong);
+  color: var(--ink-1);
+}
+
+.explorer-games-cell {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s2);
+  font-variant-numeric: tabular-nums;
+}
+
+.explorer-games-pct {
+  min-width: 2.5em;
+}
+
+.explorer-games-count {
+  color: var(--ink-3);
+}
+
+/* Barre blancs/nulle/noirs : couleurs fixes representant les camps aux
+   echecs (comme un echiquier), pas les tokens de theme clair/sombre de
+   l'appli -- doit rester lisible identiquement dans les deux themes. */
+.explorer-bar {
+  display: flex;
+  height: 1.5em;
+  border-radius: var(--r-sm);
+  overflow: hidden;
+  font-size: var(--t-xs);
+  font-variant-numeric: tabular-nums;
+  min-width: 120px;
+}
+
+.explorer-bar-white,
+.explorer-bar-black {
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.explorer-bar-white {
+  background: #e9e6e0;
+  color: #1a1917;
+  justify-content: flex-start;
+  padding-left: 6px;
+}
+
+.explorer-bar-draw {
+  background: #a9a49b;
+}
+
+.explorer-bar-black {
+  background: #262421;
+  color: #f2f0ec;
+  justify-content: flex-end;
+  padding-right: 6px;
 }
 
 .games-table-delete {
@@ -1004,6 +1236,13 @@ textarea {
   white-space: pre-wrap;
 }
 
+.move-clock {
+  font-size: 0.78rem;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+  margin-right: 2px;
+}
+
 .error {
   color: var(--danger);
   margin-top: 8px;
@@ -1150,6 +1389,33 @@ textarea {
 .engine-line--paused {
   font-style: italic;
   opacity: 0.6;
+}
+
+.engine-pv-move {
+  cursor: default;
+  padding: 1px 2px;
+  border-radius: var(--r-sm);
+}
+
+.engine-pv-move:hover {
+  background-color: var(--accent-weak);
+}
+
+/* position:fixed + coordonnees ecran (getBoundingClientRect du coup survole,
+   voir EnginePanel.tsx) : flotte au-dessus de tout le contenu du panneau,
+   y compris hors de ses propres bords (dockview redimensionnable, souvent
+   etroit). pointer-events:none : la souris reste sur le coup survole en
+   dessous, pas de flicker d'entree/sortie sur l'apercu lui-meme. */
+.engine-hover-preview {
+  position: fixed;
+  z-index: 20;
+  width: 200px;
+  height: 200px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  overflow: hidden;
+  pointer-events: none;
 }
 
 .nag-button {

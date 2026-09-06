@@ -23,6 +23,40 @@ pub struct GameSummary {
     pub time_control: String,
 }
 
+/// Comme GameSummary, avec les classements Elo -- propre a la liste "parties
+/// dans cette position" de l'explorateur d'ouvertures (voir games_at_position),
+/// pas au panneau Parties principal, qui n'en a pas besoin. Struct separee
+/// plutot que d'ajouter ces deux champs a GameSummary : celui-ci est partage
+/// par plusieurs requetes (list_games_page...) qu'il aurait fallu toutes
+/// modifier pour peupler des colonnes dont elles n'ont pas besoin.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ExplorerGameSummary {
+    pub id: i64,
+    pub white: String,
+    pub black: String,
+    pub date: String,
+    pub result: String,
+    pub event: String,
+    pub time_control: String,
+    pub white_elo: Option<i32>,
+    pub black_elo: Option<i32>,
+}
+
+fn map_explorer_game_summary_row(row: &rusqlite::Row) -> rusqlite::Result<ExplorerGameSummary> {
+    Ok(ExplorerGameSummary {
+        id: row.get(0)?,
+        white: or_default(row.get(1)?, "?"),
+        black: or_default(row.get(2)?, "?"),
+        date: or_default(row.get(3)?, "????.??.??"),
+        result: or_default(row.get(4)?, "*"),
+        event: or_default(row.get(5)?, "?"),
+        time_control: or_default(row.get(6)?, "?"),
+        white_elo: row.get(7)?,
+        black_elo: row.get(8)?,
+    })
+}
+
 pub fn open(path: &Path) -> Result<Connection, String> {
     let mut conn = Connection::open(path).map_err(|e| e.to_string())?;
     // le mode WAL permet a d'autres connexions de lire pendant qu'un import de
@@ -69,13 +103,24 @@ pub fn open(path: &Path) -> Result<Connection, String> {
             name TEXT NOT NULL COLLATE NOCASE,
             games INTEGER NOT NULL
         );
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_player_stats_name ON player_stats(name);",
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_player_stats_name ON player_stats(name);
+        CREATE TABLE IF NOT EXISTS db_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
     )
     .map_err(|e| e.to_string())?;
     migrate_add_columns(&conn)?;
     migrate_mainline_index(&conn)?;
+    migrate_white_elo_index(&conn)?;
     migrate_name_indexes(&conn)?;
     migrate_prefix_stats_unique_index(&conn)?;
+    // migrate_strip_check_suffixes n'est PAS appelee ici : sur une base de
+    // reference de plusieurs millions de parties, c'est une reecriture
+    // couteuse (potentiellement la plupart des lignes + deux index a jour),
+    // et open() est appele de facon synchrone/bloquante par de nombreuses
+    // commandes (ensure_reference_conn, etc.) -- l'executer ici geleait
+    // l'explorateur sans le moindre retour visuel, rapporte en pratique par
+    // l'utilisateur ("l'explorateur a l'air planté"). A ne relancer que
+    // depuis une tache de fond avec progression (meme mecanique que
+    // bulk_import_pgn/refresh_fide_players), pas depuis ce chemin synchrone.
     migrate_prefix_stats(&mut conn)?;
     migrate_player_stats(&mut conn)?;
     Ok(conn)
@@ -198,6 +243,119 @@ fn migrate_mainline_index(conn: &Connection) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+/// idx_games_white_elo (filtre par classement de l'explorateur, voir
+/// explorer::ExplorerFilters/position_from_and_where) porte sur white_elo,
+/// une colonne ajoutee apres coup par migrate_add_columns : ne peut donc pas
+/// etre cree dans le CREATE TABLE IF NOT EXISTS initial (echouerait sur une
+/// base plus ancienne, ou la colonne n'existe pas encore a ce moment-la) --
+/// doit s'executer apres migrate_add_columns, comme migrate_mainline_index
+/// pour mainline_sans.
+fn migrate_white_elo_index(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_games_white_elo ON games(white_elo);").map_err(|e| e.to_string())
+}
+
+/// Avant ce correctif, mainline_sans etait rempli lors de l'import en masse
+/// (voir bulk_import::BulkGameVisitor::san) avec le SAN "complet" du fichier
+/// PGN source, "+"/"#" inclus pour un coup qui donne echec/mat -- alors que
+/// partout ailleurs dans l'appli (arbre de partie, legal_moves, moteur, voir
+/// pgn::san/game_tree::legal_moves/engine::resolve_line) le SAN stocke/compare
+/// n'a jamais ce suffixe (shakmaty::San, pas SanPlus). Consequence concrete
+/// rapportee par l'utilisateur : un coup avec "+" dans l'explorateur ne
+/// pouvait pas se jouer au clic (aucune correspondance dans legal_moves), et
+/// rejouer ce coup manuellement faisait ensuite echouer la recherche de
+/// parties a cette position (le prefixe de mainline_sans envoye, sans "+",
+/// ne correspondait plus a la borne d'intervalle attendue par SQLite, voir
+/// position_from_and_where). Corrige a la source cote bulk_import pour les
+/// imports futurs ; cette migration nettoie les bases deja importees. "+"/"#"
+/// ne servent qu'a cette annotation en SAN, jamais a autre chose : un simple
+/// retrait de ces caracteres est donc strictement equivalent au SAN sans
+/// suffixe utilise partout ailleurs, sans ambiguite possible.
+///
+/// PAS appelee depuis open() : sur une base de reference de plusieurs
+/// millions de parties c'est une reecriture couteuse, et open() est sur le
+/// chemin synchrone de nombreuses commandes -- geleait l'explorateur sans le
+/// moindre retour visuel (premiere version de ce correctif). Concue au
+/// contraire pour tourner sur une connexion separee, depuis une tache de
+/// fond (voir lib.rs::maybe_start_check_suffix_cleanup) : paginee par id
+/// (empreinte memoire bornee a une page, jamais toute la table en RAM,
+/// contrairement a un unique UPDATE ... WHERE mainline_sans LIKE '%+%' qui
+/// materialiserait/verrouillerait tout d'un coup) et interrompue au prochain
+/// controle si `should_cancel` repond vrai, un commit par page deja fait
+/// restant acquis. `on_progress` recoit le nombre de parties nettoyees
+/// jusqu'ici (pas de total connu a l'avance -- le calculer couterait un
+/// balayage complet supplementaire).
+pub fn already_check_suffixes_cleaned(conn: &Connection) -> Result<bool, String> {
+    let done: Option<String> = conn
+        .query_row("SELECT value FROM db_meta WHERE key = 'check_suffixes_stripped'", [], |row| row.get(0))
+        .optional()
+        .map_err(|e| e.to_string())?;
+    Ok(done.is_some())
+}
+
+const STRIP_CHECK_SUFFIXES_PAGE_SIZE: i64 = 5000;
+
+pub fn strip_check_suffixes(
+    conn: &mut Connection,
+    mut on_progress: impl FnMut(u32),
+    mut should_cancel: impl FnMut() -> bool,
+) -> Result<u32, String> {
+    if already_check_suffixes_cleaned(conn)? {
+        return Ok(0);
+    }
+
+    let mut cleaned = 0u32;
+    let mut last_id = 0i64;
+    loop {
+        if should_cancel() {
+            return Ok(cleaned);
+        }
+        let page: Vec<(i64, String)> = {
+            let mut stmt = conn
+                .prepare("SELECT id, mainline_sans FROM games WHERE id > ?1 ORDER BY id LIMIT ?2")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(params![last_id, STRIP_CHECK_SUFFIXES_PAGE_SIZE], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?.unwrap_or_default()))
+                })
+                .map_err(|e| e.to_string())?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
+        };
+        if page.is_empty() {
+            break;
+        }
+        last_id = page.last().expect("page non vide").0;
+
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        {
+            let mut update = tx.prepare("UPDATE games SET mainline_sans = ?1 WHERE id = ?2").map_err(|e| e.to_string())?;
+            for (id, mainline) in &page {
+                if mainline.contains(['+', '#']) {
+                    let cleaned_mainline: String = mainline.chars().filter(|c| *c != '+' && *c != '#').collect();
+                    update.execute(params![cleaned_mainline, id]).map_err(|e| e.to_string())?;
+                    cleaned += 1;
+                }
+            }
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        on_progress(cleaned);
+    }
+
+    conn.execute(
+        "INSERT INTO db_meta (key, value) VALUES ('check_suffixes_stripped', '1')
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
+    if cleaned > 0 {
+        // opening_prefix_stats derive de l'ancien mainline_sans (donc encore
+        // avec "+"/"#" dans next_move) : a reconstruire pour rester coherent,
+        // sans attendre migrate_prefix_stats (qui ne s'execute que si la
+        // table est encore vide).
+        crate::explorer::rebuild_prefix_stats(conn)?;
+    }
+    Ok(cleaned)
 }
 
 /// Les bases creees avant l'ajout du support Elo / du cache des coups n'ont
@@ -572,18 +730,20 @@ fn position_bounds(moves: &[String]) -> (String, String) {
     (prefix, hi)
 }
 
-/// FROM+WHERE (avec index force) partages par count_games_at_position et
-/// games_at_position. Sans filtre joueur, idx_games_mainline est le bon
-/// index (le prefixe de coups est la seule condition, et il est de plus en
-/// plus selectif a mesure qu'on avance dans l'arbre). Avec un filtre joueur,
-/// c'est l'inverse a faible profondeur : le prefixe (souvent vide dans un
-/// onglet de preparation tout juste ouvert) ne restreint presque rien, alors
-/// que l'egalite sur white/black, elle, ne garde qu'une fraction infime de
-/// la base -- d'ou l'index force sur idx_games_white/idx_games_black dans ce
-/// cas (meme raisonnement que explorer::explore).
+/// FROM+WHERE partages par count_games_at_position et games_at_position.
+/// Seul le filtre joueur force un index different de idx_games_mainline (le
+/// prefixe de coups) : un joueur reste une fraction infime de la base meme
+/// sur plusieurs millions de parties. Classement et annee, eux, ne sont PAS
+/// forcement selectifs -- un intervalle de 2-3 ans sur une base couvrant
+/// plusieurs decennies peut representer des centaines de milliers de
+/// parties -- forcer idx_games_date dans ce cas (essaye dans une version
+/// anterieure) s'est mesure catastrophiquement lent en pratique (SQLite doit
+/// relire mainline_sans ligne par ligne pour chacune). Ils restent donc de
+/// simples conditions residuelles, jamais des criteres de choix d'index
+/// (meme principe, garde synchronise avec explorer::explore_raw).
 fn position_from_and_where(
     moves: &[String],
-    filter: Option<&crate::explorer::PlayerFilter>,
+    filters: &crate::explorer::ExplorerFilters,
 ) -> (String, String, Vec<Box<dyn rusqlite::ToSql>>) {
     // A la position de depart sans filtre joueur, les bornes mainline_sans
     // (>= "" AND < "￿") ne restreignent rien : elles matchent toutes
@@ -592,74 +752,123 @@ fn position_from_and_where(
     // games_at_position) puisque cet index est ordonne par coups, pas par id
     // -- exactement le ralentissement a l'ouverture de l'explorateur sur une
     // grosse base. Sans condition, SQLite retombe sur l'ordre naturel de la
-    // clef primaire (id), gratuit pour ORDER BY id DESC LIMIT.
-    if moves.is_empty() && filter.is_none() {
-        return ("games".to_string(), String::new(), Vec::new());
+    // clef primaire (id), gratuit pour ORDER BY id DESC LIMIT. Classement/
+    // annee n'y changent rien : ce sont de simples conditions residuelles
+    // (voir plus haut), evaluees pendant ce balayage par id sans en changer
+    // le cout.
+    let no_index_needed = moves.is_empty() && filters.player.is_none();
+
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    let mut clauses: Vec<String> = Vec::new();
+    if !no_index_needed {
+        let (lo, hi) = position_bounds(moves);
+        params.push(Box::new(lo));
+        params.push(Box::new(hi));
+        clauses.push(format!("mainline_sans >= ?{} AND mainline_sans < ?{}", params.len() - 1, params.len()));
     }
-    let (lo, hi) = position_bounds(moves);
-    match filter {
-        Some(f) => {
-            let index = if f.white { "idx_games_white" } else { "idx_games_black" };
-            let column = if f.white { "white" } else { "black" };
-            (
-                format!("games INDEXED BY {index}"),
-                format!("WHERE {column} = ?1 AND mainline_sans >= ?2 AND mainline_sans < ?3"),
-                vec![Box::new(f.name.clone()), Box::new(lo), Box::new(hi)],
-            )
-        }
-        None => (
-            "games INDEXED BY idx_games_mainline".to_string(),
-            "WHERE mainline_sans >= ?1 AND mainline_sans < ?2".to_string(),
-            vec![Box::new(lo), Box::new(hi)],
-        ),
+
+    if let Some(p) = &filters.player {
+        clauses.push(p.where_clause(&mut params));
     }
+    if let Some((min, max)) = filters.rating_range {
+        params.push(Box::new(min));
+        params.push(Box::new(max));
+        clauses.push(format!("white_elo BETWEEN ?{} AND ?{}", params.len() - 1, params.len()));
+        params.push(Box::new(min));
+        params.push(Box::new(max));
+        clauses.push(format!("black_elo BETWEEN ?{} AND ?{}", params.len() - 1, params.len()));
+    }
+    if let Some((year_min, year_max)) = filters.year_range {
+        params.push(Box::new(format!("{year_min:04}")));
+        params.push(Box::new(format!("{year_max:04}\u{ffff}")));
+        clauses.push(format!("date_played >= ?{} AND date_played < ?{}", params.len() - 1, params.len()));
+    }
+
+    let index = match &filters.player {
+        Some(p) => Some(if p.white { "idx_games_white" } else { "idx_games_black" }),
+        None if !no_index_needed => Some("idx_games_mainline"),
+        None => None,
+    };
+    let from = match index {
+        Some(index) => format!("games INDEXED BY {index}"),
+        None => "games".to_string(),
+    };
+    let where_clause = if clauses.is_empty() { String::new() } else { format!("WHERE {}", clauses.join(" AND ")) };
+
+    (from, where_clause, params)
 }
 
 /// Nombre de parties de la base de reference passant exactement par cette
-/// position (prefixe de mainline_sans), optionnellement restreint a un seul
-/// joueur/couleur (voir explorer::PlayerFilter). Voir games_at_position pour
-/// le detail des bornes utilisees.
-pub fn count_games_at_position(conn: &Connection, moves: &[String], filter: Option<&crate::explorer::PlayerFilter>) -> Result<u32, String> {
-    let (from, where_clause, params) = position_from_and_where(moves, filter);
+/// position (prefixe de mainline_sans), optionnellement restreint par
+/// joueur/classement/annee (voir explorer::ExplorerFilters). Voir
+/// games_at_position pour le detail des bornes utilisees.
+pub fn count_games_at_position(conn: &Connection, moves: &[String], filters: &crate::explorer::ExplorerFilters) -> Result<u32, String> {
+    let (from, where_clause, params) = position_from_and_where(moves, filters);
     let sql = format!("SELECT COUNT(*) FROM {from} {where_clause}");
     let params_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
     let count: i64 = conn.query_row(&sql, params_refs.as_slice(), |row| row.get(0)).map_err(|e| e.to_string())?;
     Ok(count as u32)
 }
 
+/// Traduit (colonne, sens) fournis par l'interface en clause ORDER BY fixe
+/// (voir order_by_clause, meme principe pour le panneau Parties principal --
+/// id en depart-egalite pour un ordre stable entre deux parties de meme
+/// valeur). Retombe sur "les plus recentes d'abord" (id DESC) pour toute
+/// valeur vide/inconnue.
+fn explorer_games_order_by_clause(sort_by: &str, sort_dir: &str) -> &'static str {
+    let desc = sort_dir != "asc";
+    match (sort_by, desc) {
+        ("white", false) => "ORDER BY white COLLATE NOCASE ASC, id DESC",
+        ("white", true) => "ORDER BY white COLLATE NOCASE DESC, id DESC",
+        ("black", false) => "ORDER BY black COLLATE NOCASE ASC, id DESC",
+        ("black", true) => "ORDER BY black COLLATE NOCASE DESC, id DESC",
+        ("date", false) => "ORDER BY date_played ASC, id DESC",
+        ("date", true) => "ORDER BY date_played DESC, id DESC",
+        ("whiteElo", false) => "ORDER BY white_elo ASC, id DESC",
+        ("whiteElo", true) => "ORDER BY white_elo DESC, id DESC",
+        ("blackElo", false) => "ORDER BY black_elo ASC, id DESC",
+        ("blackElo", true) => "ORDER BY black_elo DESC, id DESC",
+        _ => "ORDER BY id DESC",
+    }
+}
+
 /// Parties de la base de reference passant exactement par cette position,
-/// les plus recentes d'abord, optionnellement restreintes a un seul
-/// joueur/couleur. Utilise pour le panneau "parties dans cette position" de
-/// l'explorateur d'ouvertures.
+/// triees selon `sort_by`/`sort_dir` (les plus recentes d'abord si vide),
+/// optionnellement restreintes par joueur/classement/annee. Utilise pour le
+/// panneau "parties dans cette position" de l'explorateur d'ouvertures.
 pub fn games_at_position(
     conn: &Connection,
     moves: &[String],
-    filter: Option<&crate::explorer::PlayerFilter>,
+    filters: &crate::explorer::ExplorerFilters,
+    sort_by: &str,
+    sort_dir: &str,
     limit: u32,
     offset: u32,
-) -> Result<Vec<GameSummary>, String> {
-    // Prefixe court (1 ou 2 demi-coups), sans filtre joueur : voir
-    // games_at_position_shallow_scan. Le prefixe vide (position de depart)
-    // reste gere par la branche generale ci-dessous, qui a deja son propre
-    // raccourci (position_from_and_where retourne alors un FROM sans WHERE).
-    if filter.is_none() && !moves.is_empty() && moves.len() <= crate::explorer::PRECOMPUTED_MAX_DEPTH {
-        return games_at_position_shallow_scan(conn, &moves.join(" "), limit, offset);
+) -> Result<Vec<ExplorerGameSummary>, String> {
+    // Le balayage id-decroissant-avec-arret-anticipe (voir
+    // games_at_position_shallow_scan) ne sait produire QUE l'ordre naturel de
+    // l'id -- un tri explicite sur une autre colonne demande de toute facon
+    // de visiter/trier l'ensemble des correspondances, ce raccourci ne peut
+    // donc s'appliquer qu'a l'ordre par defaut (aucun tri demande).
+    if sort_by.is_empty() && filters.player.is_none() && !moves.is_empty() && moves.len() <= crate::explorer::PRECOMPUTED_MAX_DEPTH {
+        return games_at_position_shallow_scan(conn, &moves.join(" "), filters, limit, offset);
     }
 
-    let (from, where_clause, mut params) = position_from_and_where(moves, filter);
+    let order_by = explorer_games_order_by_clause(sort_by, sort_dir);
+    let (from, where_clause, mut params) = position_from_and_where(moves, filters);
     let limit_ph = params.len() + 1;
     let offset_ph = params.len() + 2;
     params.push(Box::new(limit));
     params.push(Box::new(offset));
     let sql = format!(
-        "SELECT id, white, black, date_played, result, event, time_control
+        "SELECT id, white, black, date_played, result, event, time_control, white_elo, black_elo
          FROM {from} {where_clause}
-         ORDER BY id DESC LIMIT ?{limit_ph} OFFSET ?{offset_ph}"
+         {order_by} LIMIT ?{limit_ph} OFFSET ?{offset_ph}"
     );
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let params_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
     let rows = stmt
-        .query_map(params_refs.as_slice(), map_game_summary_row)
+        .query_map(params_refs.as_slice(), map_explorer_game_summary_row)
         .map_err(|e| e.to_string())?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string());
@@ -682,24 +891,49 @@ pub fn games_at_position(
 /// de parties), ce tri portait sur des millions de lignes des le premier
 /// coup clique, mesure ~650x plus lent que ce balayage sur un jeu de test de
 /// 300k parties synthetiques (voir l'ancien probe_shallow_prefix_perf).
-fn games_at_position_shallow_scan(conn: &Connection, prefix: &str, limit: u32, offset: u32) -> Result<Vec<GameSummary>, String> {
+fn games_at_position_shallow_scan(
+    conn: &Connection,
+    prefix: &str,
+    filters: &crate::explorer::ExplorerFilters,
+    limit: u32,
+    offset: u32,
+) -> Result<Vec<ExplorerGameSummary>, String> {
     let with_space = format!("{prefix} ");
+    // mainline_sans en dernier (pas entre time_control et white_elo) : garde
+    // les 9 premieres colonnes dans le meme ordre que map_explorer_game_summary_row,
+    // partagee avec games_at_position.
     let mut stmt = conn
-        .prepare("SELECT id, white, black, date_played, result, event, time_control, mainline_sans FROM games ORDER BY id DESC")
+        .prepare("SELECT id, white, black, date_played, result, event, time_control, white_elo, black_elo, mainline_sans FROM games ORDER BY id DESC")
         .map_err(|e| e.to_string())?;
     let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
     let mut skipped = 0u32;
     let mut out = Vec::new();
     while let Some(row) = rows.next().map_err(|e| e.to_string())? {
-        let mainline: String = row.get(7).map_err(|e| e.to_string())?;
+        let mainline: String = row.get(9).map_err(|e| e.to_string())?;
         if mainline != prefix && !mainline.starts_with(&with_space) {
             continue;
+        }
+        if let Some((min, max)) = filters.rating_range {
+            let white_elo: Option<i32> = row.get(7).map_err(|e| e.to_string())?;
+            let black_elo: Option<i32> = row.get(8).map_err(|e| e.to_string())?;
+            let in_range = |elo: Option<i32>| elo.is_some_and(|e| e >= min && e <= max);
+            if !in_range(white_elo) || !in_range(black_elo) {
+                continue;
+            }
+        }
+        if let Some((year_min, year_max)) = filters.year_range {
+            let date: String = row.get(3).map_err(|e| e.to_string())?;
+            let lo = format!("{year_min:04}");
+            let hi = format!("{year_max:04}\u{ffff}");
+            if !(date.as_str() >= lo.as_str() && date.as_str() < hi.as_str()) {
+                continue;
+            }
         }
         if skipped < offset {
             skipped += 1;
             continue;
         }
-        out.push(map_game_summary_row(row).map_err(|e| e.to_string())?);
+        out.push(map_explorer_game_summary_row(row).map_err(|e| e.to_string())?);
         if out.len() as u32 >= limit {
             break;
         }
@@ -946,6 +1180,114 @@ pub fn load_game_for_move(conn: &Connection, id: i64) -> Result<Option<(BTreeMap
 mod tests {
     use super::*;
 
+    fn conn_for_strip_check_suffixes_tests() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE games (
+                id INTEGER PRIMARY KEY,
+                white TEXT, black TEXT, white_elo INTEGER, black_elo INTEGER,
+                result TEXT, event TEXT, site TEXT, round TEXT, date_played TEXT,
+                eco TEXT, opening_name TEXT, ply_count INTEGER, time_control TEXT,
+                pgn_moves TEXT NOT NULL, extra_tags TEXT, mainline_sans TEXT,
+                created_at INTEGER NOT NULL, last_modified INTEGER NOT NULL
+            );
+            CREATE TABLE opening_prefix_stats (
+                prefix TEXT NOT NULL, next_move TEXT NOT NULL, result TEXT, cnt INTEGER NOT NULL
+            );
+            CREATE TABLE db_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn strip_check_suffixes_cleans_mainline_sans_and_rebuilds_prefix_stats() {
+        let mut conn = conn_for_strip_check_suffixes_tests();
+        // simule une partie importee avant le correctif : mainline_sans garde
+        // le "+"/"#" du PGN source (voir l'ancien bulk_import::BulkGameVisitor::san).
+        conn.execute(
+            "INSERT INTO games (white, black, result, pgn_moves, mainline_sans, created_at, last_modified)
+             VALUES ('Alice', 'Bob', '1-0', '1. e4 e5 2. Qh5 Nc6 3. Qxf7# 1-0', 'e4 e5 Qh5 Nc6 Qxf7#', 0, 0)",
+            [],
+        )
+        .unwrap();
+
+        let mut progress_calls = Vec::new();
+        let cleaned = strip_check_suffixes(&mut conn, |n| progress_calls.push(n), || false).unwrap();
+        assert_eq!(cleaned, 1);
+        assert_eq!(progress_calls, vec![1]);
+
+        let mainline: String = conn.query_row("SELECT mainline_sans FROM games WHERE id = 1", [], |row| row.get(0)).unwrap();
+        assert_eq!(mainline, "e4 e5 Qh5 Nc6 Qxf7");
+
+        // opening_prefix_stats reconstruit a partir du mainline_sans nettoye :
+        // le prefixe "e4 e5 Qh5 Nc6" (sans suffixe) doit maintenant matcher.
+        // Le "+" est recalcule par explore() (voir annotate_check_suffixes),
+        // pas copie du "#" (fictif) du PGN de depart -- Qxf7 met le roi noir
+        // en echec ici, sans etre mat.
+        let stats = crate::explorer::explore(
+            &conn,
+            &["e4".to_string(), "e5".to_string(), "Qh5".to_string(), "Nc6".to_string()],
+            &crate::explorer::ExplorerFilters::default(),
+        )
+        .unwrap();
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].san, "Qxf7+");
+
+        // idempotent : un second appel ne doit rien casser (deja marque fait),
+        // et ne redeclenche aucun travail (progress jamais appele).
+        assert!(already_check_suffixes_cleaned(&conn).unwrap());
+        let mut second_progress_calls = Vec::new();
+        let cleaned_again = strip_check_suffixes(&mut conn, |n| second_progress_calls.push(n), || false).unwrap();
+        assert_eq!(cleaned_again, 0);
+        assert!(second_progress_calls.is_empty());
+    }
+
+    #[test]
+    fn strip_check_suffixes_pages_across_multiple_batches() {
+        let mut conn = conn_for_strip_check_suffixes_tests();
+        // plus de lignes que STRIP_CHECK_SUFFIXES_PAGE_SIZE ne le permettrait
+        // en une seule page, pour verifier que la pagination par id couvre
+        // bien toute la table (pas seulement la premiere page).
+        for i in 0..(STRIP_CHECK_SUFFIXES_PAGE_SIZE * 2 + 7) {
+            conn.execute(
+                "INSERT INTO games (white, black, result, pgn_moves, mainline_sans, created_at, last_modified)
+                 VALUES ('Alice', 'Bob', '1-0', '1. e4+ 1-0', 'e4+', 0, 0)",
+                [],
+            )
+            .unwrap();
+            let _ = i;
+        }
+
+        let cleaned = strip_check_suffixes(&mut conn, |_| {}, || false).unwrap();
+        assert_eq!(cleaned as i64, STRIP_CHECK_SUFFIXES_PAGE_SIZE * 2 + 7);
+
+        let remaining_dirty: i64 = conn
+            .query_row("SELECT COUNT(*) FROM games WHERE mainline_sans LIKE '%+%' OR mainline_sans LIKE '%#%'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(remaining_dirty, 0);
+    }
+
+    #[test]
+    fn strip_check_suffixes_stops_at_the_next_check_when_cancelled() {
+        let mut conn = conn_for_strip_check_suffixes_tests();
+        for _ in 0..(STRIP_CHECK_SUFFIXES_PAGE_SIZE + 5) {
+            conn.execute(
+                "INSERT INTO games (white, black, result, pgn_moves, mainline_sans, created_at, last_modified)
+                 VALUES ('Alice', 'Bob', '1-0', '1. e4+ 1-0', 'e4+', 0, 0)",
+                [],
+            )
+            .unwrap();
+        }
+
+        // annule des le premier controle : rien ne doit etre nettoye, et le
+        // travail (deja) commit d'une page precedente resterait acquis s'il y
+        // en avait eu une -- ici, aucune.
+        let cleaned = strip_check_suffixes(&mut conn, |_| {}, || true).unwrap();
+        assert_eq!(cleaned, 0);
+        assert!(!already_check_suffixes_cleaned(&conn).unwrap());
+    }
+
     #[test]
     fn migrates_old_schema_without_elo_columns() {
         let conn = Connection::open_in_memory().unwrap();
@@ -1010,6 +1352,10 @@ mod tests {
         assert!(find_duplicate(&conn, &tags, &same_moves).unwrap().is_some());
     }
 
+    fn no_filters() -> crate::explorer::ExplorerFilters {
+        crate::explorer::ExplorerFilters::default()
+    }
+
     #[test]
     fn games_at_position_shallow_prefix_paginates_correctly() {
         // Prefixe d'un seul demi-coup ("e4") : passe par
@@ -1024,18 +1370,18 @@ mod tests {
         save_game(&conn, "1. d4 *", &base_tags("Erin", "Frank", "2024.01.01", "*"), "d4 d5").unwrap();
 
         let moves = vec!["e4".to_string()];
-        assert_eq!(count_games_at_position(&conn, &moves, None).unwrap(), 5);
+        assert_eq!(count_games_at_position(&conn, &moves, &no_filters()).unwrap(), 5);
 
         // les plus recentes d'abord (id decroissant) : W4 puis W3
-        let page0 = games_at_position(&conn, &moves, None, 2, 0).unwrap();
+        let page0 = games_at_position(&conn, &moves, &no_filters(), "", "", 2, 0).unwrap();
         assert_eq!(page0.iter().map(|g| g.white.as_str()).collect::<Vec<_>>(), vec!["W4", "W3"]);
 
         // page suivante (offset 2) : W2 puis W1, "d4" jamais inclus
-        let page1 = games_at_position(&conn, &moves, None, 2, 2).unwrap();
+        let page1 = games_at_position(&conn, &moves, &no_filters(), "", "", 2, 2).unwrap();
         assert_eq!(page1.iter().map(|g| g.white.as_str()).collect::<Vec<_>>(), vec!["W2", "W1"]);
 
         // derniere page partielle (offset 4, limit 2) : un seul resultat
-        let page2 = games_at_position(&conn, &moves, None, 2, 4).unwrap();
+        let page2 = games_at_position(&conn, &moves, &no_filters(), "", "", 2, 4).unwrap();
         assert_eq!(page2.iter().map(|g| g.white.as_str()).collect::<Vec<_>>(), vec!["W0"]);
     }
 
@@ -1051,15 +1397,41 @@ mod tests {
         save_game(&conn, "1. d4 d5 *", &base_tags("Erin", "Frank", "2024.01.03", "*"), "d4 d5").unwrap();
 
         let moves = vec!["e4".to_string(), "e5".to_string()];
-        assert_eq!(count_games_at_position(&conn, &moves, None).unwrap(), 2);
-        let games = games_at_position(&conn, &moves, None, 10, 0).unwrap();
+        assert_eq!(count_games_at_position(&conn, &moves, &no_filters()).unwrap(), 2);
+        let games = games_at_position(&conn, &moves, &no_filters(), "", "", 10, 0).unwrap();
         let whites: Vec<&str> = games.iter().map(|g| g.white.as_str()).collect();
         assert_eq!(whites.len(), 2);
         assert!(whites.contains(&"Alice"));
         assert!(whites.contains(&"Carol"));
 
         // position de depart (prefixe vide) : toutes les parties
-        assert_eq!(count_games_at_position(&conn, &[], None).unwrap(), 3);
+        assert_eq!(count_games_at_position(&conn, &[], &no_filters()).unwrap(), 3);
+    }
+
+    // Le prefixe "e4 e5" est court (profondeur <= PRECOMPUTED_MAX_DEPTH) :
+    // sans tri demande, ce test passerait par games_at_position_shallow_scan
+    // (ordre id DESC uniquement) -- avec un tri explicite, il doit basculer
+    // sur la branche generale (voir games_at_position) pour honorer l'ordre
+    // demande, pas rester bloque sur l'ordre naturel de l'id.
+    #[test]
+    fn games_at_position_sorts_by_the_requested_column() {
+        let conn = open(Path::new(":memory:")).unwrap();
+        let mut tags = base_tags("Alice", "Bob", "2024.01.01", "1-0");
+        tags.insert("WhiteElo".to_string(), "2200".to_string());
+        save_game(&conn, "1. e4 e5 *", &tags, "e4 e5").unwrap();
+        let mut tags = base_tags("Carol", "Dave", "2024.01.02", "0-1");
+        tags.insert("WhiteElo".to_string(), "2600".to_string());
+        save_game(&conn, "1. e4 e5 *", &tags, "e4 e5").unwrap();
+        let mut tags = base_tags("Erin", "Frank", "2024.01.03", "1/2-1/2");
+        tags.insert("WhiteElo".to_string(), "2400".to_string());
+        save_game(&conn, "1. e4 e5 *", &tags, "e4 e5").unwrap();
+
+        let moves = vec!["e4".to_string(), "e5".to_string()];
+        let desc = games_at_position(&conn, &moves, &no_filters(), "whiteElo", "desc", 10, 0).unwrap();
+        assert_eq!(desc.iter().map(|g| g.white.as_str()).collect::<Vec<_>>(), vec!["Carol", "Erin", "Alice"]);
+
+        let asc = games_at_position(&conn, &moves, &no_filters(), "whiteElo", "asc", 10, 0).unwrap();
+        assert_eq!(asc.iter().map(|g| g.white.as_str()).collect::<Vec<_>>(), vec!["Alice", "Erin", "Carol"]);
     }
 
     #[test]
@@ -1072,17 +1444,53 @@ mod tests {
         let moves = vec!["e4".to_string(), "e5".to_string()];
 
         // Alice en Blancs : seulement la premiere partie
-        let white_filter = crate::explorer::PlayerFilter { name: "Alice".to_string(), white: true };
-        assert_eq!(count_games_at_position(&conn, &moves, Some(&white_filter)).unwrap(), 1);
-        let games = games_at_position(&conn, &moves, Some(&white_filter), 10, 0).unwrap();
+        let white_filters =
+            crate::explorer::ExplorerFilters { player: Some(crate::explorer::PlayerFilter { name: "Alice".to_string(), white: true, exact: true }), ..Default::default() };
+        assert_eq!(count_games_at_position(&conn, &moves, &white_filters).unwrap(), 1);
+        let games = games_at_position(&conn, &moves, &white_filters, "", "", 10, 0).unwrap();
         assert_eq!(games.len(), 1);
         assert_eq!(games[0].white, "Alice");
 
         // Alice en Noirs : seulement la seconde
-        let black_filter = crate::explorer::PlayerFilter { name: "Alice".to_string(), white: false };
-        assert_eq!(count_games_at_position(&conn, &moves, Some(&black_filter)).unwrap(), 1);
-        let games = games_at_position(&conn, &moves, Some(&black_filter), 10, 0).unwrap();
+        let black_filters =
+            crate::explorer::ExplorerFilters { player: Some(crate::explorer::PlayerFilter { name: "Alice".to_string(), white: false, exact: true }), ..Default::default() };
+        assert_eq!(count_games_at_position(&conn, &moves, &black_filters).unwrap(), 1);
+        let games = games_at_position(&conn, &moves, &black_filters, "", "", 10, 0).unwrap();
         assert_eq!(games[0].black, "Alice");
+    }
+
+    #[test]
+    fn games_at_position_respects_rating_range_filter() {
+        let conn = open(Path::new(":memory:")).unwrap();
+        let mut tags = base_tags("Alice", "Bob", "2024.01.01", "1-0");
+        tags.insert("WhiteElo".to_string(), "2400".to_string());
+        tags.insert("BlackElo".to_string(), "2450".to_string());
+        save_game(&conn, "1. e4 e5 *", &tags, "e4 e5").unwrap();
+        // un seul camp dans l'intervalle : exclue
+        let mut tags = base_tags("Carol", "Dave", "2024.01.02", "0-1");
+        tags.insert("WhiteElo".to_string(), "2400".to_string());
+        tags.insert("BlackElo".to_string(), "1500".to_string());
+        save_game(&conn, "1. e4 e5 *", &tags, "e4 e5").unwrap();
+
+        let moves = vec!["e4".to_string(), "e5".to_string()];
+        let filters = crate::explorer::ExplorerFilters { rating_range: Some((2300, 2500)), ..Default::default() };
+        assert_eq!(count_games_at_position(&conn, &moves, &filters).unwrap(), 1);
+        let games = games_at_position(&conn, &moves, &filters, "", "", 10, 0).unwrap();
+        assert_eq!(games.len(), 1);
+        assert_eq!(games[0].white, "Alice");
+    }
+
+    #[test]
+    fn games_at_position_respects_year_range_filter() {
+        let conn = open(Path::new(":memory:")).unwrap();
+        save_game(&conn, "1. e4 e5 *", &base_tags("Alice", "Bob", "2015.06.01", "1-0"), "e4 e5").unwrap();
+        save_game(&conn, "1. e4 e5 *", &base_tags("Carol", "Dave", "1990.01.01", "0-1"), "e4 e5").unwrap();
+
+        let moves = vec!["e4".to_string(), "e5".to_string()];
+        let filters = crate::explorer::ExplorerFilters { year_range: Some((2010, 2020)), ..Default::default() };
+        assert_eq!(count_games_at_position(&conn, &moves, &filters).unwrap(), 1);
+        let games = games_at_position(&conn, &moves, &filters, "", "", 10, 0).unwrap();
+        assert_eq!(games[0].white, "Alice");
     }
 
     #[test]

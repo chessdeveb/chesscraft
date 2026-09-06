@@ -32,12 +32,19 @@ export interface TreeDto {
   tags: Record<string, string>;
 }
 
+export interface PvMove {
+  san: string;
+  fen: string;
+  from: string;
+  to: string;
+}
+
 export interface EngineInfo {
   depth: number;
   multipv: number;
   scoreCp: number | null;
   scoreMate: number | null;
-  pvSan: string[];
+  pv: PvMove[];
 }
 
 export interface PgnGameSummary {
@@ -55,6 +62,20 @@ export interface OpeningMoveStat {
   whiteWins: number;
   draws: number;
   blackWins: number;
+}
+
+export interface EcoInfo {
+  eco: string;
+  name: string;
+}
+
+export interface ExplorerFilterValues {
+  playerName: string;
+  playerWhite: boolean;
+  ratingMin: string;
+  ratingMax: string;
+  yearMin: string;
+  yearMax: string;
 }
 
 export interface BaseInfo {
@@ -77,8 +98,19 @@ export interface GameSummary {
 
 export type SaveResult = { kind: "saved"; id: number } | { kind: "duplicate"; existing: GameSummary };
 
+export interface ExplorerGameSummary extends GameSummary {
+  whiteElo: number | null;
+  blackElo: number | null;
+}
+
+export type ExplorerGamesSortColumn = "white" | "black" | "date" | "whiteElo" | "blackElo";
+export interface ExplorerGamesSort {
+  column: ExplorerGamesSortColumn;
+  dir: "asc" | "desc";
+}
+
 export interface ExplorerGamesPage {
-  games: GameSummary[];
+  games: ExplorerGameSummary[];
   total: number;
   basePath: string;
 }

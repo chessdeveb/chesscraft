@@ -1,6 +1,17 @@
 import { createContext, useContext } from "react";
 import type { Dests, Key } from "@lichess-org/chessground/types";
-import type { EngineInfo, GameSummary, NodeDto, OpeningMoveStat, ShapeDto, TreeDto } from "./types";
+import type {
+  EcoInfo,
+  EngineInfo,
+  ExplorerFilterValues,
+  ExplorerGameSummary,
+  ExplorerGamesSort,
+  ExplorerGamesSortColumn,
+  NodeDto,
+  OpeningMoveStat,
+  ShapeDto,
+  TreeDto,
+} from "./types";
 
 export interface AppContextValue {
   tree: TreeDto | null;
@@ -20,11 +31,18 @@ export interface AppContextValue {
   handleToggleNag: (code: number) => void;
   explorerStats: OpeningMoveStat[];
   explorerError: string | null;
+  checkSuffixesCleanupCount: number | null;
+  ecoInfo: EcoInfo | null;
+  explorerFilters: ExplorerFilterValues;
+  onExplorerFiltersChange: (filters: ExplorerFilterValues) => void;
+  onExplorerFiltersCommit: () => void;
   handleExplorerMove: (san: string) => void;
 
-  explorerGames: GameSummary[];
+  explorerGames: ExplorerGameSummary[];
   explorerGamesTotal: number;
   explorerGamesPage: number;
+  explorerGamesSort: ExplorerGamesSort | null;
+  onExplorerGamesSortChange: (column: ExplorerGamesSortColumn) => void;
   explorerGamesLoading: boolean;
   explorerGamesError: string | null;
   onExplorerGamesPageChange: (page: number) => void;

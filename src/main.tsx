@@ -1,7 +1,6 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
-import { BasesWindow } from "./BasesWindow";
 import { GamePickerWindow } from "./GamePickerWindow";
 import { HomeWindow } from "./HomeWindow";
 import { PositionEditorWindow } from "./PositionEditorWindow";
@@ -12,7 +11,6 @@ const windowParam = new URLSearchParams(window.location.search).get("window");
 
 function Root() {
   if (windowParam === "game-picker") return <GamePickerWindow />;
-  if (windowParam === "bases-paths") return <BasesWindow />;
   if (windowParam === "position-editor") return <PositionEditorWindow />;
   if (windowParam === "about") return <AboutWindow />;
   if (windowParam === "game") return <App />;

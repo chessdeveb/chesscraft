@@ -11,9 +11,13 @@ import { persistDockviewLayout, syncPanelCheckedStates, tryRestoreDockviewLayout
 import { EVAL_NAG_CODES, MOVE_NAG_CODES } from "./nag";
 import { SaveBasePicker } from "./components/SaveBasePicker";
 import type {
+  EcoInfo,
   EngineInfo,
+  ExplorerFilterValues,
+  ExplorerGameSummary,
   ExplorerGamesPage,
-  GameSummary,
+  ExplorerGamesSort,
+  ExplorerGamesSortColumn,
   MoveDto,
   NodeDto,
   OpeningMoveStat,
@@ -508,6 +512,67 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
   const [explorerStats, setExplorerStats] = useState<OpeningMoveStat[]>([]);
   const [explorerError, setExplorerError] = useState<string | null>(null);
   const [explorerVisible, setExplorerVisible] = useState(() => isPlayerPrep || loadGamePanelPrefs().explorer);
+  // Nettoyage en tache de fond du "+"/"#" laisse par un import en masse
+  // anterieur a la correction de bulk_import (voir maybe_start_check_suffix_cleanup,
+  // lib.rs) : evenement global (pas propre a cet onglet), tant que non nul
+  // affiche que les resultats de l'explorateur peuvent encore etre
+  // incomplets pour un coup donnant echec/mat.
+  const [checkSuffixesCleanupCount, setCheckSuffixesCleanupCount] = useState<number | null>(null);
+
+  useEffect(() => {
+    const unlistenPromises = [
+      listen<number>("check-suffixes-progress", (event) => setCheckSuffixesCleanupCount(event.payload)),
+      listen("check-suffixes-done", () => setCheckSuffixesCleanupCount(null)),
+      // ne disparaissait auparavant pas autrement qu'en silence, exactement
+      // comme un succes -- aucun moyen de savoir qu'un nettoyage s'etait
+      // arrete en cours de route (voir maybe_start_check_suffix_cleanup,
+      // lib.rs). Relancer l'appli redeclenche automatiquement une nouvelle
+      // tentative (le marqueur "termine" n'a jamais ete pose en cas d'echec).
+      listen<string>("check-suffixes-error", (event) => {
+        setCheckSuffixesCleanupCount(null);
+        setError(t("explorer.checkSuffixCleanupError", { error: event.payload }));
+      }),
+    ];
+    return () => {
+      unlistenPromises.forEach((p) => p.then((unlisten) => unlisten()));
+    };
+  }, [t]);
+
+  const EMPTY_EXPLORER_FILTERS: ExplorerFilterValues = {
+    playerName: "",
+    playerWhite: true,
+    ratingMin: "",
+    ratingMax: "",
+    yearMin: "",
+    yearMax: "",
+  };
+  // explorerFiltersInput (saisie libre, aucune requete declenchee) vs
+  // explorerFilters (valeurs validees, celles reellement envoyees a
+  // opening_explorer/opening_explorer_games) : meme principe que
+  // gamesAdvancedInput/gamesAdvancedFilter (HomeDockview.tsx) -- interroger
+  // la base de reference a chaque frappe rendait l'interface saccadee et,
+  // sur un nom, se comportait comme une recherche en temps reel bien trop
+  // lente sur plusieurs millions de parties.
+  const [explorerFiltersInput, setExplorerFiltersInput] = useState<ExplorerFilterValues>(EMPTY_EXPLORER_FILTERS);
+  const [explorerFilters, setExplorerFilters] = useState<ExplorerFilterValues>(EMPTY_EXPLORER_FILTERS);
+  const commitExplorerFilters = useCallback(() => setExplorerFilters(explorerFiltersInput), [explorerFiltersInput]);
+  const [ecoInfo, setEcoInfo] = useState<EcoInfo | null>(null);
+
+  // "" cote UI (champ vide) -> undefined cote commande Rust (pas de filtre) ;
+  // classement/annee ne s'appliquent que par paire min+max (voir
+  // build_explorer_filters, lib.rs) -- un seul bord rempli sans l'autre
+  // n'envoie donc rien, plutot que de deviner une borne manquante.
+  function explorerFilterArgs(f: ExplorerFilterValues) {
+    const int = (s: string) => (s.trim() === "" ? undefined : parseInt(s, 10));
+    return {
+      playerName: f.playerName.trim() === "" ? undefined : f.playerName.trim(),
+      playerWhite: f.playerWhite,
+      ratingMin: int(f.ratingMin),
+      ratingMax: int(f.ratingMax),
+      yearMin: int(f.yearMin),
+      yearMax: int(f.yearMax),
+    };
+  }
 
   useEffect(() => {
     // ne pas interroger la base de reference tant que le panneau n'est pas
@@ -516,19 +581,36 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
     // Rust), inutile de payer ce cout a chaque coup si personne ne regarde.
     if (!tree || !explorerVisible) return;
     const moves = pathSans(tree, currentNodeId);
-    invoke<OpeningMoveStat[]>("opening_explorer", { tabId, moves })
+    invoke<OpeningMoveStat[]>("opening_explorer", { tabId, moves, ...explorerFilterArgs(explorerFilters) })
       .then((stats) => {
         setExplorerStats(stats);
         setExplorerError(null);
       })
       .catch((e) => setExplorerError(String(e)));
-  }, [tabId, tree, currentNodeId, explorerVisible]);
+  }, [tabId, tree, currentNodeId, explorerVisible, explorerFilters]);
+
+  useEffect(() => {
+    // Classification ECO : cout negligeable (recherche en memoire dans un
+    // referentiel embarque, voir eco.rs), independante de la base de
+    // reference -- pas besoin de la conditionner a explorerVisible.
+    if (!tree) return;
+    const moves = pathSans(tree, currentNodeId);
+    invoke<EcoInfo | null>("classify_opening", { moves })
+      .then(setEcoInfo)
+      .catch(() => setEcoInfo(null));
+  }, [tree, currentNodeId]);
 
   const handleExplorerMove = useCallback(
     async (san: string) => {
       try {
+        // s.san (voir OpeningExplorer) vient de mainline_sans, qui peut
+        // encore porter le suffixe "+"/"#" d'un coup donnant echec/mat (bases
+        // importees avant la correction cote bulk_import) -- legal_moves,
+        // lui, ne l'a jamais (voir game_tree::legal_moves). Sans ce retrait,
+        // le clic ne trouvait jamais de correspondance et ne faisait rien.
+        const cleanSan = san.replace(/[+#]$/, "");
         const moves = await invoke<MoveDto[]>("legal_moves", { tabId, nodeId: currentNodeId });
-        const match = moves.find((m) => m.san === san);
+        const match = moves.find((m) => m.san === cleanSan);
         if (!match) return;
         await handleMove(match.from as Key, match.to as Key);
       } catch (e) {
@@ -540,12 +622,18 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
 
   // --- Explorateur : parties passant par la position courante ---
   const EXPLORER_GAMES_PAGE_SIZE = 20;
-  const [explorerGames, setExplorerGames] = useState<GameSummary[]>([]);
+  const [explorerGames, setExplorerGames] = useState<ExplorerGameSummary[]>([]);
   const [explorerGamesTotal, setExplorerGamesTotal] = useState(0);
   const [explorerGamesPage, setExplorerGamesPage] = useState(0);
+  const [explorerGamesSort, setExplorerGamesSort] = useState<ExplorerGamesSort | null>(null);
   const [explorerGamesLoading, setExplorerGamesLoading] = useState(false);
   const [explorerGamesError, setExplorerGamesError] = useState<string | null>(null);
   const [explorerGamesBasePath, setExplorerGamesBasePath] = useState<string | null>(null);
+
+  const onExplorerGamesSortChange = useCallback((column: ExplorerGamesSortColumn) => {
+    setExplorerGamesSort((prev) => (prev?.column === column ? { column, dir: prev.dir === "asc" ? "desc" : "asc" } : { column, dir: "asc" }));
+    setExplorerGamesPage(0);
+  }, []);
 
   const [previewGameId, setPreviewGameId] = useState<number | null>(null);
   const [previewTree, setPreviewTree] = useState<TreeDto | null>(null);
@@ -559,12 +647,13 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
     setPreviewError(null);
   }, []);
 
-  // changer de position dans l'arbre invalide la liste/l'aperçu precedents
+  // changer de position dans l'arbre ou de filtre invalide la liste/l'aperçu
+  // precedents
   useEffect(() => {
     setExplorerGamesPage(0);
     handleClosePreview();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentNodeId]);
+  }, [currentNodeId, explorerFilters]);
 
   useEffect(() => {
     if (!tree || !explorerVisible) return;
@@ -576,6 +665,9 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
       moves,
       offset: explorerGamesPage * EXPLORER_GAMES_PAGE_SIZE,
       limit: EXPLORER_GAMES_PAGE_SIZE,
+      sortBy: explorerGamesSort?.column,
+      sortDir: explorerGamesSort?.dir,
+      ...explorerFilterArgs(explorerFilters),
     })
       .then((page) => {
         if (cancelled) return;
@@ -594,7 +686,7 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
     return () => {
       cancelled = true;
     };
-  }, [tabId, tree, currentNodeId, explorerVisible, explorerGamesPage]);
+  }, [tabId, tree, currentNodeId, explorerVisible, explorerGamesPage, explorerGamesSort, explorerFilters]);
 
   const handleSelectPreviewGame = useCallback(
     async (id: number) => {
@@ -684,6 +776,22 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
     function handleKeyDown(e: KeyboardEvent) {
       if (!tree) return;
 
+      // Voir HomeWindow.tsx : les accelerateurs natifs du menu (Ctrl+S,
+      // Ctrl+E) ne se declenchent jamais au clavier sous Windows -- implemente
+      // nous-memes.
+      if (e.ctrlKey || e.metaKey) {
+        const key = e.key.toLowerCase();
+        if (key === "s") {
+          e.preventDefault();
+          handleSave();
+          return;
+        } else if (key === "e") {
+          e.preventDefault();
+          handleExport();
+          return;
+        }
+      }
+
       if (variationChoice) {
         if (e.key === "Escape" || e.key === "ArrowLeft") {
           e.preventDefault();
@@ -711,7 +819,7 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [active, tree, currentNodeId, variationChoice, highlightedIndex, chooseVariation, handleStep]);
+  }, [active, tree, currentNodeId, variationChoice, highlightedIndex, chooseVariation, handleStep, handleSave, handleExport]);
 
   const onDockviewReady = useCallback(
     (event: DockviewReadyEvent) => {
@@ -798,10 +906,17 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
     handleToggleNag,
     explorerStats,
     explorerError,
+    checkSuffixesCleanupCount,
+    ecoInfo,
+    explorerFilters: explorerFiltersInput,
+    onExplorerFiltersChange: setExplorerFiltersInput,
+    onExplorerFiltersCommit: commitExplorerFilters,
     handleExplorerMove,
     explorerGames,
     explorerGamesTotal,
     explorerGamesPage,
+    explorerGamesSort,
+    onExplorerGamesSortChange,
     explorerGamesLoading,
     explorerGamesError,
     onExplorerGamesPageChange: setExplorerGamesPage,

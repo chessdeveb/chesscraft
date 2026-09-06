@@ -112,21 +112,31 @@ fn write_line(tree: &GameTree, start_id: u32, force_number: bool, out: &mut Stri
 }
 
 /// Reconstruit un arbre de partie a partir d'un texte PGN (la premiere partie du fichier).
+/// Reserve au PGN que l'appli genere elle-meme (write_game, toujours UTF-8
+/// valide) -- pour du PGN venant d'un fichier importe, voir parse_game_at
+/// qui prend des octets bruts.
 pub fn parse_game(pgn_text: &str) -> Result<GameTree, String> {
-    parse_game_at(pgn_text, 0)
+    parse_game_at(pgn_text.as_bytes(), 0)
 }
 
 /// Reconstruit l'arbre de la partie a l'index donne (0 = premiere partie du fichier).
+/// Prend des octets bruts, pas un &str : les fichiers PGN importes ne sont
+/// pas forcement en UTF-8 (Latin-1/Windows-1252 tres courant, notamment pour
+/// les noms accentues) -- forcer une conversion en String en amont (comme le
+/// faisait auparavant l'appelant via std::fs::read_to_string) plantait sur
+/// tout fichier ainsi encode ("stream did not contain valid UTF-8"). Ici,
+/// seules les VALEURS de tag sont decodees (en lossy, voir
+/// SummaryVisitor/GameVisitor::tag), jamais le flux entier d'un coup.
 /// Protege par catch_unwind : du texte PGN inhabituel (notamment issu d'un
 /// import de masse non valide coup par coup) ne doit jamais faire planter
 /// l'application entiere, juste renvoyer une erreur.
-pub fn parse_game_at(pgn_text: &str, index: u32) -> Result<GameTree, String> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| parse_game_at_inner(pgn_text, index)))
+pub fn parse_game_at(pgn_bytes: &[u8], index: u32) -> Result<GameTree, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| parse_game_at_inner(pgn_bytes, index)))
         .unwrap_or_else(|_| Err("partie mal formée (erreur interne du parseur)".to_string()))
 }
 
-fn parse_game_at_inner(pgn_text: &str, index: u32) -> Result<GameTree, String> {
-    let mut reader = Reader::new(pgn_text.as_bytes());
+fn parse_game_at_inner(pgn_bytes: &[u8], index: u32) -> Result<GameTree, String> {
+    let mut reader = Reader::new(pgn_bytes);
     for _ in 0..index {
         let mut skip_visitor = SummaryVisitor::new();
         reader
@@ -144,8 +154,8 @@ fn parse_game_at_inner(pgn_text: &str, index: u32) -> Result<GameTree, String> {
 
 /// Liste legere (tags seulement, sans construire l'arbre) de toutes les
 /// parties d'un fichier PGN, pour proposer un choix a l'import.
-pub fn list_games(pgn_text: &str) -> Result<Vec<PgnGameSummary>, String> {
-    let mut reader = Reader::new(pgn_text.as_bytes());
+pub fn list_games(pgn_bytes: &[u8]) -> Result<Vec<PgnGameSummary>, String> {
+    let mut reader = Reader::new(pgn_bytes);
     let mut summaries = Vec::new();
     let mut index = 0u32;
     while let Some(tags) = {
@@ -350,5 +360,52 @@ impl Visitor for GameVisitor {
 
     fn end_game(&mut self, _movetext: Self::Movetext) -> Self::Output {
         self.flush_comment();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Un fichier PGN importe n'est pas forcement en UTF-8 (Latin-1/Windows-1252
+    // tres courant pour les noms accentues, notamment sur des exports TWIC) --
+    // 0xE9 seul (ex. "Giri" suivi d'un octet Latin-1 pour "é") n'est pas une
+    // sequence UTF-8 valide. list_games/parse_game_at prennent des octets
+    // bruts precisement pour ne jamais planter sur ce cas ("stream did not
+    // contain valid UTF-8", leve auparavant par read_to_string en amont) --
+    // le nom en resultera simplement decode en lossy (voir GameVisitor::tag),
+    // pas parfaitement mais sans crash.
+    // Fichiers PGN "vides" au sens large : 0 octet, juste des tags sans
+    // coup, fichier tronque juste apres les tags -- aucun de ces cas ne doit
+    // planter (catch_unwind pour parse_game_at, aucun panic naturel dans
+    // list_games/pgn-reader constate ici), juste renvoyer 0 partie ou une
+    // erreur propre ("partie introuvable").
+    #[test]
+    fn list_games_and_parse_game_at_handle_empty_or_moveless_pgn_without_panicking() {
+        assert_eq!(list_games(&[]).unwrap().len(), 0);
+        assert!(parse_game_at(&[], 0).is_err());
+        assert_eq!(list_games(b"\n").unwrap().len(), 0);
+
+        let no_moves: &[u8] = b"[White \"A\"]\n[Black \"B\"]\n\n";
+        assert_eq!(list_games(no_moves).unwrap().len(), 1);
+        assert!(parse_game_at(no_moves, 0).is_ok());
+
+        let truncated: &[u8] = b"[White \"A\"]\n[Black \"B\"]";
+        assert!(parse_game_at(truncated, 0).is_ok());
+    }
+
+    #[test]
+    fn list_games_handles_non_utf8_bytes_without_erroring() {
+        let pgn: &[u8] = b"[White \"Gir\xE9,A\"]\n[Black \"Bob\"]\n[Result \"1-0\"]\n\n1. e4 1-0\n";
+        let games = list_games(pgn).unwrap();
+        assert_eq!(games.len(), 1);
+        assert_eq!(games[0].black, "Bob");
+    }
+
+    #[test]
+    fn parse_game_at_handles_non_utf8_bytes_without_erroring() {
+        let pgn: &[u8] = b"[White \"Gir\xE9,A\"]\n[Black \"Bob\"]\n[Result \"1-0\"]\n\n1. e4 1-0\n";
+        let tree = parse_game_at(pgn, 0).unwrap();
+        assert_eq!(tree.tags.get("Black").map(String::as_str), Some("Bob"));
     }
 }

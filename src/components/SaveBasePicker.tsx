@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
+import { listen } from "@tauri-apps/api/event";
 import { useTranslation } from "react-i18next";
 import { BasesTable } from "./BasesTable";
 import { FideNameInput } from "./FideNameInput";
@@ -39,14 +40,21 @@ function inputValueToPgnDate(inputValue: string): string {
   return inputValue.replace(/-/g, ".");
 }
 
+// "?" est le marqueur PGN standard pour une valeur inconnue (voir game_tree::new,
+// pgn::parse_game_at) : sans ce nettoyage il s'affiche tel quel dans les champs
+// d'une partie fraichement creee ou importee sans ces informations.
+function stripUnknownPlaceholder(raw: string | undefined): string {
+  return raw && raw !== "?" ? raw : "";
+}
+
 export function SaveBasePicker({ tabId, activeBasePath, tags, onConfirm, onCancel }: SaveBasePickerProps) {
   const { t } = useTranslation();
   const [bases, setBases] = useState<BaseInfo[]>([]);
   const [selectedPath, setSelectedPath] = useState<string | null>(activeBasePath);
   const [error, setError] = useState<string | null>(null);
 
-  const [white, setWhite] = useState(tags.White ?? "");
-  const [black, setBlack] = useState(tags.Black ?? "");
+  const [white, setWhite] = useState(stripUnknownPlaceholder(tags.White));
+  const [black, setBlack] = useState(stripUnknownPlaceholder(tags.Black));
   const [whiteElo, setWhiteElo] = useState(tags.WhiteElo ?? "");
   const [blackElo, setBlackElo] = useState(tags.BlackElo ?? "");
   const [date, setDate] = useState(() => {
@@ -54,9 +62,9 @@ export function SaveBasePicker({ tabId, activeBasePath, tags, onConfirm, onCance
     return raw && !raw.includes("?") ? raw : todayPgnDate();
   });
   const [result, setResult] = useState(tags.Result ?? "*");
-  const [event, setEvent] = useState(tags.Event ?? "");
-  const [site, setSite] = useState(tags.Site ?? "");
-  const [round, setRound] = useState(tags.Round ?? "");
+  const [event, setEvent] = useState(stripUnknownPlaceholder(tags.Event));
+  const [site, setSite] = useState(stripUnknownPlaceholder(tags.Site));
+  const [round, setRound] = useState(stripUnknownPlaceholder(tags.Round));
 
   useEffect(() => {
     invoke<BaseInfo[]>("list_bases")
@@ -99,6 +107,32 @@ export function SaveBasePicker({ tabId, activeBasePath, tags, onConfirm, onCance
       setError(String(e));
     }
   }
+
+  // Ctrl+S declenche deja l'ouverture de cette fenetre (voir le raccourci
+  // clavier de GameTab). Sans ce second abonnement, le rappuyer pendant
+  // qu'elle est deja ouverte ne faisait rien de visible : handleSave() se
+  // contente de mettre showSaveBasePicker a true, deja le cas. Le ref evite
+  // de reabonner a chaque frappe dans un champ du formulaire.
+  const handleConfirmRef = useRef(handleConfirm);
+  handleConfirmRef.current = handleConfirm;
+  useEffect(() => {
+    // "menu-save-game" : un clic sur Fichier > Enregistrer pendant que la
+    // fenetre est deja ouverte (l'accelerateur clavier natif ne se declenche
+    // jamais sous Windows, voir HomeWindow.tsx -- keydown ci-dessous couvre
+    // le cas clavier).
+    const unlisten = listen("menu-save-game", () => handleConfirmRef.current());
+    function handleKeyDown(e: KeyboardEvent) {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        handleConfirmRef.current();
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      unlisten.then((f) => f());
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, []);
 
   return (
     <div className="modal-overlay" onClick={onCancel}>

@@ -1,11 +1,13 @@
 import { useTranslation } from "react-i18next";
-import type { GameSummary } from "../types";
+import type { ExplorerGameSummary, ExplorerGamesSort, ExplorerGamesSortColumn } from "../types";
 
 interface ExplorerGamesListProps {
-  games: GameSummary[];
+  games: ExplorerGameSummary[];
   total: number;
   page: number;
   pageSize: number;
+  sort: ExplorerGamesSort | null;
+  onSortChange: (column: ExplorerGamesSortColumn) => void;
   loading: boolean;
   error: string | null;
   onPageChange: (page: number) => void;
@@ -13,11 +15,34 @@ interface ExplorerGamesListProps {
   onSelectGame: (id: number) => void;
 }
 
+// Meme principe que SortableHeader (GamesTable.tsx) : clic pour trier par
+// cette colonne, un second clic inverse le sens.
+function SortableHeader({
+  label,
+  column,
+  sort,
+  onSortChange,
+}: {
+  label: string;
+  column: ExplorerGamesSortColumn;
+  sort: ExplorerGamesSort | null;
+  onSortChange: (column: ExplorerGamesSortColumn) => void;
+}) {
+  const active = sort?.column === column;
+  return (
+    <th className="games-table-sortable" onClick={() => onSortChange(column)}>
+      {label} {active ? (sort!.dir === "asc" ? "▲" : "▼") : ""}
+    </th>
+  );
+}
+
 export function ExplorerGamesList({
   games,
   total,
   page,
   pageSize,
+  sort,
+  onSortChange,
   loading,
   error,
   onPageChange,
@@ -36,9 +61,11 @@ export function ExplorerGamesList({
         <table className="explorer-table explorer-games-table">
           <thead>
             <tr>
-              <th>{t("common.white")}</th>
-              <th>{t("common.black")}</th>
-              <th>{t("common.date")}</th>
+              <SortableHeader label={t("common.white")} column="white" sort={sort} onSortChange={onSortChange} />
+              <SortableHeader label={t("explorer.elo")} column="whiteElo" sort={sort} onSortChange={onSortChange} />
+              <SortableHeader label={t("common.black")} column="black" sort={sort} onSortChange={onSortChange} />
+              <SortableHeader label={t("explorer.elo")} column="blackElo" sort={sort} onSortChange={onSortChange} />
+              <SortableHeader label={t("common.date")} column="date" sort={sort} onSortChange={onSortChange} />
               <th>{t("common.result")}</th>
             </tr>
           </thead>
@@ -50,7 +77,9 @@ export function ExplorerGamesList({
                 onClick={() => onSelectGame(g.id)}
               >
                 <td title={g.white}>{g.white}</td>
+                <td className="explorer-games-elo">{g.whiteElo ?? "–"}</td>
                 <td title={g.black}>{g.black}</td>
+                <td className="explorer-games-elo">{g.blackElo ?? "–"}</td>
                 <td>{g.date}</td>
                 <td>{g.result}</td>
               </tr>

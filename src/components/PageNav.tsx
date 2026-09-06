@@ -57,9 +57,6 @@ export function PageNav({ page, pageSize, total, loading, onPageChange, emptyLab
               if (e.key === "Enter") jumpToRow();
             }}
           />
-          <button disabled={loading} onClick={jumpToRow}>
-            {t("home.go")}
-          </button>
         </span>
       )}
     </Fragment>

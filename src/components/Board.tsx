@@ -13,8 +13,15 @@ interface BoardProps {
   shapes: ShapeDto[];
   theme: string;
   lastMove?: [Key, Key] | null;
+  /** Camp affiche en bas de l'echiquier -- "white" si absent. */
+  orientation?: Color;
   onMove: (from: Key, to: Key) => void;
   onShapesChange: (shapes: ShapeDto[]) => void;
+  /** Taille (px, cote du carre) recalculee a chaque redimensionnement --
+      pour un element externe (pendules pres de l'echiquier, voir BoardPanel)
+      qui doit s'aligner exactement sur la largeur reelle de l'echiquier,
+      pas sur celle, plus large, du panneau qui le contient. */
+  onSizeChange?: (size: number) => void;
 }
 
 function toDrawShapes(shapes: ShapeDto[]): DrawShape[] {
@@ -33,7 +40,7 @@ function fromDrawShapes(shapes: DrawShape[]): ShapeDto[] {
   }));
 }
 
-export function Board({ fen, turnColor, dests, shapes, theme, lastMove, onMove, onShapesChange }: BoardProps) {
+export function Board({ fen, turnColor, dests, shapes, theme, lastMove, orientation, onMove, onShapesChange, onSizeChange }: BoardProps) {
   const outerRef = useRef<HTMLDivElement>(null);
   const elRef = useRef<HTMLDivElement>(null);
   const apiRef = useRef<Api | null>(null);
@@ -41,6 +48,8 @@ export function Board({ fen, turnColor, dests, shapes, theme, lastMove, onMove, 
   onMoveRef.current = onMove;
   const onShapesChangeRef = useRef(onShapesChange);
   onShapesChangeRef.current = onShapesChange;
+  const onSizeChangeRef = useRef(onSizeChange);
+  onSizeChangeRef.current = onSizeChange;
   const [size, setSize] = useState(480);
 
   useEffect(() => {
@@ -49,6 +58,7 @@ export function Board({ fen, turnColor, dests, shapes, theme, lastMove, onMove, 
       fen,
       turnColor,
       lastMove: lastMove ?? undefined,
+      orientation: orientation ?? "white",
       coordinates: true,
       ranksPosition: "right",
       movable: {
@@ -78,10 +88,11 @@ export function Board({ fen, turnColor, dests, shapes, theme, lastMove, onMove, 
       fen,
       turnColor,
       lastMove: lastMove ?? undefined,
+      orientation: orientation ?? "white",
       movable: { color: turnColor, dests },
       drawable: { shapes: toDrawShapes(shapes) },
     });
-  }, [fen, turnColor, dests, shapes, lastMove]);
+  }, [fen, turnColor, dests, shapes, lastMove, orientation]);
 
   // suit la taille du conteneur (panneau dockview redimensionnable) pour
   // garder un echiquier carre qui occupe tout l'espace disponible
@@ -100,6 +111,7 @@ export function Board({ fen, turnColor, dests, shapes, theme, lastMove, onMove, 
 
   useEffect(() => {
     apiRef.current?.redrawAll();
+    onSizeChangeRef.current?.(size);
   }, [size]);
 
   return (

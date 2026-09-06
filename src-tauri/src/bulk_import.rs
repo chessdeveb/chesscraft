@@ -87,7 +87,13 @@ impl Visitor for BulkGameVisitor {
             if self.ply % 2 == 0 {
                 self.movetext.push_str(&format!("{}. ", self.ply / 2 + 1));
             }
-            self.san_tokens.push(text.clone());
+            // san_plus.to_string() garde le "+"/"#" de fin de coup (echec/mat)
+            // du PGN source -- san_tokens (mainline_sans) doit rester sans ce
+            // suffixe, seule forme utilisee partout ailleurs dans l'appli
+            // (arbre de partie, legal_moves, moteur, voir pgn::san), sinon
+            // l'explorateur d'ouvertures ne peut plus faire correspondre un
+            // coup qui donne echec (voir migrate_strip_check_suffixes, db.rs).
+            self.san_tokens.push(san_plus.san.to_string());
             self.ply += 1;
         }
         self.movetext.push_str(&text);
@@ -186,6 +192,7 @@ pub fn bulk_import(
     pgn_source: impl std::io::Read,
     mut on_progress: impl FnMut(&BulkImportSummary),
     mut should_cancel: impl FnMut() -> bool,
+    mut canonicalize_name: impl FnMut(&str, Option<i32>) -> Option<String>,
 ) -> Result<BulkImportSummary, String> {
     let mut summary = BulkImportSummary::default();
     let mut tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -210,6 +217,23 @@ pub fn bulk_import(
             }
         }
         summary.total += 1;
+
+        // Reecrit Blancs/Noirs vers leur forme canonique FIDE quand elle est
+        // resolue sans ambiguite (voir fide::canonicalize_name) -- avant la
+        // detection de doublon ET la sauvegarde, pour que "Giri,A" et
+        // "Giri, Anish" importes dans le meme lot finissent avec la meme
+        // chaine (dedoublonnage) au lieu de fragmenter le joueur en deux
+        // entrees. WhiteElo/BlackElo (s'ils sont presents) servent d'indice
+        // pour departager un nom de famille + initiale encore ambigus (ex.
+        // "Giri, Anish" vs "Giri, Andrea").
+        for (tag, elo_tag) in [("White", "WhiteElo"), ("Black", "BlackElo")] {
+            if let Some(raw) = visitor.tags.get(tag) {
+                let elo_hint = visitor.tags.get(elo_tag).and_then(|s| s.trim().parse::<i32>().ok());
+                if let Some(canonical) = canonicalize_name(raw, elo_hint) {
+                    visitor.tags.insert(tag.to_string(), canonical);
+                }
+            }
+        }
 
         if visitor.tags.is_empty() && visitor.san_tokens.is_empty() {
             summary.failed += 1;
@@ -281,7 +305,7 @@ mod tests {
         )
         .unwrap();
 
-        let summary = bulk_import(&mut conn, pgn.as_bytes(), |_| {}, || false).unwrap();
+        let summary = bulk_import(&mut conn, pgn.as_bytes(), |_| {}, || false, |_, _| None).unwrap();
         println!(
             "total={} imported={} dup={} failed={}",
             summary.total, summary.imported, summary.skipped_duplicates, summary.failed
@@ -316,7 +340,7 @@ mod tests {
         )
         .unwrap();
 
-        let summary = bulk_import(&mut conn, pgn.as_bytes(), |_| {}, || false).unwrap();
+        let summary = bulk_import(&mut conn, pgn.as_bytes(), |_| {}, || false, |_, _| None).unwrap();
         assert_eq!(summary.imported, 1);
 
         let (pgn_moves, mainline_sans): (String, String) = conn
@@ -336,6 +360,39 @@ mod tests {
         assert!(pgn_moves.contains("Nf6"), "nested variation move Nf6 missing: {pgn_moves}");
         assert!(pgn_moves.contains('('), "opening paren missing: {pgn_moves}");
         assert!(pgn_moves.contains(')'), "closing paren missing: {pgn_moves}");
+    }
+
+    // Cas reel qui a revele le bug : un coup qui donne echec/mat ("Qxf7#")
+    // gardait son suffixe dans mainline_sans, alors que le reste de l'appli
+    // (arbre de partie, legal_moves) ne l'a jamais -- rendait ce coup
+    // impossible a cliquer depuis l'explorateur et cassait la recherche de
+    // parties une fois rejoue manuellement (voir migrate_strip_check_suffixes,
+    // db.rs).
+    #[test]
+    fn strips_check_and_mate_suffixes_from_stored_mainline() {
+        let pgn = r#"[Event "Test Event"]
+[Site "Test Site"]
+[Date "2024.01.01"]
+[White "Alice"]
+[Black "Bob"]
+[Result "1-0"]
+
+1. e4 e5 2. Qh5 Nc6 3. Qxf7# 1-0
+"#;
+        let mut conn = fresh_conn();
+        let summary = bulk_import(&mut conn, pgn.as_bytes(), |_| {}, || false, |_, _| None).unwrap();
+        assert_eq!(summary.imported, 1);
+
+        let (pgn_moves, mainline_sans): (String, String) = conn
+            .query_row("SELECT pgn_moves, mainline_sans FROM games LIMIT 1", [], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap();
+
+        // mainline_sans (utilise pour la recherche de position/l'explorateur)
+        // sans le suffixe, coherent avec le SAN stocke partout ailleurs
+        assert_eq!(mainline_sans, "e4 e5 Qh5 Nc6 Qxf7");
+        // le PGN reellement stocke, lui, garde l'annotation d'echec/mat
+        // (correct/attendu quand on relit ce texte dans un autre logiciel)
+        assert!(pgn_moves.contains("Qxf7#"), "check/mate suffix stripped from stored PGN text: {pgn_moves}");
     }
 
     #[test]
@@ -383,7 +440,7 @@ mod tests {
         )
         .unwrap();
 
-        let summary = bulk_import(&mut conn, pgn.as_bytes(), |_| {}, || false).unwrap();
+        let summary = bulk_import(&mut conn, pgn.as_bytes(), |_| {}, || false, |_, _| None).unwrap();
         assert_eq!(summary.total, 3);
         assert_eq!(summary.imported, 1);
         assert_eq!(summary.skipped_invalid, 2);
@@ -409,6 +466,91 @@ mod tests {
         conn
     }
 
+    fn fide_conn_with(players: &[&str]) -> Connection {
+        let conn = crate::fide::open_at(std::path::Path::new(":memory:")).unwrap();
+        for (i, name) in players.iter().enumerate() {
+            conn.execute(
+                "INSERT INTO fide_players (fide_id, name, fed, sex, title, w_title, o_title, std_rating, rapid_rating, blitz_rating, birth_year, flag)
+                 VALUES (?1, ?2, 'NED', 'M', '', '', '', NULL, NULL, NULL, NULL, '')",
+                rusqlite::params![i.to_string(), name],
+            )
+            .unwrap();
+        }
+        conn
+    }
+
+    // Verifie bulk_import de bout en bout (pas juste fide::canonicalize_name
+    // isolement) : deux parties DIFFERENTES du meme joueur, orthographiees
+    // differemment ("Giri,A" / "Giri, Anish") dans le fichier source --
+    // doivent toutes les deux s'importer (pas de faux doublon) mais sous la
+    // MEME forme canonique, pour ne pas fragmenter le joueur en deux entrees
+    // dans player_stats/l'explorateur.
+    #[test]
+    fn bulk_import_canonicalizes_names_without_merging_distinct_games() {
+        let pgn = r#"[Event "E1"]
+[Site "S"]
+[Date "2024.01.01"]
+[White "Giri,A"]
+[Black "Bob"]
+[Result "1-0"]
+
+1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 1-0
+
+[Event "E2"]
+[Site "S"]
+[Date "2024.01.02"]
+[White "Giri, Anish"]
+[Black "Carol"]
+[Result "0-1"]
+
+1. d4 d5 2. c4 e6 0-1
+"#;
+        let mut conn = fresh_conn();
+        let fide_conn = fide_conn_with(&["Giri, Anish"]);
+        let summary = bulk_import(&mut conn, pgn.as_bytes(), |_| {}, || false, |raw, elo| crate::fide::canonicalize_name(&fide_conn, raw, elo)).unwrap();
+        assert_eq!(summary.imported, 2, "deux parties distinctes, aucune ne doit etre prise pour un doublon de l'autre");
+
+        let whites: Vec<String> = conn
+            .prepare("SELECT white FROM games ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(whites, vec!["Giri, Anish".to_string(), "Giri, Anish".to_string()]);
+    }
+
+    // Meme principe, mais avec la MEME partie (mêmes coups/resultat/date)
+    // presente deux fois sous deux orthographes differentes du meme joueur --
+    // sans canonicalisation, find_duplicate (comparaison stricte sur le nom)
+    // laisserait passer un doublon.
+    #[test]
+    fn bulk_import_canonicalization_lets_duplicate_detection_catch_name_variants() {
+        let pgn = r#"[Event "E1"]
+[Site "S"]
+[Date "2024.01.01"]
+[White "Giri,A"]
+[Black "Bob"]
+[Result "1-0"]
+
+1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 1-0
+
+[Event "E2"]
+[Site "S"]
+[Date "2024.01.01"]
+[White "Giri, Anish"]
+[Black "Bob"]
+[Result "1-0"]
+
+1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 1-0
+"#;
+        let mut conn = fresh_conn();
+        let fide_conn = fide_conn_with(&["Giri, Anish"]);
+        let summary = bulk_import(&mut conn, pgn.as_bytes(), |_| {}, || false, |raw, elo| crate::fide::canonicalize_name(&fide_conn, raw, elo)).unwrap();
+        assert_eq!(summary.imported, 1);
+        assert_eq!(summary.skipped_duplicates, 1);
+    }
+
     #[test]
     fn survives_multiple_commit_batches() {
         // plus de parties que BATCH_SIZE, pour verifier que les commits
@@ -422,7 +564,7 @@ mod tests {
         }
 
         let mut conn = fresh_conn();
-        let summary = bulk_import(&mut conn, pgn.as_bytes(), |_| {}, || false).unwrap();
+        let summary = bulk_import(&mut conn, pgn.as_bytes(), |_| {}, || false, |_, _| None).unwrap();
         assert_eq!(summary.total, count);
         assert_eq!(summary.imported, count);
         assert_eq!(summary.failed, 0);
@@ -452,6 +594,7 @@ mod tests {
                 checks += 1;
                 checks > 15
             },
+            |_, _| None,
         )
         .unwrap();
         assert!(summary.total > BATCH_SIZE, "devrait avoir depasse le premier lot");

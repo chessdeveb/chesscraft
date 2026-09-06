@@ -1,24 +1,105 @@
+import { useState } from "react";
 import type { IDockviewPanelProps } from "dockview-react";
 import type { Color, Key } from "@lichess-org/chessground/types";
 import { useTranslation } from "react-i18next";
 import { useAppContext } from "./AppContext";
 import { Board } from "./components/Board";
 import { EnginePanel } from "./components/EnginePanel";
+import { ExplorerFiltersBar } from "./components/ExplorerFiltersBar";
 import { ExplorerGamesList } from "./components/ExplorerGamesList";
 import { ExplorerPreview } from "./components/ExplorerPreview";
 import { Notation } from "./components/Notation";
 import { OpeningExplorer } from "./components/OpeningExplorer";
+import type { TreeDto } from "./types";
 
 const EXPLORER_GAMES_PAGE_SIZE = 20;
 
+const CLOCK_RE = /\[%clk\s+([\d:.]+)\]/;
+
+function clockFromComment(comment: string | null): string | null {
+  if (!comment) return null;
+  const match = comment.match(CLOCK_RE);
+  return match ? match[1] : null;
+}
+
+/** Vrai si au moins un coup de la partie porte une annotation d'horloge --
+    les pendules ne s'affichent que dans ce cas, pour ne pas ajouter de vide
+    a cote de l'echiquier sur l'immense majorite des parties qui n'en ont
+    pas. */
+function hasAnyClock(tree: TreeDto): boolean {
+  return tree.nodes.some((n) => clockFromComment(n.commentAfter) !== null || clockFromComment(n.commentBefore) !== null);
+}
+
+/** Dernier temps connu de chaque camp a la position courante : remonte
+    l'arbre depuis le noeud affiche jusqu'a la racine, et retient la
+    premiere horloge rencontree pour chaque couleur (le coup qui vient de
+    l'y amener, ou le plus recent avant lui si ce coup precis n'en porte
+    pas). Les Blancs jouent aux profondeurs impaires, les Noirs aux paires
+    (voir Notation.tsx, meme convention). */
+function clocksAtNode(tree: TreeDto, nodeId: number): { white: string | null; black: string | null } {
+  const byId = new Map(tree.nodes.map((n) => [n.id, n]));
+
+  let depth = 0;
+  for (let n = byId.get(nodeId); n && n.parent !== null; n = byId.get(n.parent)) {
+    depth += 1;
+  }
+
+  let white: string | null = null;
+  let black: string | null = null;
+  let node = byId.get(nodeId);
+  let d = depth;
+  while (node && node.parent !== null && (white === null || black === null)) {
+    const clock = clockFromComment(node.commentAfter);
+    if (clock) {
+      if (d % 2 === 1 && white === null) white = clock;
+      else if (d % 2 === 0 && black === null) black = clock;
+    }
+    node = byId.get(node.parent);
+    d -= 1;
+  }
+  return { white, black };
+}
+
 export function BoardPanel() {
   const { t } = useTranslation();
-  const { currentNode, dests, boardTheme, handleMove, handleShapesChange, onStep } = useAppContext();
+  const { tree, currentNode, currentNodeId, dests, boardTheme, handleMove, handleShapesChange, onStep } = useAppContext();
+  const [fenCopied, setFenCopied] = useState(false);
+  // largeur reelle (px) de l'echiquier, remontee par Board via onSizeChange :
+  // l'echiquier est un carre centre dans .board-panel-board (qui, lui, fait
+  // toute la largeur du panneau), donc s'aligner sur la largeur du PANNEAU
+  // (comme un simple flex justify-content:flex-end) deborde du bord reel de
+  // l'echiquier des que le panneau est plus large que haut.
+  const [boardSize, setBoardSize] = useState(480);
+  const [flipped, setFlipped] = useState(false);
   if (!currentNode) return null;
   const lastMove: [Key, Key] | null =
     currentNode.from && currentNode.to ? [currentNode.from as Key, currentNode.to as Key] : null;
+
+  async function handleCopyFen() {
+    try {
+      await navigator.clipboard.writeText(currentNode!.fen);
+      setFenCopied(true);
+      setTimeout(() => setFenCopied(false), 1200);
+    } catch {
+      // presse-papiers indisponible (rare) : pas d'action bloquante pour si peu.
+    }
+  }
+
+  const showClocks = tree ? hasAnyClock(tree) : false;
+  const clocks = showClocks && tree ? clocksAtNode(tree, currentNodeId) : { white: null, black: null };
+  const clockRowStyle = { width: boardSize, marginLeft: "auto", marginRight: "auto" };
+  // en haut = camp affiche en haut de l'echiquier : Noirs normalement,
+  // Blancs une fois l'echiquier retourne.
+  const topClock = flipped ? clocks.white : clocks.black;
+  const bottomClock = flipped ? clocks.black : clocks.white;
+
   return (
     <div className="board-panel">
+      {showClocks && (
+        <div className="board-clock-row" style={clockRowStyle}>
+          {topClock && <span className="board-clock">🕐{topClock}</span>}
+        </div>
+      )}
       <div className="board-panel-board">
         <Board
           fen={currentNode.fen}
@@ -27,11 +108,21 @@ export function BoardPanel() {
           shapes={currentNode.shapes}
           theme={boardTheme}
           lastMove={lastMove}
+          orientation={flipped ? "black" : "white"}
           onMove={handleMove}
           onShapesChange={handleShapesChange}
+          onSizeChange={setBoardSize}
         />
       </div>
+      {showClocks && (
+        <div className="board-clock-row" style={clockRowStyle}>
+          {bottomClock && <span className="board-clock">🕐{bottomClock}</span>}
+        </div>
+      )}
       <div className="transport">
+        <button onClick={() => setFlipped((v) => !v)} title={t("board.flip")}>
+          🔄
+        </button>
         <button onClick={() => onStep("start")} title={t("explorer.previewStart")}>
           ⏮
         </button>
@@ -43,6 +134,9 @@ export function BoardPanel() {
         </button>
         <button onClick={() => onStep("end")} title={t("explorer.previewEnd")}>
           ⏭
+        </button>
+        <button onClick={handleCopyFen} title={t("board.copyFen")}>
+          {fenCopied ? "✓" : "📋"}
         </button>
       </div>
     </div>
@@ -92,13 +186,22 @@ export function NotationPanelView() {
 }
 
 export function ExplorerPanelView() {
+  const { t } = useTranslation();
+  const [showFilters, setShowFilters] = useState(false);
   const {
     explorerStats,
     explorerError,
+    checkSuffixesCleanupCount,
+    ecoInfo,
+    explorerFilters,
+    onExplorerFiltersChange,
+    onExplorerFiltersCommit,
     handleExplorerMove,
     explorerGames,
     explorerGamesTotal,
     explorerGamesPage,
+    explorerGamesSort,
+    onExplorerGamesSortChange,
     explorerGamesLoading,
     explorerGamesError,
     onExplorerGamesPageChange,
@@ -116,12 +219,21 @@ export function ExplorerPanelView() {
   return (
     <div className="dock-panel-content explorer-panel">
       <div className="explorer-panel-col explorer-panel-col--left">
-        <OpeningExplorer stats={explorerStats} error={explorerError} onSelectMove={handleExplorerMove} />
+        {checkSuffixesCleanupCount !== null && (
+          <p className="explorer-cleanup-status">{t("explorer.checkSuffixCleanup", { count: checkSuffixesCleanupCount.toLocaleString() })}</p>
+        )}
+        <button className="explorer-filters-toggle" onClick={() => setShowFilters((v) => !v)}>
+          {t("explorer.filters")} {showFilters ? "▲" : "▼"}
+        </button>
+        {showFilters && <ExplorerFiltersBar filters={explorerFilters} onChange={onExplorerFiltersChange} onCommit={onExplorerFiltersCommit} />}
+        <OpeningExplorer stats={explorerStats} error={explorerError} ecoInfo={ecoInfo} onSelectMove={handleExplorerMove} />
         <ExplorerGamesList
           games={explorerGames}
           total={explorerGamesTotal}
           page={explorerGamesPage}
           pageSize={EXPLORER_GAMES_PAGE_SIZE}
+          sort={explorerGamesSort}
+          onSortChange={onExplorerGamesSortChange}
           loading={explorerGamesLoading}
           error={explorerGamesError}
           onPageChange={onExplorerGamesPageChange}
@@ -166,6 +278,8 @@ export function EnginePanelView(props: IDockviewPanelProps) {
     handleStopEngine,
     handlePauseEngine,
     handleResumeEngine,
+    currentNode,
+    boardTheme,
   } = useAppContext();
 
   return (
@@ -185,6 +299,8 @@ export function EnginePanelView(props: IDockviewPanelProps) {
         maxThreads={maxThreads}
         lines={engineLines}
         error={engineError}
+        analyzedFen={currentNode?.fen ?? null}
+        boardTheme={boardTheme}
         onStart={handleStartEngine}
         onStop={handleStopEngine}
         onPause={handlePauseEngine}
