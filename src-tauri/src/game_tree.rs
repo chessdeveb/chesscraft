@@ -393,4 +393,25 @@ mod tests {
         // aucun roi noir : position illegale, pas seulement mal ecrite
         assert!(GameTree::from_fen("8/8/8/8/8/8/8/4K3 w - - 0 1").is_err());
     }
+
+    // Cas reel qui a revele le bug du plafond de balayage (voir
+    // db::SHALLOW_SCAN_ROW_CAP) : une capture en passant depuis une position
+    // personnalisee (editeur de position) produit un premier coup ("dxe3")
+    // qui n'a de sens pour aucune vraie partie -- verifie ici que jouer ce
+    // coup et interroger l'explorateur dessus ne panique pas et reste rapide
+    // (ce test servait a l'origine a confirmer/infirmer un blocage signale
+    // par l'utilisateur ; le vrai probleme etait cote db::games_at_position,
+    // voir ses propres tests).
+    #[test]
+    fn plays_and_queries_an_en_passant_capture_from_a_custom_position() {
+        let mut tree = GameTree::from_fen("4k3/8/8/8/3pP3/8/8/4K3 b - e3 0 1").unwrap();
+        let new_id = tree.play_move(0, "d4", "e3", None).unwrap();
+        assert_eq!(tree.node(new_id).unwrap().san.as_deref(), Some("dxe3"));
+        assert!(!tree.legal_moves(new_id).unwrap().is_empty());
+
+        let moves = vec!["dxe3".to_string()];
+        let conn = crate::db::open(std::path::Path::new(":memory:")).unwrap();
+        assert!(crate::explorer::explore(&conn, &moves, &crate::explorer::ExplorerFilters::default()).is_ok());
+        assert!(crate::db::games_at_position(&conn, &moves, &crate::explorer::ExplorerFilters::default(), "", "", 20, 0).is_ok());
+    }
 }

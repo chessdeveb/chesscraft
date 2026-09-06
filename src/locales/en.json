@@ -238,6 +238,8 @@
   "positionEditor.castlingWhiteQueenside": "White, queenside (O-O-O)",
   "positionEditor.castlingBlackKingside": "Black, kingside (O-O)",
   "positionEditor.castlingBlackQueenside": "Black, queenside (O-O-O)",
+  "positionEditor.enPassant": "En passant capture",
+  "positionEditor.enPassantColumn": "Column of the pawn that just moved two squares (a-h):",
   "positionEditor.standardPosition": "Starting position",
   "positionEditor.emptyBoard": "Empty board",
   "positionEditor.confirm": "Confirm",

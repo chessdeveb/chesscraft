@@ -238,6 +238,8 @@
   "positionEditor.castlingWhiteQueenside": "Blancs, grand roque (O-O-O)",
   "positionEditor.castlingBlackKingside": "Noirs, petit roque (O-O)",
   "positionEditor.castlingBlackQueenside": "Noirs, grand roque (O-O-O)",
+  "positionEditor.enPassant": "Prise en passant",
+  "positionEditor.enPassantColumn": "Colonne du pion qui vient d'avancer de deux cases (a-h) :",
   "positionEditor.standardPosition": "Position de départ",
   "positionEditor.emptyBoard": "Échiquier vide",
   "positionEditor.confirm": "Valider",

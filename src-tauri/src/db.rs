@@ -29,7 +29,7 @@ pub struct GameSummary {
 /// plutot que d'ajouter ces deux champs a GameSummary : celui-ci est partage
 /// par plusieurs requetes (list_games_page...) qu'il aurait fallu toutes
 /// modifier pour peupler des colonnes dont elles n'ont pas besoin.
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ExplorerGameSummary {
     pub id: i64,
@@ -849,9 +849,14 @@ pub fn games_at_position(
     // games_at_position_shallow_scan) ne sait produire QUE l'ordre naturel de
     // l'id -- un tri explicite sur une autre colonne demande de toute facon
     // de visiter/trier l'ensemble des correspondances, ce raccourci ne peut
-    // donc s'appliquer qu'a l'ordre par defaut (aucun tri demande).
+    // donc s'appliquer qu'a l'ordre par defaut (aucun tri demande). Le
+    // plafond (voir games_at_position_shallow_scan) retombe sur la branche
+    // indexee ci-dessous si le prefixe ne correspond a aucune partie
+    // reelle (ex. une partie demarree depuis l'editeur de position).
     if sort_by.is_empty() && filters.player.is_none() && !moves.is_empty() && moves.len() <= crate::explorer::PRECOMPUTED_MAX_DEPTH {
-        return games_at_position_shallow_scan(conn, &moves.join(" "), filters, limit, offset);
+        if let Some(rows) = games_at_position_shallow_scan(conn, &moves.join(" "), filters, limit, offset, SHALLOW_SCAN_ROW_CAP)? {
+            return Ok(rows);
+        }
     }
 
     let order_by = explorer_games_order_by_clause(sort_by, sort_dir);
@@ -875,10 +880,22 @@ pub fn games_at_position(
     rows
 }
 
+// Au-dela de ce nombre de lignes EXAMINEES (pas seulement de correspondances
+// trouvees), on abandonne le balayage plutot que d'aller jusqu'au bout de la
+// table -- voir games_at_position_shallow_scan pour le cas reel qui a motive
+// ce plafond. Assez large pour qu'un vrai coup d'ouverture usuel (qui trouve
+// ses `limit` correspondances en quelques dizaines/centaines de lignes tout
+// au plus) ne le touche jamais ; assez etroit pour qu'un prefixe qui ne
+// correspond a rien coute une fraction de seconde plutot que de parcourir
+// des millions de lignes.
+const SHALLOW_SCAN_ROW_CAP: u32 = 300_000;
+
 /// Balaie `games` par id decroissant -- l'ordre naturel de la cle primaire,
 /// donc gratuit pour "les plus recentes d'abord", sans le moindre tri -- et
 /// filtre le prefixe cote Rust, en s'arretant des que `limit` correspondances
-/// (apres avoir saute les `offset` premieres) ont ete trouvees.
+/// (apres avoir saute les `offset` premieres) ont ete trouvees. Retourne None
+/// (voir `row_cap`) si le plafond de lignes examinees est atteint sans avoir
+/// rempli la demande : l'appelant retombe alors sur la branche indexee.
 ///
 /// Reserve aux prefixes courts (1 ou 2 demi-coups, voir l'appelant) : a cette
 /// profondeur, quelques coups d'ouverture usuels couvrent une tres grande
@@ -897,7 +914,8 @@ fn games_at_position_shallow_scan(
     filters: &crate::explorer::ExplorerFilters,
     limit: u32,
     offset: u32,
-) -> Result<Vec<ExplorerGameSummary>, String> {
+    row_cap: u32,
+) -> Result<Option<Vec<ExplorerGameSummary>>, String> {
     let with_space = format!("{prefix} ");
     // mainline_sans en dernier (pas entre time_control et white_elo) : garde
     // les 9 premieres colonnes dans le meme ordre que map_explorer_game_summary_row,
@@ -907,8 +925,27 @@ fn games_at_position_shallow_scan(
         .map_err(|e| e.to_string())?;
     let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
     let mut skipped = 0u32;
+    let mut examined = 0u32;
     let mut out = Vec::new();
     while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+        // Cas reel qui a revele le besoin de ce plafond : une partie demarree
+        // depuis l'editeur de position ("Nouvelle position") envoie un coup
+        // qui n'apparait jamais dans mainline_sans (ex. "dxe3" comme premier
+        // coup n'a aucun sens pour une vraie partie) -- sans plafond, ce
+        // balayage parcourait alors la table de reference EN ENTIER (10M+
+        // lignes) sans jamais trouver de correspondance ni s'arreter, tout en
+        // retenant le verrou partage avec la base de reference : toute autre
+        // action de l'explorateur, dans n'importe quelle fenetre, restait
+        // bloquee en attente pendant tout ce temps (rapporte par l'utilisateur
+        // comme un plantage). Au-dela de ce plafond sans avoir rempli la
+        // demande, on abandonne (None) : l'appelant retombe alors sur la
+        // branche indexee (position_from_and_where), qui determine "aucune
+        // correspondance" quasi instantanement via l'index plutot que de
+        // scanner ligne par ligne.
+        examined += 1;
+        if examined > row_cap {
+            return Ok(None);
+        }
         let mainline: String = row.get(9).map_err(|e| e.to_string())?;
         if mainline != prefix && !mainline.starts_with(&with_space) {
             continue;
@@ -938,7 +975,7 @@ fn games_at_position_shallow_scan(
             break;
         }
     }
-    Ok(out)
+    Ok(Some(out))
 }
 
 #[derive(Serialize, Clone)]
@@ -1383,6 +1420,43 @@ mod tests {
         // derniere page partielle (offset 4, limit 2) : un seul resultat
         let page2 = games_at_position(&conn, &moves, &no_filters(), "", "", 2, 4).unwrap();
         assert_eq!(page2.iter().map(|g| g.white.as_str()).collect::<Vec<_>>(), vec!["W0"]);
+    }
+
+    // Cas reel rapporte par l'utilisateur : une partie demarree depuis
+    // l'editeur de position (prise en passant depuis une position
+    // personnalisee) produit un premier coup ("dxe3") qui n'apparait dans
+    // AUCUNE partie reelle -- sans plafond, games_at_position_shallow_scan
+    // parcourait alors la base de reference entiere (10M+ lignes en
+    // pratique) sans jamais s'arreter, verrou partage retenu tout du long
+    // (toute autre action de l'explorateur, dans n'importe quelle fenetre,
+    // restait bloquee en attente -- signale comme un "plantage"). Verifie ici
+    // qu'un plafond bas fait bien abandonner (None) plutot que de tout
+    // parcourir, et que games_at_position retombe alors sur la branche
+    // indexee pour donner malgre tout la bonne reponse (ici : aucune partie).
+    #[test]
+    fn games_at_position_shallow_scan_gives_up_past_the_row_cap_and_falls_back() {
+        let conn = open(Path::new(":memory:")).unwrap();
+        for i in 0..10 {
+            save_game(&conn, "1. e4 *", &base_tags(&format!("W{i}"), "Bob", "2024.01.01", "*"), "e4 e5").unwrap();
+        }
+
+        let moves = vec!["dxe3".to_string()];
+        // plafond bas (5) : abandonne avant d'avoir examine les 10 lignes
+        let gave_up = games_at_position_shallow_scan(&conn, "dxe3", &no_filters(), 20, 0, 5).unwrap();
+        assert!(gave_up.is_none());
+
+        // plafond suffisant (100) : parcourt tout, ne trouve rien, mais le
+        // dit explicitement (Some(vec![])), pas un abandon.
+        let exhausted = games_at_position_shallow_scan(&conn, "dxe3", &no_filters(), 20, 0, 100).unwrap();
+        assert_eq!(exhausted, Some(Vec::new()));
+
+        // games_at_position (le point d'entree public) retombe bien sur la
+        // branche indexee et donne la bonne reponse malgre le plafond bas --
+        // le SHALLOW_SCAN_ROW_CAP reel (300 000) n'est jamais atteint ici
+        // avec seulement 10 lignes, mais confirme que le mecanisme
+        // d'abandon/repli au bout du compte ne casse jamais la correction.
+        assert_eq!(count_games_at_position(&conn, &moves, &no_filters()).unwrap(), 0);
+        assert_eq!(games_at_position(&conn, &moves, &no_filters(), "", "", 20, 0).unwrap(), Vec::new());
     }
 
     #[test]

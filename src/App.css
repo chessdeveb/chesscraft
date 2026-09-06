@@ -1155,6 +1155,12 @@ textarea {
   margin-bottom: var(--s1);
 }
 
+.position-editor-en-passant-input {
+  width: 2em;
+  text-align: center;
+  text-transform: lowercase;
+}
+
 .position-editor-reset-buttons {
   flex-direction: row;
   gap: var(--s2);

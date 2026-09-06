@@ -34,6 +34,24 @@ function parseCastlingField(s: string): CastlingRights {
   return { wk: s.includes("K"), wq: s.includes("Q"), bk: s.includes("k"), bq: s.includes("q") };
 }
 
+// La rangee de la case de prise en passant decoule entierement du trait : le
+// camp au trait est celui qui capturerait, donc c'est forcement l'AUTRE
+// camp qui vient de jouer le double-pas -- rangee 6 (survolee par un pion
+// noir) si les Blancs ont le trait, rangee 3 (pion blanc) si ce sont les
+// Noirs. Ex. "1. e4" donne le FEN "... b ... e3 ..." : Noirs au trait,
+// rangee 3.
+function enPassantSquare(file: string, sideToMove: "w" | "b"): string {
+  if (!file) return "-";
+  const rank = sideToMove === "w" ? "6" : "3";
+  return `${file}${rank}`;
+}
+
+// Inverse d'enPassantSquare : ne garde que la colonne d'une case FEN
+// ("e3" -> "e"), la rangee etant redondante avec le trait (voir plus haut).
+function enPassantFileFromSquare(square: string): string {
+  return /^[a-h][1-8]$/.test(square) ? square[0] : "";
+}
+
 export function PositionEditorWindow() {
   useSyncLanguage();
   useSyncColorScheme();
@@ -42,6 +60,12 @@ export function PositionEditorWindow() {
   const boardRef = useRef<PositionEditorBoardHandle>(null);
   const [sideToMove, setSideToMove] = useState<"w" | "b">("w");
   const [castling, setCastling] = useState<CastlingRights>({ wk: true, wq: true, bk: true, bq: true });
+  // Colonne ("a" a "h") du pion qui vient de faire un double-pas, ou "" si
+  // aucune prise en passant n'est possible dans cette position. La rangee,
+  // elle, n'a pas besoin d'etre saisie : elle decoule entierement du trait
+  // (case survolee par un double-pas noir si les Blancs ont le trait -- 6e
+  // rangee -- ou blanc si les Noirs l'ont -- 3e rangee), voir enPassantSquare.
+  const [enPassantFile, setEnPassantFile] = useState("");
   const [error, setError] = useState<string | null>(null);
   // piece "armee" depuis la palette : reste selectionnee apres la pose pour
   // pouvoir cliquer plusieurs cases de suite sans repasser par la palette a
@@ -65,6 +89,7 @@ export function PositionEditorWindow() {
     boardRef.current?.setBoardFen(boardPart);
     setSideToMove(parts[1] === "b" ? "b" : "w");
     setCastling(parts[2] ? parseCastlingField(parts[2]) : { wk: false, wq: false, bk: false, bq: false });
+    setEnPassantFile(parts[3] ? enPassantFileFromSquare(parts[3]) : "");
     setSelectedPiece(null);
     setError(null);
   }
@@ -110,11 +135,18 @@ export function PositionEditorWindow() {
     boardRef.current?.setBoardFen(STANDARD_BOARD_FEN);
     setSideToMove("w");
     setCastling({ wk: true, wq: true, bk: true, bq: true });
+    setEnPassantFile("");
   }
 
   function handleClear() {
     boardRef.current?.setBoardFen(EMPTY_BOARD_FEN);
     setCastling({ wk: false, wq: false, bk: false, bq: false });
+    setEnPassantFile("");
+  }
+
+  function handleEnPassantFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const c = e.target.value.trim().toLowerCase().slice(-1);
+    setEnPassantFile(/^[a-h]$/.test(c) ? c : "");
   }
 
   async function handleCancel() {
@@ -124,7 +156,7 @@ export function PositionEditorWindow() {
   async function handleConfirm() {
     const boardFen = boardRef.current?.getBoardFen();
     if (!boardFen) return;
-    const fen = `${boardFen} ${sideToMove} ${castlingField(castling)} - 0 1`;
+    const fen = `${boardFen} ${sideToMove} ${castlingField(castling)} ${enPassantSquare(enPassantFile, sideToMove)} 0 1`;
     setError(null);
     try {
       await emit("position-editor-confirmed", fen);
@@ -220,6 +252,20 @@ export function PositionEditorWindow() {
                 onChange={handleCastlingChange("bq")}
               />
               {t("positionEditor.castlingBlackQueenside")}
+            </label>
+          </div>
+          <div className="position-editor-section">
+            <span className="position-editor-section-title">{t("positionEditor.enPassant")}</span>
+            <label>
+              {t("positionEditor.enPassantColumn")}
+              <input
+                type="text"
+                className="position-editor-en-passant-input"
+                maxLength={1}
+                value={enPassantFile}
+                onChange={handleEnPassantFileChange}
+                placeholder="–"
+              />
             </label>
           </div>
           <div className="position-editor-section position-editor-reset-buttons">
