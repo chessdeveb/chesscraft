@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
 import { useTranslation } from "react-i18next";
 import { BasesTable } from "./BasesTable";
+import { useAutoDismissError } from "../useAutoDismissError";
 import type { BaseInfo } from "../types";
 
 interface ImportBasePickerProps {
@@ -20,7 +21,7 @@ export function ImportBasePicker({ pgnPath, onConfirm, onCancel }: ImportBasePic
   const { t } = useTranslation();
   const [bases, setBases] = useState<BaseInfo[]>([]);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useAutoDismissError();
 
   useEffect(() => {
     invoke<BaseInfo[]>("list_bases")

@@ -20,6 +20,7 @@ import {
 import { persistDockviewLayout, syncPanelCheckedStates, tryRestoreDockviewLayout, useDockviewTheme } from "./dockviewPersistence";
 import { homeDockviewComponents } from "./HomeDockPanels";
 import { MoveGameBasePicker } from "./components/MoveGameBasePicker";
+import { useAutoDismissError } from "./useAutoDismissError";
 import type {
   BaseInfo,
   FidePlayer,
@@ -155,7 +156,7 @@ export function HomeDockview({
   const [fideLastUpdated, setFideLastUpdated] = useState<string | null>(null);
   const [fideRefreshing, setFideRefreshing] = useState(false);
   const [fideRefreshProgress, setFideRefreshProgress] = useState(0);
-  const [fideRefreshError, setFideRefreshError] = useState<string | null>(null);
+  const [fideRefreshError, setFideRefreshError] = useAutoDismissError();
 
   const onFideSortChange = useCallback((column: FideSortColumn) => {
     setFideSort((prev) => (prev?.column === column ? { column, dir: prev.dir === "asc" ? "desc" : "asc" } : { column, dir: "asc" }));
@@ -167,7 +168,7 @@ export function HomeDockview({
     setFidePage(0);
   }, [fideSearchInput]);
 
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useAutoDismissError();
 
   const refreshBases = useCallback(async () => {
     try {

@@ -5,6 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useTranslation } from "react-i18next";
 import { BasesTable } from "./BasesTable";
 import { FideNameInput } from "./FideNameInput";
+import { useAutoDismissError } from "../useAutoDismissError";
 import type { BaseInfo } from "../types";
 
 interface SaveBasePickerProps {
@@ -51,7 +52,7 @@ export function SaveBasePicker({ tabId, activeBasePath, tags, onConfirm, onCance
   const { t } = useTranslation();
   const [bases, setBases] = useState<BaseInfo[]>([]);
   const [selectedPath, setSelectedPath] = useState<string | null>(activeBasePath);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useAutoDismissError();
 
   const [white, setWhite] = useState(stripUnknownPlaceholder(tags.White));
   const [black, setBlack] = useState(stripUnknownPlaceholder(tags.Black));

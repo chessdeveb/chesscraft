@@ -7,6 +7,7 @@ import { PositionEditorBoard, type PositionEditorBoardHandle } from "./component
 import { loadStoredBoardTheme } from "./boardTheme";
 import { useSyncLanguage } from "./i18n";
 import { useSyncColorScheme } from "./colorScheme";
+import { useAutoDismissError } from "./useAutoDismissError";
 import "@lichess-org/chessground/assets/chessground.base.css";
 import "@lichess-org/chessground/assets/chessground.brown.css";
 import "@lichess-org/chessground/assets/chessground.cburnett.css";
@@ -66,7 +67,7 @@ export function PositionEditorWindow() {
   // (case survolee par un double-pas noir si les Blancs ont le trait -- 6e
   // rangee -- ou blanc si les Noirs l'ont -- 3e rangee), voir enPassantSquare.
   const [enPassantFile, setEnPassantFile] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useAutoDismissError();
   // piece "armee" depuis la palette : reste selectionnee apres la pose pour
   // pouvoir cliquer plusieurs cases de suite sans repasser par la palette a
   // chaque fois -- seul un clic sur la palette (meme piece pour desarmer,

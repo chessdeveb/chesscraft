@@ -10,6 +10,7 @@ import { dockviewComponents } from "./DockPanels";
 import { persistDockviewLayout, syncPanelCheckedStates, tryRestoreDockviewLayout, useDockviewTheme } from "./dockviewPersistence";
 import { EVAL_NAG_CODES, MOVE_NAG_CODES } from "./nag";
 import { SaveBasePicker } from "./components/SaveBasePicker";
+import { useAutoDismissError } from "./useAutoDismissError";
 import type {
   EcoInfo,
   EngineInfo,
@@ -118,7 +119,7 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
   const [tree, setTree] = useState<TreeDto | null>(null);
   const [currentNodeId, setCurrentNodeId] = useState<number>(0);
   const [dests, setDests] = useState<Dests>(new Map());
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useAutoDismissError();
   const [variationChoice, setVariationChoice] = useState<NodeDto[] | null>(null);
   const [highlightedIndex, setHighlightedIndex] = useState(0);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
@@ -362,7 +363,7 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
   const [maxThreads, setMaxThreads] = useState(1);
   const [engineThreads, setEngineThreads] = useState(() => Number(localStorage.getItem("stockfishThreads")) || 1);
   const [engineLines, setEngineLines] = useState<EngineInfo[]>([]);
-  const [engineError, setEngineError] = useState<string | null>(null);
+  const [engineError, setEngineError] = useAutoDismissError();
 
   const setEnginePath = useCallback((path: string) => {
     setEnginePathState(path);
@@ -510,7 +511,7 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
 
   // --- Explorateur d'ouvertures ---
   const [explorerStats, setExplorerStats] = useState<OpeningMoveStat[]>([]);
-  const [explorerError, setExplorerError] = useState<string | null>(null);
+  const [explorerError, setExplorerError] = useAutoDismissError();
   const [explorerVisible, setExplorerVisible] = useState(() => isPlayerPrep || loadGamePanelPrefs().explorer);
   // Nettoyage en tache de fond du "+"/"#" laisse par un import en masse
   // anterieur a la correction de bulk_import (voir maybe_start_check_suffix_cleanup,
@@ -627,7 +628,7 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
   const [explorerGamesPage, setExplorerGamesPage] = useState(0);
   const [explorerGamesSort, setExplorerGamesSort] = useState<ExplorerGamesSort | null>(null);
   const [explorerGamesLoading, setExplorerGamesLoading] = useState(false);
-  const [explorerGamesError, setExplorerGamesError] = useState<string | null>(null);
+  const [explorerGamesError, setExplorerGamesError] = useAutoDismissError();
   const [explorerGamesBasePath, setExplorerGamesBasePath] = useState<string | null>(null);
 
   const onExplorerGamesSortChange = useCallback((column: ExplorerGamesSortColumn) => {
@@ -638,7 +639,7 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
   const [previewGameId, setPreviewGameId] = useState<number | null>(null);
   const [previewTree, setPreviewTree] = useState<TreeDto | null>(null);
   const [previewNodeId, setPreviewNodeId] = useState<number | null>(null);
-  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [previewError, setPreviewError] = useAutoDismissError();
 
   const handleClosePreview = useCallback(() => {
     setPreviewGameId(null);

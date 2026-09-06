@@ -9,6 +9,7 @@ import { ImportBasePicker } from "./components/ImportBasePicker";
 import i18n, { useSyncLanguage } from "./i18n";
 import { useSyncBoardTheme } from "./boardTheme";
 import { useSyncColorScheme } from "./colorScheme";
+import { useAutoDismissError } from "./useAutoDismissError";
 import type { BulkImportSummary, PgnGameSummary, TabDto } from "./types";
 import "./App.css";
 
@@ -22,6 +23,19 @@ function formatBulkImportSummary(summary: BulkImportSummary): string {
     invalid: summary.skippedInvalid,
     failed: summary.failed,
   });
+}
+
+// Fenetre a instance unique (about, position-editor, game-picker...) deja
+// ouverte : Tauri refuse de creer une deuxieme fenetre avec la meme etiquette
+// ("a webview with label `x` already exists") -- rapporte par l'utilisateur
+// comme un message d'erreur (avec un flou d'ecran, probablement un effet de
+// la tentative de creation qui echoue) en rouvrant Aide deux fois. On
+// ramene juste la fenetre existante au premier plan a la place.
+async function focusIfAlreadyOpen(label: string): Promise<boolean> {
+  const existing = await WebviewWindow.getByLabel(label);
+  if (!existing) return false;
+  await existing.setFocus();
+  return true;
 }
 
 // Creer la fenetre Partie depuis une commande Rust (WebviewWindowBuilder
@@ -51,7 +65,7 @@ export function HomeWindow() {
   useSyncColorScheme();
   const { t } = useTranslation();
   const [basesVersion, setBasesVersion] = useState(0);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useAutoDismissError();
 
   const [bulkImportPgnPath, setBulkImportPgnPath] = useState<string | null>(null);
   const [bulkImportProgress, setBulkImportProgress] = useState<BulkImportSummary | null>(null);
@@ -101,7 +115,8 @@ export function HomeWindow() {
     }
   }, []);
 
-  const handleNewPosition = useCallback(() => {
+  const handleNewPosition = useCallback(async () => {
+    if (await focusIfAlreadyOpen("position-editor")) return;
     const editor = new WebviewWindow("position-editor", {
       url: "/?window=position-editor",
       title: t("homeWindow.positionEditorWindowTitle"),
@@ -135,6 +150,7 @@ export function HomeWindow() {
         await importGameAt(path, 0);
         return;
       }
+      if (await focusIfAlreadyOpen("game-picker")) return;
       const picker = new WebviewWindow("game-picker", {
         url: `/?window=game-picker&path=${encodeURIComponent(path)}`,
         title: t("homeWindow.pickerWindowTitle"),
@@ -149,7 +165,8 @@ export function HomeWindow() {
     }
   }, [importGameAt, t]);
 
-  const handleShowAbout = useCallback(() => {
+  const handleShowAbout = useCallback(async () => {
+    if (await focusIfAlreadyOpen("about")) return;
     const win = new WebviewWindow("about", {
       url: "/?window=about",
       title: t("homeWindow.aboutWindowTitle"),

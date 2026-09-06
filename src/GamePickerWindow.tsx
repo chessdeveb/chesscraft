@@ -6,6 +6,7 @@ import { useTranslation } from "react-i18next";
 import { useSyncLanguage } from "./i18n";
 import { useSyncBoardTheme } from "./boardTheme";
 import { useSyncColorScheme } from "./colorScheme";
+import { useAutoDismissError } from "./useAutoDismissError";
 import type { PgnGameSummary } from "./types";
 import "./App.css";
 
@@ -17,7 +18,7 @@ export function GamePickerWindow() {
   const params = new URLSearchParams(window.location.search);
   const path = params.get("path") ?? "";
   const [games, setGames] = useState<PgnGameSummary[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useAutoDismissError();
 
   useEffect(() => {
     invoke<PgnGameSummary[]>("list_pgn_games", { path })
