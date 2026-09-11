@@ -30,6 +30,7 @@ export interface AppContextValue {
   handleSetComment: (before: string, after: string) => void;
   handleToggleNag: (code: number) => void;
   explorerStats: OpeningMoveStat[];
+  explorerStatsLoading: boolean;
   explorerError: string | null;
   checkSuffixesCleanupCount: number | null;
   ecoInfo: EcoInfo | null;

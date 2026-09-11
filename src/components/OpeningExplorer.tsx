@@ -5,6 +5,7 @@ import type { EcoInfo, OpeningMoveStat } from "../types";
 
 interface OpeningExplorerProps {
   stats: OpeningMoveStat[];
+  loading: boolean;
   error: string | null;
   ecoInfo: EcoInfo | null;
   onSelectMove: (san: string) => void;
@@ -19,7 +20,7 @@ function pct(part: number, total: number): number {
   return total > 0 ? Math.round((part / total) * 100) : 0;
 }
 
-export function OpeningExplorer({ stats, error, ecoInfo, onSelectMove }: OpeningExplorerProps) {
+export function OpeningExplorer({ stats, loading, error, ecoInfo, onSelectMove }: OpeningExplorerProps) {
   const { t } = useTranslation();
   const [highlightedIndex, setHighlightedIndex] = useState(0);
 
@@ -37,6 +38,12 @@ export function OpeningExplorer({ stats, error, ecoInfo, onSelectMove }: Opening
       )}
       {error ? (
         <p className="error">{error}</p>
+      ) : stats.length === 0 && loading ? (
+        // distingue "encore en train de charger" de "vraiment aucune partie"
+        // (explorer.empty) -- sans ca, le tout premier chargement (ex. juste
+        // apres "Se preparer contre") affichait "aucune partie" le temps que
+        // la reponse revienne, trompeur (rapporte par l'utilisateur).
+        <p className="status-message">{t("common.loading")}</p>
       ) : stats.length === 0 ? (
         <p className="notation-empty">{t("explorer.empty")}</p>
       ) : (

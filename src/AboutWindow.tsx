@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
+import { invoke } from "@tauri-apps/api/core";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { useTranslation } from "react-i18next";
 import { useSyncLanguage } from "./i18n";
@@ -25,6 +26,14 @@ export function AboutWindow() {
 
   useEffect(() => {
     getVersion().then(setVersion);
+  }, []);
+
+  // Petite fenetre utilitaire : pas de menu natif souhaite (voir
+  // lib.rs::remove_window_menu -- sous Windows, une fenetre creee sans menu
+  // explicite peut malgre tout heriter du menu partage de l'appli, de facon
+  // intermittente).
+  useEffect(() => {
+    invoke("remove_window_menu").catch(() => {});
   }, []);
 
   async function handleCheck() {

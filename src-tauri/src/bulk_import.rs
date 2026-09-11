@@ -155,7 +155,12 @@ fn assemble_pgn(tags: &BTreeMap<String, String>, movetext: &str) -> String {
 /// propre fonction pour pouvoir l'entourer d'un catch_unwind : une partie
 /// malformee qui ferait paniquer le parseur de doublon ne doit pas perdre
 /// tout le lot en cours.
-fn process_one_game(tx: &rusqlite::Transaction, visitor: &BulkGameVisitor) -> Result<GameOutcome, String> {
+fn process_one_game(
+    tx: &rusqlite::Transaction,
+    visitor: &BulkGameVisitor,
+    white_fide_id: Option<&str>,
+    black_fide_id: Option<&str>,
+) -> Result<GameOutcome, String> {
     if !has_name(&visitor.tags, "White") || !has_name(&visitor.tags, "Black") {
         return Ok(GameOutcome::InvalidNames);
     }
@@ -164,7 +169,10 @@ fn process_one_game(tx: &rusqlite::Transaction, visitor: &BulkGameVisitor) -> Re
         None => {
             let pgn = assemble_pgn(&visitor.tags, &visitor.movetext);
             let moves_str = visitor.san_tokens.join(" ");
-            db::save_game(tx, &pgn, &visitor.tags, &moves_str)?;
+            let id = db::save_game(tx, &pgn, &visitor.tags, &moves_str)?;
+            if white_fide_id.is_some() || black_fide_id.is_some() {
+                db::set_game_fide_ids(tx, id, white_fide_id, black_fide_id)?;
+            }
             Ok(GameOutcome::Imported)
         }
     }
@@ -192,7 +200,7 @@ pub fn bulk_import(
     pgn_source: impl std::io::Read,
     mut on_progress: impl FnMut(&BulkImportSummary),
     mut should_cancel: impl FnMut() -> bool,
-    mut canonicalize_name: impl FnMut(&str, Option<i32>) -> Option<String>,
+    mut canonicalize_name: impl FnMut(&str, Option<i32>) -> Option<(String, String)>,
 ) -> Result<BulkImportSummary, String> {
     let mut summary = BulkImportSummary::default();
     let mut tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -219,18 +227,30 @@ pub fn bulk_import(
         summary.total += 1;
 
         // Reecrit Blancs/Noirs vers leur forme canonique FIDE quand elle est
-        // resolue sans ambiguite (voir fide::canonicalize_name) -- avant la
+        // resolue sans ambiguite (voir fide::canonicalize) -- avant la
         // detection de doublon ET la sauvegarde, pour que "Giri,A" et
         // "Giri, Anish" importes dans le meme lot finissent avec la meme
         // chaine (dedoublonnage) au lieu de fragmenter le joueur en deux
         // entrees. WhiteElo/BlackElo (s'ils sont presents) servent d'indice
         // pour departager un nom de famille + initiale encore ambigus (ex.
-        // "Giri, Anish" vs "Giri, Andrea").
+        // "Giri, Anish" vs "Giri, Andrea"). L'identifiant FIDE resolu en meme
+        // temps que le nom est conserve a part (pas dans visitor.tags, qui
+        // finit tel quel dans le texte PGN assemble par assemble_pgn) pour
+        // etre pose sur games.white_fide_id/black_fide_id apres coup (voir
+        // process_one_game) -- absent (None) des qu'aucun candidat FIDE
+        // unique et non ambigu n'a ete trouve, meme apres depart par Elo.
+        let mut white_fide_id: Option<String> = None;
+        let mut black_fide_id: Option<String> = None;
         for (tag, elo_tag) in [("White", "WhiteElo"), ("Black", "BlackElo")] {
             if let Some(raw) = visitor.tags.get(tag) {
                 let elo_hint = visitor.tags.get(elo_tag).and_then(|s| s.trim().parse::<i32>().ok());
-                if let Some(canonical) = canonicalize_name(raw, elo_hint) {
+                if let Some((canonical, fide_id)) = canonicalize_name(raw, elo_hint) {
                     visitor.tags.insert(tag.to_string(), canonical);
+                    if tag == "White" {
+                        white_fide_id = Some(fide_id);
+                    } else {
+                        black_fide_id = Some(fide_id);
+                    }
                 }
             }
         }
@@ -239,7 +259,7 @@ pub fn bulk_import(
             summary.failed += 1;
         } else {
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                process_one_game(&tx, &visitor)
+                process_one_game(&tx, &visitor, white_fide_id.as_deref(), black_fide_id.as_deref())
             }));
             match outcome {
                 Ok(Ok(GameOutcome::Imported)) => summary.imported += 1,
@@ -459,6 +479,7 @@ mod tests {
                 result TEXT, event TEXT, site TEXT, round TEXT, date_played TEXT,
                 eco TEXT, opening_name TEXT, ply_count INTEGER, time_control TEXT,
                 pgn_moves TEXT NOT NULL, extra_tags TEXT, mainline_sans TEXT,
+                white_fide_id TEXT, black_fide_id TEXT,
                 created_at INTEGER NOT NULL, last_modified INTEGER NOT NULL
             );",
         )
@@ -507,7 +528,7 @@ mod tests {
 "#;
         let mut conn = fresh_conn();
         let fide_conn = fide_conn_with(&["Giri, Anish"]);
-        let summary = bulk_import(&mut conn, pgn.as_bytes(), |_| {}, || false, |raw, elo| crate::fide::canonicalize_name(&fide_conn, raw, elo)).unwrap();
+        let summary = bulk_import(&mut conn, pgn.as_bytes(), |_| {}, || false, |raw, elo| crate::fide::canonicalize(&fide_conn, raw, elo)).unwrap();
         assert_eq!(summary.imported, 2, "deux parties distinctes, aucune ne doit etre prise pour un doublon de l'autre");
 
         let whites: Vec<String> = conn
@@ -546,7 +567,7 @@ mod tests {
 "#;
         let mut conn = fresh_conn();
         let fide_conn = fide_conn_with(&["Giri, Anish"]);
-        let summary = bulk_import(&mut conn, pgn.as_bytes(), |_| {}, || false, |raw, elo| crate::fide::canonicalize_name(&fide_conn, raw, elo)).unwrap();
+        let summary = bulk_import(&mut conn, pgn.as_bytes(), |_| {}, || false, |raw, elo| crate::fide::canonicalize(&fide_conn, raw, elo)).unwrap();
         assert_eq!(summary.imported, 1);
         assert_eq!(summary.skipped_duplicates, 1);
     }

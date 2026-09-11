@@ -18,13 +18,15 @@ interface MoveGameBasePickerProps {
 export function MoveGameBasePicker({ excludePath, mode, count, onConfirm, onCancel }: MoveGameBasePickerProps) {
   const { t } = useTranslation();
   const [bases, setBases] = useState<BaseInfo[]>([]);
+  const [basesLoading, setBasesLoading] = useState(true);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [error, setError] = useAutoDismissError();
 
   useEffect(() => {
     invoke<BaseInfo[]>("list_bases")
       .then((list) => setBases(list.filter((b) => b.path !== excludePath && !b.missing)))
-      .catch((e) => setError(String(e)));
+      .catch((e) => setError(String(e)))
+      .finally(() => setBasesLoading(false));
   }, [excludePath]);
 
   return (
@@ -33,7 +35,7 @@ export function MoveGameBasePicker({ excludePath, mode, count, onConfirm, onCanc
         <h2>{count > 1 ? t("gamesTable.moveGamesTitle", { count }) : t("gamesTable.moveGameTitle")}</h2>
         {error && <p className="error">{error}</p>}
         <div className="modal-table-wrap">
-          <BasesTable bases={bases} selectedPath={selectedPath} onSelect={(b) => setSelectedPath(b.path)} />
+          <BasesTable bases={bases} loading={basesLoading} selectedPath={selectedPath} onSelect={(b) => setSelectedPath(b.path)} />
         </div>
         <div className="modal-actions">
           <button onClick={onCancel}>{t("common.cancel")}</button>

@@ -190,6 +190,7 @@ export function ExplorerPanelView() {
   const [showFilters, setShowFilters] = useState(false);
   const {
     explorerStats,
+    explorerStatsLoading,
     explorerError,
     checkSuffixesCleanupCount,
     ecoInfo,
@@ -226,7 +227,7 @@ export function ExplorerPanelView() {
           {t("explorer.filters")} {showFilters ? "▲" : "▼"}
         </button>
         {showFilters && <ExplorerFiltersBar filters={explorerFilters} onChange={onExplorerFiltersChange} onCommit={onExplorerFiltersCommit} />}
-        <OpeningExplorer stats={explorerStats} error={explorerError} ecoInfo={ecoInfo} onSelectMove={handleExplorerMove} />
+        <OpeningExplorer stats={explorerStats} loading={explorerStatsLoading} error={explorerError} ecoInfo={ecoInfo} onSelectMove={handleExplorerMove} />
         <ExplorerGamesList
           games={explorerGames}
           total={explorerGamesTotal}

@@ -5,6 +5,14 @@ import type { BaseInfo } from "../types";
 
 interface BasesTableProps {
   bases: BaseInfo[];
+  // true tant que le tout premier chargement (list_bases) n'est pas revenu
+  // -- sans ca, la liste vide par defaut (avant que l'invoke ne reponde)
+  // affichait "Aucune base pour l'instant" pendant ce court instant, comme
+  // si l'utilisateur n'avait vraiment aucune base enregistree (rapporte par
+  // l'utilisateur comme trompeur, cf. OpeningExplorer/explorerStatsLoading
+  // pour le meme correctif ailleurs). Optionnel : les appelants qui ne
+  // chargent jamais rien (deja tout en props) n'ont pas besoin de le passer.
+  loading?: boolean;
   selectedPath?: string | null;
   onSelect: (base: BaseInfo) => void;
   // ctrlKey: si vraie, l'appelant doit copier directement sans demander --
@@ -13,12 +21,12 @@ interface BasesTableProps {
   onDropGames?: (base: BaseInfo, ids: number[], fromPath: string, ctrlKey: boolean) => void;
 }
 
-export function BasesTable({ bases, selectedPath, onSelect, onDropGames }: BasesTableProps) {
+export function BasesTable({ bases, loading, selectedPath, onSelect, onDropGames }: BasesTableProps) {
   const { t } = useTranslation();
   const [dragOverPath, setDragOverPath] = useState<string | null>(null);
 
   if (bases.length === 0) {
-    return <p className="notation-empty">{t("basesTable.empty")}</p>;
+    return loading ? <p className="status-message">{t("common.loading")}</p> : <p className="notation-empty">{t("basesTable.empty")}</p>;
   }
 
   return (

@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { open } from "@tauri-apps/plugin-dialog";
+import { ask, message, open } from "@tauri-apps/plugin-dialog";
 import { useTranslation } from "react-i18next";
 import { HomeDockview } from "./HomeDockview";
 import { ImportBasePicker } from "./components/ImportBasePicker";
+import { ToolBasePicker } from "./components/ToolBasePicker";
 import i18n, { useSyncLanguage } from "./i18n";
 import { useSyncBoardTheme } from "./boardTheme";
 import { useSyncColorScheme } from "./colorScheme";
@@ -23,6 +24,26 @@ function formatBulkImportSummary(summary: BulkImportSummary): string {
     invalid: summary.skippedInvalid,
     failed: summary.failed,
   });
+}
+
+// Correspond a lib.rs::ToolRebuildProgress (RebuildProgress applati avec
+// "stage") : rebuild_prefix_stats/rebuild_player_stats ont chacune une phase
+// de lecture (parties examinees, bornee par la taille de la base) suivie
+// d'une phase d'ecriture (lignes distinctes inserees dans la table
+// precalculee, dont le total depasse souvent le nombre de parties depuis que
+// PRECOMPUTED_MAX_DEPTH est passe a 20) -- les additionner en un seul nombre
+// continu (essaye d'abord) donnait un total sans rapport clair avec la
+// taille de la base, rapporte par l'utilisateur comme deroutant.
+type ToolRebuildProgressEvent = { stage: "openings" | "players" } & (
+  | { phase: "reading"; examined: number }
+  | { phase: "writing"; written: number; total: number }
+);
+
+function formatRebuildProgress(event: ToolRebuildProgressEvent): string {
+  const stage = i18n.t(event.stage === "openings" ? "tools.stageOpenings" : "tools.stagePlayers");
+  return event.phase === "reading"
+    ? i18n.t("tools.progressRebuildReading", { stage, examined: event.examined })
+    : i18n.t("tools.progressRebuildWriting", { stage, written: event.written, total: event.total });
 }
 
 // Fenetre a instance unique (about, position-editor, game-picker...) deja
@@ -68,6 +89,39 @@ export function HomeWindow() {
   const [error, setError] = useAutoDismissError();
 
   const [bulkImportPgnPath, setBulkImportPgnPath] = useState<string | null>(null);
+  // Operation de maintenance choisie via le menu Outils : reste posee pour
+  // toute la duree du flux (choix de la base, execution, et pour Dedoublonner
+  // le compte intermediaire avant confirmation), remise a null seulement une
+  // fois le flux termine ou annule.
+  const [toolAction, setToolAction] = useState<"rebuild-stats" | "deduplicate" | "backfill-fide" | null>(null);
+  // Affichage du choix de base : separe de toolAction, qui doit rester pose
+  // pendant l'execution (voir toolJobRunning) sans que ToolBasePicker se
+  // rouvre entre-temps.
+  const [toolPickerOpen, setToolPickerOpen] = useState(false);
+  // true pendant l'execution effective (apres le choix de la base), le temps
+  // de recevoir l'evenement -done/-error correspondant (voir plus bas) -- ces
+  // commandes tournent sur un thread dedie cote Rust (voir lib.rs) : une
+  // premiere version synchrone (calcul fait directement dans le handler de la
+  // commande) bloquait la boucle de messages Win32 assez longtemps, sur la
+  // base de reference reelle de l'utilisateur (plusieurs millions de
+  // parties), pour que Windows signale carrement l'appli comme "ne repond
+  // plus" au moindre clic -- meme avec ce message affiche, donc pas
+  // seulement un probleme de retour visuel manquant.
+  const [toolJobRunning, setToolJobRunning] = useState(false);
+  // Message deja mis en forme, affiche pendant l'execution (voir les
+  // evenements "tool-*-progress" plus bas) : chaque operation a sa propre
+  // forme de progression (Recalculer les stats distingue lecture/ecriture,
+  // Dedoublonner/Resoudre les identifiants FIDE comptent examinees+trouvees) --
+  // les formater au moment de recevoir l'evenement, plutot que de stocker
+  // les nombres bruts et choisir un format a l'affichage, evite de melanger
+  // des formes differentes dans un seul etat. Remis a null a chaque nouvelle
+  // etape (voir setToolProgress(null) avant chaque invoke).
+  const [toolProgress, setToolProgress] = useState<string | null>(null);
+  // Base choisie pour l'operation en cours : conserve hors etat React (pas
+  // besoin de re-rendu) pour que le listener de "tool-count-duplicates-done"
+  // (enregistre une seule fois, voir plus bas) puisse relancer
+  // deduplicate_base sur la meme base apres confirmation.
+  const toolBasePathRef = useRef<string | null>(null);
   const [bulkImportProgress, setBulkImportProgress] = useState<BulkImportSummary | null>(null);
   const [bulkImportResult, setBulkImportResult] = useState<BulkImportResult | null>(null);
   // sans indicateur, lire un fichier PGN pas encore synchronise localement
@@ -209,6 +263,127 @@ export function HomeWindow() {
     [bulkImportPgnPath]
   );
 
+  // Titre affiche par ToolBasePicker : un seul modal pour les trois
+  // operations de maintenance, distinguees par toolAction.
+  const toolActionTitle =
+    toolAction === "rebuild-stats"
+      ? t("menu.tools.rebuildExplorerStats")
+      : toolAction === "deduplicate"
+        ? t("menu.tools.deduplicateBase")
+        : t("menu.tools.backfillFideIds");
+
+  // Ne fait que declencher la commande correspondante : le resultat arrive
+  // de facon asynchrone via un evenement "tool-*-done"/"tool-*-error" (voir
+  // l'effet juste apres), pas via la promesse renvoyee par invoke() (qui ne
+  // signale que le demarrage du thread cote Rust, voir begin_tool_job).
+  const handleToolBaseChosen = useCallback(
+    (path: string) => {
+      const action = toolAction;
+      setToolPickerOpen(false);
+      if (!action) return;
+      toolBasePathRef.current = path;
+      setToolJobRunning(true);
+      setToolProgress(null);
+      const command =
+        action === "rebuild-stats" ? "rebuild_explorer_stats" : action === "deduplicate" ? "count_duplicate_games" : "backfill_fide_ids";
+      invoke(command, { path }).catch((e) => {
+        setToolJobRunning(false);
+        setToolAction(null);
+        setError(String(e));
+      });
+    },
+    [toolAction]
+  );
+
+  // Resultats des operations de maintenance du menu Outils, emis depuis un
+  // thread dedie cote Rust (voir lib.rs) une fois le travail termine.
+  // Dedoublonner est en deux etapes : le compte (tool-count-duplicates-done)
+  // declenche une confirmation puis, si accepte, relance deduplicate_base sur
+  // la meme base (toolBasePathRef) -- toolAction reste pose jusqu'a la toute
+  // fin du flux pour que le titre affiche par le modal "en cours" (voir plus
+  // bas) reste correct pendant cette deuxieme etape.
+  useEffect(() => {
+    const unlistenPromises = [
+      listen<ToolRebuildProgressEvent>("tool-rebuild-stats-progress", (event) => setToolProgress(formatRebuildProgress(event.payload))),
+      // etape 2/2 de Dedoublonner (rebuild des stats une fois des doublons
+      // supprimes) : evenement distinct de tool-deduplicate-progress
+      // (etape 1, forme differente -- examinees/trouvees), voir lib.rs.
+      listen<ToolRebuildProgressEvent>("tool-deduplicate-rebuild-progress", (event) => setToolProgress(formatRebuildProgress(event.payload))),
+      listen<{ examined: number; matched: number }>("tool-count-duplicates-progress", (event) =>
+        setToolProgress(t("tools.progressDuplicates", event.payload))
+      ),
+      listen<{ examined: number; matched: number }>("tool-deduplicate-progress", (event) =>
+        setToolProgress(t("tools.progressDuplicates", event.payload))
+      ),
+      listen<{ examined: number; matched: number }>("tool-backfill-fide-ids-progress", (event) =>
+        setToolProgress(t("tools.progressResolved", event.payload))
+      ),
+      listen("tool-rebuild-stats-done", async () => {
+        setToolJobRunning(false);
+        setToolAction(null);
+        await message(t("tools.rebuildStatsDone"), { title: t("menu.tools.rebuildExplorerStats") });
+      }),
+      listen<string>("tool-rebuild-stats-error", (event) => {
+        setToolJobRunning(false);
+        setToolAction(null);
+        setError(event.payload);
+      }),
+      listen<number>("tool-count-duplicates-done", async (event) => {
+        setToolJobRunning(false);
+        const count = event.payload;
+        if (count === 0) {
+          setToolAction(null);
+          await message(t("tools.noDuplicatesFound"), { title: t("menu.tools.deduplicateBase") });
+          return;
+        }
+        const confirmed = await ask(t("tools.deduplicateConfirm", { count }), {
+          title: t("menu.tools.deduplicateBase"),
+          kind: "warning",
+        });
+        if (!confirmed || !toolBasePathRef.current) {
+          setToolAction(null);
+          return;
+        }
+        setToolJobRunning(true);
+        setToolProgress(null);
+        invoke("deduplicate_base", { path: toolBasePathRef.current }).catch((e) => {
+          setToolJobRunning(false);
+          setToolAction(null);
+          setError(String(e));
+        });
+      }),
+      listen<string>("tool-count-duplicates-error", (event) => {
+        setToolJobRunning(false);
+        setToolAction(null);
+        setError(event.payload);
+      }),
+      listen<number>("tool-deduplicate-done", async (event) => {
+        setToolJobRunning(false);
+        setToolAction(null);
+        await message(t("tools.deduplicateDone", { count: event.payload }), { title: t("menu.tools.deduplicateBase") });
+        setBasesVersion((v) => v + 1);
+      }),
+      listen<string>("tool-deduplicate-error", (event) => {
+        setToolJobRunning(false);
+        setToolAction(null);
+        setError(event.payload);
+      }),
+      listen<number>("tool-backfill-fide-ids-done", async (event) => {
+        setToolJobRunning(false);
+        setToolAction(null);
+        await message(t("tools.backfillFideIdsDone", { count: event.payload }), { title: t("menu.tools.backfillFideIds") });
+      }),
+      listen<string>("tool-backfill-fide-ids-error", (event) => {
+        setToolJobRunning(false);
+        setToolAction(null);
+        setError(event.payload);
+      }),
+    ];
+    return () => {
+      unlistenPromises.forEach((p) => p.then((unlisten) => unlisten()));
+    };
+  }, [t]);
+
   useEffect(() => {
     const unlistenPromises = [
       listen<BulkImportSummary>("bulk-import-progress", (event) => setBulkImportProgress(event.payload)),
@@ -264,6 +439,18 @@ export function HomeWindow() {
       listen("menu-new-position", () => handleNewPosition()),
       listen("menu-import-pgn", () => handleImport()),
       listen("menu-bulk-import-pgn", () => handleBulkImportClick()),
+      listen("menu-rebuild-explorer-stats", () => {
+        setToolAction("rebuild-stats");
+        setToolPickerOpen(true);
+      }),
+      listen("menu-deduplicate-base", () => {
+        setToolAction("deduplicate");
+        setToolPickerOpen(true);
+      }),
+      listen("menu-backfill-fide-ids", () => {
+        setToolAction("backfill-fide");
+        setToolPickerOpen(true);
+      }),
       listen("menu-show-about", () => handleShowAbout()),
     ];
     return () => {
@@ -323,6 +510,24 @@ export function HomeWindow() {
           onConfirm={handleBulkImportConfirm}
           onCancel={() => setBulkImportPgnPath(null)}
         />
+      )}
+      {toolPickerOpen && (
+        <ToolBasePicker
+          title={toolActionTitle}
+          onConfirm={handleToolBaseChosen}
+          onCancel={() => {
+            setToolPickerOpen(false);
+            setToolAction(null);
+          }}
+        />
+      )}
+      {toolJobRunning && (
+        <div className="modal-overlay">
+          <div className="modal">
+            <h2>{toolActionTitle}</h2>
+            <p className="status-message">{toolProgress ?? t("tools.working")}</p>
+          </div>
+        </div>
       )}
       {bulkImportProgress && (
         <div className="modal-overlay">

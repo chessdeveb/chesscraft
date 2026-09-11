@@ -1,4 +1,5 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useTranslation } from "react-i18next";
@@ -74,6 +75,14 @@ export function PositionEditorWindow() {
   // autre piece pour changer) y met fin.
   const [selectedPiece, setSelectedPiece] = useState<Piece | null>(null);
   const [fenInput, setFenInput] = useState("");
+
+  // Petite fenetre utilitaire : pas de menu natif souhaite (voir
+  // lib.rs::remove_window_menu -- sous Windows, une fenetre creee sans menu
+  // explicite peut malgre tout heriter du menu partage de l'appli, de facon
+  // intermittente).
+  useEffect(() => {
+    invoke("remove_window_menu").catch(() => {});
+  }, []);
 
   // Applique un FEN colle : seul le champ "placement des pieces" doit avoir
   // une forme plausible (8 groupes separes par '/') pour etre accepte ici --

@@ -20,13 +20,15 @@ function baseNameFromPath(path: string): string {
 export function ImportBasePicker({ pgnPath, onConfirm, onCancel }: ImportBasePickerProps) {
   const { t } = useTranslation();
   const [bases, setBases] = useState<BaseInfo[]>([]);
+  const [basesLoading, setBasesLoading] = useState(true);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [error, setError] = useAutoDismissError();
 
   useEffect(() => {
     invoke<BaseInfo[]>("list_bases")
       .then(setBases)
-      .catch((e) => setError(String(e)));
+      .catch((e) => setError(String(e)))
+      .finally(() => setBasesLoading(false));
   }, []);
 
   async function handleCreateBase() {
@@ -49,7 +51,7 @@ export function ImportBasePicker({ pgnPath, onConfirm, onCancel }: ImportBasePic
         <p className="picker-path">{pgnPath}</p>
         {error && <p className="error">{error}</p>}
         <div className="modal-table-wrap">
-          <BasesTable bases={bases} selectedPath={selectedPath} onSelect={(b) => setSelectedPath(b.path)} />
+          <BasesTable bases={bases} loading={basesLoading} selectedPath={selectedPath} onSelect={(b) => setSelectedPath(b.path)} />
         </div>
         <div className="modal-actions">
           <button onClick={handleCreateBase}>{t("common.newBase")}</button>

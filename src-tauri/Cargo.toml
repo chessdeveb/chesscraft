@@ -4,6 +4,14 @@ version = "0.3.0"
 description = "ChessCraft - gestionnaire de parties d'echecs"
 authors = ["ChessCraft"]
 edition = "2021"
+# GPL-3.0-or-later : impose par shakmaty/pgn-reader (voir Cargo.lock),
+# utilises dans tout le backend (regles d'echecs, parsing PGN).
+license = "GPL-3.0-or-later"
+# `tauri dev` invoque `cargo run` en interne sans --bin : depuis l'ajout du
+# binaire normalize_sans (src/bin/), cargo ne pouvait plus deviner lequel
+# lancer par defaut et `tauri dev` echouait. normalize_sans reste lancable
+# explicitement via `cargo run --bin normalize_sans -- ...`.
+default-run = "chesscraft"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

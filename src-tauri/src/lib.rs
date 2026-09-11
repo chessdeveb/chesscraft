@@ -1,9 +1,13 @@
 mod bases;
 mod bulk_import;
-mod db;
+// pub : reutilises directement par les outils de maintenance ponctuels sous
+// src/bin/ (voir normalize_sans.rs), qui ne font pas partie de l'appli
+// Tauri elle-meme -- ces modules doivent donc rester atteignables depuis
+// l'exterieur de ce crate lib.
+pub mod db;
 mod eco;
 mod engine;
-mod explorer;
+pub mod explorer;
 mod fide;
 mod game_tree;
 mod i18n;
@@ -65,6 +69,12 @@ struct AppState {
     // (voir maybe_start_check_suffix_cleanup) -- meme raison que
     // bulk_import_running/fide_refresh_running.
     check_suffixes_cleanup_running: Mutex<bool>,
+    // Empeche deux operations de maintenance (menu Outils) simultanees --
+    // meme raison que bulk_import_running. Partagee par les quatre (recalcul
+    // stats, comptage doublons, dedoublonnage, identifiants FIDE) : rare que
+    // l'utilisateur en lance deux a la fois, et ca evite en prime deux
+    // ecrivains concurrents sur la meme base choisie.
+    tool_job_running: Mutex<bool>,
     // Connexion vers la base de reference, reutilisee entre les appels de
     // l'explorateur d'ouvertures : en rouvrir une a chaque coup joue coute
     // tres cher sur une base de plusieurs Go (WAL a re-verifier a chaque
@@ -319,25 +329,27 @@ fn bulk_import_pgn(app: AppHandle, state: State<AppState>, db_path: String, pgn_
             let mut conn = db::open(Path::new(&db_path))?;
 
             // Reecrit Blancs/Noirs vers leur forme canonique FIDE quand elle
-            // est resolue sans ambiguite (voir fide::canonicalize_name,
+            // est resolue sans ambiguite (voir fide::canonicalize,
             // departage par Elo en cas d'homonymie -- ex. "Giri, Anish" vs
-            // "Giri, Andrea") -- memorise par (nom, indice Elo) deja vu
-            // (fide_name_cache) : une base source rejoue tres souvent les
-            // memes joueurs a un Elo proche, inutile de refaire la recherche
-            // FIDE a chaque partie (meme principe que
+            // "Giri, Andrea"), et recupere au passage l'identifiant FIDE
+            // (pose sur games.white_fide_id/black_fide_id, voir
+            // bulk_import::process_one_game) -- memorise par (nom, indice
+            // Elo) deja vu (fide_name_cache) : une base source rejoue tres
+            // souvent les memes joueurs a un Elo proche, inutile de refaire
+            // la recherche FIDE a chaque partie (meme principe que
             // rebuild_player_stats/rebuild_prefix_stats). Base FIDE absente
             // ou pas encore telechargee (voir refresh_fide_players) :
             // fide_conn est alors None et canonicalize_name ne fait rien,
             // l'import se deroule normalement.
             let fide_conn = app.path().app_data_dir().ok().and_then(|dir| fide::open(&dir).ok());
-            let mut fide_name_cache: HashMap<(String, Option<i32>), Option<String>> = HashMap::new();
-            let canonicalize_name = move |raw: &str, elo_hint: Option<i32>| -> Option<String> {
+            let mut fide_name_cache: HashMap<(String, Option<i32>), Option<(String, String)>> = HashMap::new();
+            let canonicalize_name = move |raw: &str, elo_hint: Option<i32>| -> Option<(String, String)> {
                 let conn = fide_conn.as_ref()?;
                 let cache_key = (raw.to_string(), elo_hint);
                 if let Some(cached) = fide_name_cache.get(&cache_key) {
                     return cached.clone();
                 }
-                let resolved = fide::canonicalize_name(conn, raw, elo_hint);
+                let resolved = fide::canonicalize(conn, raw, elo_hint);
                 fide_name_cache.insert(cache_key, resolved.clone());
                 resolved
             };
@@ -357,8 +369,8 @@ fn bulk_import_pgn(app: AppHandle, state: State<AppState>, db_path: String, pgn_
             // lent sur les tout premiers coups, au prochain jeu ouvert.
             // Echec non bloquant : l'explorateur retombe alors sur le calcul
             // a la volee (voir explorer::explore).
-            let _ = explorer::rebuild_prefix_stats(&mut conn);
-            let _ = db::rebuild_player_stats(&mut conn);
+            let _ = explorer::rebuild_prefix_stats(&mut conn, |_| {});
+            let _ = db::rebuild_player_stats(&mut conn, |_| {});
             Ok(summary)
         })();
 
@@ -384,6 +396,184 @@ fn bulk_import_pgn(app: AppHandle, state: State<AppState>, db_path: String, pgn_
 #[tauri::command]
 fn cancel_bulk_import(state: State<AppState>) {
     *state.bulk_import_cancel.lock().unwrap() = true;
+}
+
+/// Empeche deux operations de maintenance simultanees (voir
+/// AppState::tool_job_running) -- a appeler en tout premier dans chacune des
+/// quatre commandes ci-dessous, avant de lancer le thread.
+fn begin_tool_job(state: &State<AppState>) -> Result<(), String> {
+    let mut running = state.tool_job_running.lock().unwrap();
+    if *running {
+        return Err("une opération de maintenance est déjà en cours".to_string());
+    }
+    *running = true;
+    Ok(())
+}
+
+/// Progression periodique d'une operation de maintenance (menu Outils),
+/// emise en tache de fond pendant le calcul -- voir les quatre commandes
+/// ci-dessous. `matched` n'a de sens que pour Dedoublonner (doublons
+/// trouves/supprimes) et Resoudre les identifiants FIDE (parties resolues) ;
+/// pour Recalculer les stats de l'explorateur, seul `examined` est
+/// pertinent (0 fige pour `matched`), voir ToolBaseWorking cote frontend.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ToolProgress {
+    examined: u64,
+    matched: u64,
+}
+
+/// Progression d'un rebuild_prefix_stats/rebuild_player_stats, avec le nom
+/// de l'etape en cours ("openings"/"players") -- voir
+/// explorer::RebuildProgress pour la distinction lecture/ecriture (les
+/// additionner en un seul compteur, essaye d'abord, produisait un total
+/// depassant le nombre de parties de la base des que l'ecriture avait plus
+/// de lignes distinctes que la lecture n'a de parties, rapporte par
+/// l'utilisateur comme un chiffre qui ne semblait pas avoir de sens).
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ToolRebuildProgress {
+    stage: &'static str,
+    #[serde(flatten)]
+    progress: explorer::RebuildProgress,
+}
+
+/// Menu Outils > Recalculer les stats de l'explorateur : reconstruit
+/// opening_prefix_stats/player_stats sur une base choisie manuellement (voir
+/// explorer::rebuild_prefix_stats, db::rebuild_player_stats). Sert a rattraper
+/// un import en masse interrompu avant sa fin (l'appli fermee en cours de
+/// route) -- ce recalcul automatique n'a alors jamais eu lieu, voir
+/// bulk_import_pgn.
+///
+/// En tache de fond (thread dedie, meme mecanique que bulk_import_pgn) : une
+/// premiere version synchrone (executee directement dans le handler de la
+/// commande) rendait la fenetre entiere non-reactive le temps du calcul --
+/// sur la base de reference reelle de l'utilisateur (plusieurs millions de
+/// parties), assez longtemps pour que Windows signale carrement l'appli comme
+/// "ne repond plus", meme avec un message affiche avant l'appel. Le probleme
+/// n'etait donc pas juste l'absence de retour visuel (voir la premiere
+/// tentative de correctif) mais bien le blocage de la boucle de messages
+/// Win32 par un calcul synchrone dans le handler de commande -- la commande
+/// doit rendre la main immediatement, le vrai travail se faisant sur un
+/// thread separe qui previent via un evenement une fois termine.
+#[tauri::command]
+fn rebuild_explorer_stats(app: AppHandle, state: State<AppState>, path: String) -> Result<(), String> {
+    begin_tool_job(&state)?;
+    std::thread::spawn(move || {
+        let progress_app = app.clone();
+        let result = (|| -> Result<(), String> {
+            let mut conn = db::open(Path::new(&path))?;
+            explorer::rebuild_prefix_stats(&mut conn, |progress| {
+                let _ = progress_app.emit("tool-rebuild-stats-progress", ToolRebuildProgress { stage: "openings", progress });
+            })?;
+            db::rebuild_player_stats(&mut conn, |progress| {
+                let _ = progress_app.emit("tool-rebuild-stats-progress", ToolRebuildProgress { stage: "players", progress });
+            })?;
+            Ok(())
+        })();
+        app.state::<AppState>().explorer_cache.lock().unwrap().clear();
+        let _ = match &result {
+            Ok(()) => app.emit("tool-rebuild-stats-done", ()),
+            Err(e) => app.emit("tool-rebuild-stats-error", e),
+        };
+        *app.state::<AppState>().tool_job_running.lock().unwrap() = false;
+    });
+    Ok(())
+}
+
+/// Menu Outils > Dedoublonner la base, etape 1/2 : compte les doublons sans
+/// rien supprimer (voir db::count_duplicate_games), pour confirmer avant
+/// suppression. En tache de fond pour la meme raison que
+/// rebuild_explorer_stats -- le GROUP BY sur cinq colonnes non couvertes par
+/// un index necessite un tri/hachage complet de toute la table.
+#[tauri::command]
+fn count_duplicate_games(app: AppHandle, state: State<AppState>, path: String) -> Result<(), String> {
+    begin_tool_job(&state)?;
+    std::thread::spawn(move || {
+        let progress_app = app.clone();
+        let result = (|| -> Result<u32, String> {
+            let mut conn = db::open(Path::new(&path))?;
+            db::count_duplicate_games(&mut conn, |examined, matched| {
+                let _ = progress_app.emit("tool-count-duplicates-progress", ToolProgress { examined, matched });
+            })
+        })();
+        let _ = match &result {
+            Ok(count) => app.emit("tool-count-duplicates-done", count),
+            Err(e) => app.emit("tool-count-duplicates-error", e),
+        };
+        *app.state::<AppState>().tool_job_running.lock().unwrap() = false;
+    });
+    Ok(())
+}
+
+/// Menu Outils > Dedoublonner la base, etape 2/2 (apres confirmation) :
+/// supprime les doublons puis relance le recalcul des stats de l'explorateur
+/// (des parties ont disparu, voir db::deduplicate_games) -- meme sequence
+/// qu'un import en masse. Emet le nombre de parties supprimees. En tache de
+/// fond, meme raison que rebuild_explorer_stats.
+#[tauri::command]
+fn deduplicate_base(app: AppHandle, state: State<AppState>, path: String) -> Result<(), String> {
+    begin_tool_job(&state)?;
+    std::thread::spawn(move || {
+        let progress_app = app.clone();
+        let result = (|| -> Result<u32, String> {
+            let mut conn = db::open(Path::new(&path))?;
+            let deleted = db::deduplicate_games(&mut conn, |examined, matched| {
+                let _ = progress_app.emit("tool-deduplicate-progress", ToolProgress { examined, matched });
+            })?;
+            if deleted > 0 {
+                // Evenement distinct de "tool-deduplicate-progress" (etape de
+                // detection/suppression, forme (examined, matched)) : cette
+                // etape-ci a sa propre forme (stage + phase lecture/ecriture,
+                // voir ToolRebuildProgress), les melanger sous le meme nom
+                // d'evenement aurait ete ambigu a interpreter cote frontend.
+                explorer::rebuild_prefix_stats(&mut conn, |progress| {
+                    let _ = progress_app.emit("tool-deduplicate-rebuild-progress", ToolRebuildProgress { stage: "openings", progress });
+                })?;
+                db::rebuild_player_stats(&mut conn, |progress| {
+                    let _ = progress_app.emit("tool-deduplicate-rebuild-progress", ToolRebuildProgress { stage: "players", progress });
+                })?;
+            }
+            Ok(deleted)
+        })();
+        app.state::<AppState>().explorer_cache.lock().unwrap().clear();
+        let _ = match &result {
+            Ok(deleted) => app.emit("tool-deduplicate-done", deleted),
+            Err(e) => app.emit("tool-deduplicate-error", e),
+        };
+        *app.state::<AppState>().tool_job_running.lock().unwrap() = false;
+    });
+    Ok(())
+}
+
+/// Menu Outils > Resoudre les identifiants FIDE : renseigne
+/// white_fide_id/black_fide_id sur les parties qui n'en ont pas encore (voir
+/// db::backfill_fide_ids) -- necessaire pour les bases importees avant
+/// l'ajout de cette resolution, ou importees sans base FIDE encore
+/// telechargee a l'epoque. Base FIDE absente : fide::open la cree vide,
+/// backfill_fide_ids ne resoudra alors simplement rien (0 parties
+/// renseignees), pas une erreur. En tache de fond, meme raison que
+/// rebuild_explorer_stats.
+#[tauri::command]
+fn backfill_fide_ids(app: AppHandle, state: State<AppState>, path: String) -> Result<(), String> {
+    begin_tool_job(&state)?;
+    std::thread::spawn(move || {
+        let progress_app = app.clone();
+        let result = (|| -> Result<u32, String> {
+            let mut conn = db::open(Path::new(&path))?;
+            let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+            let fide_conn = fide::open(&dir)?;
+            db::backfill_fide_ids(&mut conn, &fide_conn, |examined, matched| {
+                let _ = progress_app.emit("tool-backfill-fide-ids-progress", ToolProgress { examined, matched });
+            })
+        })();
+        let _ = match &result {
+            Ok(resolved) => app.emit("tool-backfill-fide-ids-done", resolved),
+            Err(e) => app.emit("tool-backfill-fide-ids-error", e),
+        };
+        *app.state::<AppState>().tool_job_running.lock().unwrap() = false;
+    });
+    Ok(())
 }
 
 #[derive(Serialize, Clone)]
@@ -1010,6 +1200,21 @@ fn build_menu(app: &AppHandle, home_panels: bool, game_panels: bool, lang: &str,
         .item(&save_item)
         .build()?;
 
+    // Operations de maintenance sur une base (menu Outils) : demandent
+    // toutes de choisir la base ciblee (voir HomeWindow.tsx, meme sequence
+    // que File > Importer une base), independamment de l'onglet/fenetre
+    // courant -- pas besoin d'un etat home_panels/game_panels comme pour les
+    // cases a cocher Affichage.
+    let rebuild_explorer_stats_item =
+        MenuItemBuilder::with_id("rebuild_explorer_stats", t("menu.tools.rebuildExplorerStats")).build(app)?;
+    let deduplicate_base_item = MenuItemBuilder::with_id("deduplicate_base", t("menu.tools.deduplicateBase")).build(app)?;
+    let backfill_fide_ids_item = MenuItemBuilder::with_id("backfill_fide_ids", t("menu.tools.backfillFideIds")).build(app)?;
+    let tools_menu = SubmenuBuilder::new(app, t("menu.tools"))
+        .item(&rebuild_explorer_stats_item)
+        .item(&deduplicate_base_item)
+        .item(&backfill_fide_ids_item)
+        .build()?;
+
     let panel_bases = CheckMenuItemBuilder::with_id("panel_bases", t("menu.display.bases"))
         .enabled(home_panels)
         .checked(home_panels)
@@ -1125,7 +1330,7 @@ fn build_menu(app: &AppHandle, home_panels: bool, game_panels: bool, lang: &str,
     let about_item = MenuItemBuilder::with_id("about", t("menu.help.about")).accelerator("F1").build(app)?;
     let help_menu = SubmenuBuilder::new(app, t("menu.help")).item(&about_item).build()?;
 
-    Menu::with_items(app, &[&file_menu, &display_menu, &preferences_menu, &help_menu])
+    Menu::with_items(app, &[&file_menu, &display_menu, &tools_menu, &preferences_menu, &help_menu])
 }
 
 /// Reconstruit le menu dans la langue donnee et le rattache a la fenetre
@@ -1154,6 +1359,23 @@ fn attach_game_menu(app: AppHandle, state: State<AppState>) -> Result<(), String
     let lang = state.language.lock().unwrap().clone();
     let menu = build_menu(&app, true, true, &lang, "game").map_err(|e| e.to_string())?;
     window.set_menu(menu).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Petites fenetres utilitaires (Aide, editeur de position, choix de partie
+/// PGN) : pas de menu natif souhaite (pas d'onglets/panneaux a piloter
+/// depuis un menu, juste une boite de dialogue simple). Cote Windows, une
+/// fenetre creee sans menu explicite peut malgre tout heriter du menu
+/// partage de l'appli (voir app.set_menu dans setup) -- de facon
+/// intermittente, rapporte par l'utilisateur (present a la premiere
+/// ouverture de la fenetre Aide via F1, absent aux suivantes) plutot que
+/// systematique, ce qui pointe vers une histoire de timing cote Tauri/WebView2
+/// plutot qu'un comportement garanti dans un sens ou l'autre -- on force donc
+/// explicitement son retrait plutot que de compter sur son absence par
+/// defaut. Sans effet (pas d'erreur) si la fenetre n'en avait deja pas.
+#[tauri::command]
+fn remove_window_menu(window: tauri::Window) -> Result<(), String> {
+    window.remove_menu().map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -1261,6 +1483,7 @@ pub fn run() {
                 bulk_import_running: Mutex::new(false),
                 fide_refresh_running: Mutex::new(false),
                 check_suffixes_cleanup_running: Mutex::new(false),
+                tool_job_running: Mutex::new(false),
                 reference_conn: Mutex::new(None),
                 explorer_cache: Mutex::new(HashMap::new()),
                 language: Mutex::new(initial_lang.clone()),
@@ -1292,6 +1515,9 @@ pub fn run() {
                     "new_position" => "menu-new-position",
                     "import_pgn" => "menu-import-pgn",
                     "bulk_import_pgn" => "menu-bulk-import-pgn",
+                    "rebuild_explorer_stats" => "menu-rebuild-explorer-stats",
+                    "deduplicate_base" => "menu-deduplicate-base",
+                    "backfill_fide_ids" => "menu-backfill-fide-ids",
                     "export_pgn" => "menu-export-pgn",
                     "save_game" => "menu-save-game",
                     "about" => "menu-show-about",
@@ -1313,6 +1539,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             attach_game_menu,
+            remove_window_menu,
             set_panel_checked,
             get_language,
             set_language,
@@ -1335,6 +1562,10 @@ pub fn run() {
             import_pgn,
             bulk_import_pgn,
             cancel_bulk_import,
+            rebuild_explorer_stats,
+            count_duplicate_games,
+            deduplicate_base,
+            backfill_fide_ids,
             export_pgn,
             start_engine,
             stop_engine,

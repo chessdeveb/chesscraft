@@ -108,6 +108,7 @@ pub fn open(path: &Path) -> Result<Connection, String> {
     )
     .map_err(|e| e.to_string())?;
     migrate_add_columns(&conn)?;
+    migrate_add_fide_id_columns(&conn)?;
     migrate_mainline_index(&conn)?;
     migrate_white_elo_index(&conn)?;
     migrate_name_indexes(&conn)?;
@@ -155,40 +156,57 @@ fn migrate_prefix_stats_unique_index(conn: &Connection) -> Result<(), String> {
 /// les bases qui existaient deja avant l'ajout de opening_prefix_stats :
 /// sans ca, une base deja importee resterait indefiniment sur le calcul a la
 /// volee, couteux sur les tout premiers coups (voir explorer::explore). Ne
-/// fait rien si la table est deja remplie (verification bon marche, quelques
-/// milliers de lignes tout au plus) ou si la base est vide.
+/// fait rien si la table est deja remplie ou si la base est vide.
+///
+/// Verifie l'existence (LIMIT 1), jamais un COUNT(*) exact -- seul le cas
+/// zero/non-zero importe ici. Un COUNT(*) sur opening_prefix_stats etait
+/// autrefois "bon marche" (quelques milliers de lignes, profondeur 2) mais ce
+/// n'est plus le cas depuis le passage a PRECOMPUTED_MAX_DEPTH=20 (dizaines
+/// de millions de lignes) : cette verification tourne a CHAQUE ouverture de
+/// la base (db::open), pas juste une fois, ce qui rendait l'appli lente a
+/// chaque demarrage/ouverture de base -- rapporte par l'utilisateur comme
+/// une regression ("avant c'etait tres rapide").
 fn migrate_prefix_stats(conn: &mut Connection) -> Result<(), String> {
-    let already_built: i64 = conn
-        .query_row("SELECT COUNT(*) FROM opening_prefix_stats", [], |row| row.get(0))
+    let already_built: Option<i64> = conn
+        .query_row("SELECT 1 FROM opening_prefix_stats LIMIT 1", [], |row| row.get(0))
+        .optional()
         .map_err(|e| e.to_string())?;
-    if already_built > 0 {
+    if already_built.is_some() {
         return Ok(());
     }
-    let has_games: i64 = conn
-        .query_row("SELECT COUNT(*) FROM games WHERE mainline_sans IS NOT NULL AND mainline_sans <> ''", [], |row| {
-            row.get(0)
-        })
+    let has_games: Option<i64> = conn
+        .query_row(
+            "SELECT 1 FROM games WHERE mainline_sans IS NOT NULL AND mainline_sans <> '' LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
         .map_err(|e| e.to_string())?;
-    if has_games == 0 {
+    if has_games.is_none() {
         return Ok(());
     }
-    crate::explorer::rebuild_prefix_stats(conn)
+    crate::explorer::rebuild_prefix_stats(conn, |_| {})
 }
 
 /// Meme principe que migrate_prefix_stats, pour la liste des joueurs : sans
 /// precalcul, compter les joueurs distincts d'une base de plusieurs millions
 /// de parties (UNION Blancs+Noirs, GROUP BY) prend potentiellement plusieurs
 /// minutes -- observe en pratique sur la base de reference de l'utilisateur.
+/// Existence (LIMIT 1), pas un COUNT(*) exact -- meme raison que
+/// migrate_prefix_stats : seul zero/non-zero importe, et cette verification
+/// tourne a chaque ouverture de la base.
 fn migrate_player_stats(conn: &mut Connection) -> Result<(), String> {
-    let already_built: i64 = conn.query_row("SELECT COUNT(*) FROM player_stats", [], |row| row.get(0)).map_err(|e| e.to_string())?;
-    if already_built > 0 {
+    let already_built: Option<i64> =
+        conn.query_row("SELECT 1 FROM player_stats LIMIT 1", [], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
+    if already_built.is_some() {
         return Ok(());
     }
-    let has_games: i64 = conn.query_row("SELECT COUNT(*) FROM games", [], |row| row.get(0)).map_err(|e| e.to_string())?;
-    if has_games == 0 {
+    let has_games: Option<i64> =
+        conn.query_row("SELECT 1 FROM games LIMIT 1", [], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
+    if has_games.is_none() {
         return Ok(());
     }
-    rebuild_player_stats(conn)
+    rebuild_player_stats(conn, |_| {})
 }
 
 /// La recherche de parties par nom (prefixe insensible a la casse) s'appuie
@@ -353,7 +371,7 @@ pub fn strip_check_suffixes(
         // avec "+"/"#" dans next_move) : a reconstruire pour rester coherent,
         // sans attendre migrate_prefix_stats (qui ne s'execute que si la
         // table est encore vide).
-        crate::explorer::rebuild_prefix_stats(conn)?;
+        crate::explorer::rebuild_prefix_stats(conn, |_| {})?;
     }
     Ok(cleaned)
 }
@@ -380,6 +398,32 @@ fn migrate_add_columns(conn: &Connection) -> Result<(), String> {
     }
     if !existing.iter().any(|c| c == "mainline_sans") {
         conn.execute_batch("ALTER TABLE games ADD COLUMN mainline_sans TEXT;")
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Identifiant FIDE (voir fide::canonicalize) du Blancs/Noirs d'une partie,
+/// quand la canonisation a resolu un candidat unique et non ambigu -- NULL
+/// sinon (nom non reconnu, ou encore ambigu meme apres depart par Elo). Les
+/// bases importees avant l'ajout de cette resolution n'ont ni la colonne ni,
+/// bien sur, la valeur : voir db::backfill_fide_ids (menu Outils) pour la
+/// renseigner retroactivement sur une base existante.
+fn migrate_add_fide_id_columns(conn: &Connection) -> Result<(), String> {
+    let mut stmt = conn.prepare("PRAGMA table_info(games)").map_err(|e| e.to_string())?;
+    let existing: Vec<String> = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    drop(stmt);
+
+    if !existing.iter().any(|c| c == "white_fide_id") {
+        conn.execute_batch("ALTER TABLE games ADD COLUMN white_fide_id TEXT;")
+            .map_err(|e| e.to_string())?;
+    }
+    if !existing.iter().any(|c| c == "black_fide_id") {
+        conn.execute_batch("ALTER TABLE games ADD COLUMN black_fide_id TEXT;")
             .map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -435,6 +479,21 @@ pub fn save_game(
     let _ = crate::explorer::increment_prefix_stats(conn, mainline_sans, tags.get("Result").map(|s| s.as_str()));
     let _ = increment_player_stats(conn, &get("White").unwrap_or_default(), &get("Black").unwrap_or_default());
     Ok(id)
+}
+
+/// A appeler juste apres save_game quand l'import a mass (seul appelant a ce
+/// jour, voir bulk_import::process_one_game) a resolu un identifiant FIDE
+/// pour Blancs et/ou Noirs (voir fide::canonicalize) -- separe de save_game
+/// pour ne pas faire porter ces deux colonnes, utiles seulement a l'import en
+/// masse avec base FIDE presente, a tous ses autres appelants (partie unique
+/// enregistree/deplacee, tests...).
+pub fn set_game_fide_ids(conn: &Connection, id: i64, white_fide_id: Option<&str>, black_fide_id: Option<&str>) -> Result<(), String> {
+    conn.execute(
+        "UPDATE games SET white_fide_id = ?1, black_fide_id = ?2 WHERE id = ?3",
+        params![white_fide_id, black_fide_id, id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 pub fn update_game(
@@ -832,6 +891,18 @@ fn explorer_games_order_by_clause(sort_by: &str, sort_dir: &str) -> &'static str
     }
 }
 
+// Profondeur (en demi-coups) en dessous de laquelle games_at_position tente
+// le balayage id-decroissant-avec-arret-anticipe (voir
+// games_at_position_shallow_scan) avant la branche indexee generale --
+// distincte de explorer::PRECOMPUTED_MAX_DEPTH (qui precalcule les stats
+// agregees, un lookup indexe insensible a la profondeur) : ici, un prefixe
+// COURT est ce qui rend le raccourci pertinent (une grande partie de la base
+// y correspond, donc `limit` correspondances se trouvent vite meme sans
+// index) -- un prefixe long, meme precalcule cote stats, correspond a une
+// fraction bien plus petite de la base et n'a pas besoin de ce raccourci
+// specifique. Volontairement bas (2), inchange par PRECOMPUTED_MAX_DEPTH.
+const GAMES_SHALLOW_SCAN_MAX_DEPTH: usize = 2;
+
 /// Parties de la base de reference passant exactement par cette position,
 /// triees selon `sort_by`/`sort_dir` (les plus recentes d'abord si vide),
 /// optionnellement restreintes par joueur/classement/annee. Utilise pour le
@@ -853,7 +924,7 @@ pub fn games_at_position(
     // plafond (voir games_at_position_shallow_scan) retombe sur la branche
     // indexee ci-dessous si le prefixe ne correspond a aucune partie
     // reelle (ex. une partie demarree depuis l'editeur de position).
-    if sort_by.is_empty() && filters.player.is_none() && !moves.is_empty() && moves.len() <= crate::explorer::PRECOMPUTED_MAX_DEPTH {
+    if sort_by.is_empty() && filters.player.is_none() && !moves.is_empty() && moves.len() <= GAMES_SHALLOW_SCAN_MAX_DEPTH {
         if let Some(rows) = games_at_position_shallow_scan(conn, &moves.join(" "), filters, limit, offset, SHALLOW_SCAN_ROW_CAP)? {
             return Ok(rows);
         }
@@ -997,7 +1068,9 @@ pub struct PlayerSummary {
 /// en minuscules du nom (les deux colonnes de l'index sont en COLLATE
 /// NOCASE, donc "Kasparov,G" et "kasparov,g" doivent fusionner) ; la valeur
 /// garde l'orthographe rencontree en premier pour l'affichage.
-pub fn rebuild_player_stats(conn: &mut Connection) -> Result<(), String> {
+pub fn rebuild_player_stats(conn: &mut Connection, mut on_progress: impl FnMut(crate::explorer::RebuildProgress)) -> Result<(), String> {
+    use crate::explorer::RebuildProgress;
+    const PROGRESS_EVERY: u64 = 20_000;
     let tally = {
         let mut stmt = conn.prepare("SELECT white, black FROM games").map_err(|e| e.to_string())?;
         let rows = stmt
@@ -1005,6 +1078,7 @@ pub fn rebuild_player_stats(conn: &mut Connection) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
 
         let mut tally: HashMap<String, (String, u64)> = HashMap::new();
+        let mut examined = 0u64;
         for row in rows {
             let (white, black) = row.map_err(|e| e.to_string())?;
             for name in [white, black].into_iter().flatten() {
@@ -1014,19 +1088,49 @@ pub fn rebuild_player_stats(conn: &mut Connection) -> Result<(), String> {
                 let entry = tally.entry(name.to_lowercase()).or_insert_with(|| (name.clone(), 0));
                 entry.1 += 1;
             }
+            examined += 1;
+            if examined % PROGRESS_EVERY == 0 {
+                on_progress(RebuildProgress::Reading { examined });
+            }
         }
+        on_progress(RebuildProgress::Reading { examined });
         tally
     };
 
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    tx.execute("DELETE FROM player_stats", []).map_err(|e| e.to_string())?;
-    {
-        let mut insert = tx.prepare("INSERT INTO player_stats (name, games) VALUES (?1, ?2)").map_err(|e| e.to_string())?;
-        for (display_name, cnt) in tally.values() {
-            insert.execute(params![display_name, *cnt as i64]).map_err(|e| e.to_string())?;
+    let total_to_write = tally.len() as u64;
+    on_progress(RebuildProgress::Writing { written: 0, total: total_to_write });
+
+    // Meme raison que explorer::rebuild_prefix_stats : validations par lots
+    // plutot qu'une seule transaction geante, pour ne pas laisser le WAL
+    // grossir sans controle sur une base de plusieurs millions de joueurs
+    // distincts.
+    conn.execute("DELETE FROM player_stats", []).map_err(|e| e.to_string())?;
+    const COMMIT_BATCH_SIZE: u64 = 100_000;
+    let mut written = 0u64;
+    let mut entries = tally.values();
+    loop {
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        {
+            let mut insert = tx.prepare("INSERT INTO player_stats (name, games) VALUES (?1, ?2)").map_err(|e| e.to_string())?;
+            let mut in_batch = 0u64;
+            for (display_name, cnt) in entries.by_ref() {
+                insert.execute(params![display_name, *cnt as i64]).map_err(|e| e.to_string())?;
+                written += 1;
+                in_batch += 1;
+                if written % PROGRESS_EVERY == 0 {
+                    on_progress(RebuildProgress::Writing { written, total: total_to_write });
+                }
+                if in_batch >= COMMIT_BATCH_SIZE {
+                    break;
+                }
+            }
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        if written >= total_to_write {
+            break;
         }
     }
-    tx.commit().map_err(|e| e.to_string())?;
+    on_progress(RebuildProgress::Writing { written: total_to_write, total: total_to_write });
     Ok(())
 }
 
@@ -1059,6 +1163,215 @@ fn decrement_player_stats(conn: &Connection, white: &str, black: &str) -> Result
     }
     conn.execute("DELETE FROM player_stats WHERE games <= 0", []).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Clef de regroupement du dedoublonnage pleine base (voir scan_duplicates) :
+/// les memes cinq colonnes que find_duplicate (verifie a l'import, partie
+/// par partie). NULL est ici toujours ramene a "" avant comparaison -- deux
+/// parties sans Blancs/date/... doivent quand meme se regrouper entre elles,
+/// pas y echapper faute de valeur (meme effet que le GROUP BY SQL
+/// precedemment utilise ici, qui traite deja deux NULL comme egaux).
+type DedupKey = (String, String, String, String, String);
+
+fn dedup_key(white: &Option<String>, black: &Option<String>, date: &Option<String>, result: &Option<String>, mainline: &Option<String>) -> DedupKey {
+    (
+        white.clone().unwrap_or_default(),
+        black.clone().unwrap_or_default(),
+        date.clone().unwrap_or_default(),
+        result.clone().unwrap_or_default(),
+        mainline.clone().unwrap_or_default(),
+    )
+}
+
+/// Parcourt `games` par id croissant en construisant l'ensemble des clefs
+/// deja rencontrees (voir dedup_key) : la PREMIERE occurrence d'une clef est
+/// donc toujours celle du plus petit id du groupe, sans avoir besoin d'un
+/// second passage pour le determiner. `delete` false (count_duplicate_games)
+/// se contente de compter ; `delete` true (deduplicate_games) efface chaque
+/// doublon des qu'il est identifie, par lots d'une page (meme resilience que
+/// db::strip_check_suffixes : un arret en cours de route ne perd que la page
+/// en cours, pas tout le travail deja commite).
+///
+/// En Rust plutot qu'un GROUP BY SQL sur ces cinq colonnes (non couvertes par
+/// un index) : meme raison, deja constatee sur cette base, que
+/// rebuild_player_stats -- un GROUP BY sur des valeurs non indexees necessite
+/// un tri/hachage complet cote SQLite, reste bloque plusieurs minutes sur les
+/// ~10-12M parties de la base de reference de l'utilisateur.
+fn scan_duplicates(conn: &mut Connection, delete: bool, mut on_progress: impl FnMut(u64, u64)) -> Result<u32, String> {
+    const PAGE_SIZE: i64 = 20_000;
+    let mut seen: std::collections::HashSet<DedupKey> = std::collections::HashSet::new();
+    let mut examined = 0u64;
+    let mut duplicates = 0u32;
+    let mut last_id = 0i64;
+
+    loop {
+        let page: Vec<(i64, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>)> = {
+            let mut stmt = conn
+                .prepare("SELECT id, white, black, date_played, result, mainline_sans FROM games WHERE id > ?1 ORDER BY id LIMIT ?2")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(params![last_id, PAGE_SIZE], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?))
+                })
+                .map_err(|e| e.to_string())?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
+        };
+        if page.is_empty() {
+            break;
+        }
+        last_id = page.last().expect("page non vide").0;
+
+        let mut to_delete: Vec<i64> = Vec::new();
+        for (id, white, black, date, result, mainline) in &page {
+            examined += 1;
+            let key = dedup_key(white, black, date, result, mainline);
+            if !seen.insert(key) {
+                duplicates += 1;
+                if delete {
+                    to_delete.push(*id);
+                }
+            }
+        }
+
+        if delete && !to_delete.is_empty() {
+            let tx = conn.transaction().map_err(|e| e.to_string())?;
+            {
+                let mut del = tx.prepare("DELETE FROM games WHERE id = ?1").map_err(|e| e.to_string())?;
+                for id in &to_delete {
+                    del.execute(params![id]).map_err(|e| e.to_string())?;
+                }
+            }
+            tx.commit().map_err(|e| e.to_string())?;
+        }
+
+        on_progress(examined, duplicates as u64);
+    }
+
+    Ok(duplicates)
+}
+
+/// Compte les parties qui seraient supprimees par deduplicate_games, sans
+/// rien modifier -- sert a afficher un nombre avant confirmation (menu
+/// Outils > Dedoublonner la base).
+pub fn count_duplicate_games(conn: &mut Connection, on_progress: impl FnMut(u64, u64)) -> Result<u32, String> {
+    scan_duplicates(conn, false, on_progress)
+}
+
+/// Supprime les parties strictement dupliquees (meme regroupement que
+/// count_duplicate_games), en gardant dans chaque groupe la partie au plus
+/// petit id (la plus ancienne). Ne touche pas a opening_prefix_stats ni
+/// player_stats : a l'appelant de relancer rebuild_prefix_stats/
+/// rebuild_player_stats juste apres (voir lib.rs, meme sequence qu'un import
+/// en masse) puisque des parties ont disparu. Renvoie le nombre supprime.
+pub fn deduplicate_games(conn: &mut Connection, on_progress: impl FnMut(u64, u64)) -> Result<u32, String> {
+    scan_duplicates(conn, true, on_progress)
+}
+
+/// Renseigne retroactivement white_fide_id/black_fide_id (voir
+/// migrate_add_fide_id_columns) sur les parties qui n'en ont pas encore --
+/// necessaire pour les parties importees avant l'ajout de cette resolution,
+/// ou dont l'import a eu lieu sans base FIDE encore telechargee (voir
+/// lib.rs::bulk_import_pgn, fide_conn absent). Reecrit aussi le nom vers sa
+/// forme canonique, exactement comme le ferait un import en masse avec la
+/// base FIDE deja presente (voir fide::canonicalize) -- meme regle : sans
+/// candidat unique et non ambigu (au besoin departage par l'Elo enregistre
+/// sur la partie), le nom est laisse tel quel et aucun id n'est pose. Renvoie
+/// le nombre de parties ou au moins un id (Blancs ou Noirs) a pu etre resolu.
+pub fn backfill_fide_ids(games_conn: &mut Connection, fide_conn: &Connection, mut on_progress: impl FnMut(u64, u64)) -> Result<u32, String> {
+    const PROGRESS_EVERY: u64 = 5_000;
+    struct Row {
+        id: i64,
+        white: Option<String>,
+        black: Option<String>,
+        white_elo: Option<i64>,
+        black_elo: Option<i64>,
+        white_fide_id: Option<String>,
+        black_fide_id: Option<String>,
+    }
+
+    // Premier passage : charge les parties concernees (sur une base jamais
+    // encore resolue, potentiellement la quasi-totalite des ~10-12M
+    // parties de la base de reference de l'utilisateur) -- signale une
+    // progression ici aussi (pas seulement pendant la mise a jour plus bas,
+    // voir la boucle suivante) : query_map pioche une ligne a la fois dans
+    // le curseur SQLite sous-jacent (une seule requete), donc un simple
+    // compteur suffit, comme pour rebuild_prefix_stats/rebuild_player_stats.
+    // Sans ca, ce chargement -- potentiellement plusieurs dizaines de
+    // secondes a lui seul sur la base entiere -- ne donnait aucun retour
+    // visuel avant que la boucle de mise a jour ne demarre.
+    let rows: Vec<Row> = {
+        let mut stmt = games_conn
+            .prepare(
+                "SELECT id, white, black, white_elo, black_elo, white_fide_id, black_fide_id FROM games
+                 WHERE white_fide_id IS NULL OR black_fide_id IS NULL",
+            )
+            .map_err(|e| e.to_string())?;
+        let mapped_rows = stmt.query_map([], |row| {
+            Ok(Row {
+                id: row.get(0)?,
+                white: row.get(1)?,
+                black: row.get(2)?,
+                white_elo: row.get(3)?,
+                black_elo: row.get(4)?,
+                white_fide_id: row.get(5)?,
+                black_fide_id: row.get(6)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+
+        let mut collected = Vec::new();
+        let mut loaded = 0u64;
+        for row in mapped_rows.filter_map(|r| r.ok()) {
+            collected.push(row);
+            loaded += 1;
+            if loaded % PROGRESS_EVERY == 0 {
+                on_progress(loaded, 0);
+            }
+        }
+        collected
+    };
+
+    // Ne tente la resolution FIDE que pour la colonne qui n'a pas deja un
+    // id (l'autre camp de la meme partie peut deja en avoir un, si un
+    // premier passage avait resolu Blancs mais pas Noirs).
+    fn resolve(fide_conn: &Connection, name: &Option<String>, elo: Option<i64>, existing_id: &Option<String>) -> (Option<String>, Option<String>) {
+        if existing_id.is_some() {
+            return (name.clone(), existing_id.clone());
+        }
+        match name.as_deref() {
+            Some(n) if !n.is_empty() && n != "?" => match crate::fide::canonicalize(fide_conn, n, elo.map(|v| v as i32)) {
+                Some((canonical, fide_id)) => (Some(canonical), Some(fide_id)),
+                None => (name.clone(), None),
+            },
+            _ => (name.clone(), None),
+        }
+    }
+
+    let mut examined = 0u64;
+    let mut resolved = 0u32;
+    let tx = games_conn.transaction().map_err(|e| e.to_string())?;
+    {
+        let mut update = tx
+            .prepare("UPDATE games SET white = ?1, white_fide_id = ?2, black = ?3, black_fide_id = ?4 WHERE id = ?5")
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            let (new_white, new_white_id) = resolve(fide_conn, &row.white, row.white_elo, &row.white_fide_id);
+            let (new_black, new_black_id) = resolve(fide_conn, &row.black, row.black_elo, &row.black_fide_id);
+            if (new_white_id.is_some() && row.white_fide_id.is_none()) || (new_black_id.is_some() && row.black_fide_id.is_none()) {
+                resolved += 1;
+            }
+            update
+                .execute(params![new_white, new_white_id, new_black, new_black_id, row.id])
+                .map_err(|e| e.to_string())?;
+            examined += 1;
+            if examined % PROGRESS_EVERY == 0 {
+                on_progress(examined, resolved as u64);
+            }
+        }
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    on_progress(examined, resolved as u64);
+    Ok(resolved)
 }
 
 /// Nombre de joueurs distincts (Blancs ou Noirs) correspondant au prefixe de
@@ -1482,7 +1795,7 @@ mod tests {
         assert_eq!(count_games_at_position(&conn, &[], &no_filters()).unwrap(), 3);
     }
 
-    // Le prefixe "e4 e5" est court (profondeur <= PRECOMPUTED_MAX_DEPTH) :
+    // Le prefixe "e4 e5" est court (profondeur <= GAMES_SHALLOW_SCAN_MAX_DEPTH) :
     // sans tri demande, ce test passerait par games_at_position_shallow_scan
     // (ordre id DESC uniquement) -- avec un tri explicite, il doit basculer
     // sur la branche generale (voir games_at_position) pour honorer l'ordre
@@ -1611,7 +1924,7 @@ mod tests {
         )
         .unwrap();
 
-        rebuild_player_stats(&mut conn).unwrap();
+        rebuild_player_stats(&mut conn, |_| {}).unwrap();
 
         // Kasparov (fusionne), Karpov, Short : 3 joueurs distincts
         assert_eq!(count_players(&conn, "").unwrap(), 3);
@@ -1650,5 +1963,109 @@ mod tests {
         delete_game(&conn, id).unwrap();
         assert_eq!(opening_count(&conn, "", "d4"), 0);
         assert_eq!(opening_count(&conn, "d4", "d5"), 0);
+    }
+
+    #[test]
+    fn count_and_deduplicate_games_remove_only_exact_repeats() {
+        let mut conn = open(Path::new(":memory:")).unwrap();
+        let tags = base_tags("Alice", "Bob", "2024.01.01", "1-0");
+        let first_id = save_game(&conn, "1. e4 e5 *", &tags, "e4 e5").unwrap();
+        // strict duplicate (memes 5 champs de regroupement) : doit disparaitre
+        save_game(&conn, "1. e4 e5 *", &tags, "e4 e5").unwrap();
+        // meme joueurs/date/resultat mais coups differents : PAS un duplicat
+        save_game(&conn, "1. d4 d5 *", &tags, "d4 d5").unwrap();
+
+        assert_eq!(count_duplicate_games(&mut conn, |_, _| {}).unwrap(), 1);
+        assert_eq!(deduplicate_games(&mut conn, |_, _| {}).unwrap(), 1);
+        assert_eq!(count_duplicate_games(&mut conn, |_, _| {}).unwrap(), 0);
+
+        // seule la partie strictement dupliquee a disparu, et c'est bien la
+        // plus ancienne (plus petit id) qui a ete gardee
+        let remaining: Vec<i64> = {
+            let mut stmt = conn.prepare("SELECT id FROM games ORDER BY id").unwrap();
+            stmt.query_map([], |row| row.get(0)).unwrap().filter_map(|r| r.ok()).collect()
+        };
+        assert_eq!(remaining.len(), 2);
+        assert_eq!(remaining[0], first_id);
+    }
+
+    #[test]
+    fn set_game_fide_ids_updates_only_the_targeted_row() {
+        let conn = open(Path::new(":memory:")).unwrap();
+        let id_a = save_game(&conn, "1. e4 *", &base_tags("Alice", "Bob", "2024.01.01", "*"), "e4").unwrap();
+        let id_b = save_game(&conn, "1. e4 *", &base_tags("Carol", "Dave", "2024.01.02", "*"), "e4").unwrap();
+
+        set_game_fide_ids(&conn, id_a, Some("123"), None).unwrap();
+
+        let fetch = |id: i64| -> (Option<String>, Option<String>) {
+            conn.query_row(
+                "SELECT white_fide_id, black_fide_id FROM games WHERE id = ?1",
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap()
+        };
+        assert_eq!(fetch(id_a), (Some("123".to_string()), None));
+        assert_eq!(fetch(id_b), (None, None));
+    }
+
+    fn fide_conn_with_players(players: &[(&str, &str, Option<i32>)]) -> Connection {
+        let conn = crate::fide::open_at(Path::new(":memory:")).unwrap();
+        for (id, name, std_rating) in players {
+            conn.execute(
+                "INSERT INTO fide_players (fide_id, name, fed, sex, title, w_title, o_title, std_rating, rapid_rating, blitz_rating, birth_year, flag)
+                 VALUES (?1, ?2, 'FRA', 'M', '', '', '', ?3, NULL, NULL, NULL, '')",
+                params![id, name, std_rating],
+            )
+            .unwrap();
+        }
+        conn
+    }
+
+    #[test]
+    fn backfill_fide_ids_resolves_unambiguous_names_and_is_idempotent() {
+        let mut conn = open(Path::new(":memory:")).unwrap();
+        let fide_conn = fide_conn_with_players(&[("100", "Giri, Anish", Some(2750)), ("101", "Carlsen, Magnus", Some(2830))]);
+
+        // "Giri,A" et "Carlsen, M" resolvent tous deux sans ambiguite -> nom
+        // reecrit + id pose pour les deux camps de la meme partie
+        let resolvable = save_game(&conn, "1. e4 *", &base_tags("Giri,A", "Carlsen, M", "2024.01.01", "*"), "e4").unwrap();
+
+        assert_eq!(backfill_fide_ids(&mut conn, &fide_conn, |_, _| {}).unwrap(), 1);
+
+        let (white, white_id, black, black_id): (Option<String>, Option<String>, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT white, white_fide_id, black, black_fide_id FROM games WHERE id = ?1",
+                params![resolvable],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(white.as_deref(), Some("Giri, Anish"));
+        assert_eq!(white_id, Some("100".to_string()));
+        assert_eq!(black.as_deref(), Some("Carlsen, Magnus"));
+        assert_eq!(black_id, Some("101".to_string()));
+
+        // relancer le backfill ne doit rien re-resoudre (deja fait) : le
+        // filtre WHERE white_fide_id IS NULL OR black_fide_id IS NULL exclut
+        // deja cette partie
+        assert_eq!(backfill_fide_ids(&mut conn, &fide_conn, |_, _| {}).unwrap(), 0);
+    }
+
+    #[test]
+    fn backfill_fide_ids_leaves_no_id_when_still_ambiguous() {
+        let mut conn = open(Path::new(":memory:")).unwrap();
+        let fide_conn = fide_conn_with_players(&[("1", "Nguyen, Anh", None), ("2", "Nguyen, Anton", None)]);
+        let id = save_game(&conn, "1. e4 *", &base_tags("Nguyen,A", "Bob", "2024.01.01", "*"), "e4").unwrap();
+
+        assert_eq!(backfill_fide_ids(&mut conn, &fide_conn, |_, _| {}).unwrap(), 0);
+
+        let (white, white_id): (Option<String>, Option<String>) = conn
+            .query_row("SELECT white, white_fide_id FROM games WHERE id = ?1", params![id], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        // ambigu : nom laisse tel quel, pas d'id pose
+        assert_eq!(white.as_deref(), Some("Nguyen,A"));
+        assert_eq!(white_id, None);
     }
 }

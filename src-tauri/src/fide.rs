@@ -126,8 +126,10 @@ pub fn last_updated(conn: &Connection) -> Option<String> {
         .ok()
 }
 
+#[derive(Clone)]
 struct NameCandidate {
     name: String,
+    fide_id: String,
     std_rating: Option<i32>,
     rapid_rating: Option<i32>,
     blitz_rating: Option<i32>,
@@ -158,14 +160,14 @@ const ELO_MATCH_TOLERANCE: i32 = 150;
 /// classement FIDE a moins de ELO_MATCH_TOLERANCE de cette valeur -- comme
 /// pour le reste de canonicalize_name, en cas de doute (aucun ou plusieurs
 /// candidats suffisamment proches) on ne tranche pas plutot que de deviner.
-fn disambiguate_by_elo(candidates: &[&NameCandidate], elo_hint: Option<i32>) -> Option<String> {
+fn disambiguate_by_elo(candidates: &[NameCandidate], elo_hint: Option<i32>) -> Option<NameCandidate> {
     let elo = elo_hint?;
     let mut close = candidates.iter().filter(|c| c.best_rating().is_some_and(|r| (r - elo).abs() <= ELO_MATCH_TOLERANCE));
     let first = close.next()?;
     if close.next().is_some() {
         return None;
     }
-    Some(first.name.clone())
+    Some(first.clone())
 }
 
 /// Tente de faire correspondre un nom importe (Blancs/Noirs d'un PGN, format
@@ -187,7 +189,7 @@ fn disambiguate_by_elo(candidates: &[&NameCandidate], elo_hint: Option<i32>) -> 
 /// (+ initiale) seul ou grace a l'Elo -- jamais en cas d'ambiguite
 /// persistante : mieux vaut laisser deux entrees distinctes que fusionner
 /// deux joueurs differents a tort.
-pub fn canonicalize_name(conn: &Connection, raw_name: &str, elo_hint: Option<i32>) -> Option<String> {
+fn resolve_candidate(conn: &Connection, raw_name: &str, elo_hint: Option<i32>) -> Option<NameCandidate> {
     let raw_name = raw_name.trim();
     let (last, first) = raw_name.split_once(',').unwrap_or((raw_name, ""));
     let last = last.trim();
@@ -204,7 +206,7 @@ pub fn canonicalize_name(conn: &Connection, raw_name: &str, elo_hint: Option<i32
     let lo = format!("{last},");
     let hi = format!("{lo}\u{ffff}");
     let mut stmt = conn
-        .prepare("SELECT name, std_rating, rapid_rating, blitz_rating FROM fide_players WHERE name >= ?1 AND name < ?2")
+        .prepare("SELECT name, std_rating, rapid_rating, blitz_rating, fide_id FROM fide_players WHERE name >= ?1 AND name < ?2")
         .ok()?;
     let candidates: Vec<NameCandidate> = stmt
         .query_map(params![lo, hi], |row| {
@@ -213,6 +215,7 @@ pub fn canonicalize_name(conn: &Connection, raw_name: &str, elo_hint: Option<i32
                 std_rating: row.get(1)?,
                 rapid_rating: row.get(2)?,
                 blitz_rating: row.get(3)?,
+                fide_id: row.get(4)?,
             })
         })
         .ok()?
@@ -227,8 +230,8 @@ pub fn canonicalize_name(conn: &Connection, raw_name: &str, elo_hint: Option<i32
     // que si un seul joueur FIDE porte ce nom de famille, sinon tente l'Elo.
     if first.is_empty() {
         return match candidates.len() {
-            1 => Some(candidates[0].name.clone()),
-            _ => disambiguate_by_elo(&candidates.iter().collect::<Vec<_>>(), elo_hint),
+            1 => candidates.into_iter().next(),
+            _ => disambiguate_by_elo(&candidates, elo_hint),
         };
     }
 
@@ -242,15 +245,24 @@ pub fn canonicalize_name(conn: &Connection, raw_name: &str, elo_hint: Option<i32
     // "Ivan") -- un prenom complet reste couvert, un prefixe de sa longueur
     // totale etant trivialement lui-meme.
     let first_lower = first.to_ascii_lowercase();
-    let matches: Vec<&NameCandidate> = candidates
-        .iter()
+    let matches: Vec<NameCandidate> = candidates
+        .into_iter()
         .filter(|c| fide_first_name(&c.name).is_some_and(|f| f.to_ascii_lowercase().starts_with(&first_lower)))
         .collect();
 
     match matches.len() {
-        1 => Some(matches[0].name.clone()),
+        1 => matches.into_iter().next(),
         _ => disambiguate_by_elo(&matches, elo_hint),
     }
+}
+
+/// Resout un nom importe vers (nom canonique, identifiant FIDE) -- utilise
+/// pour renseigner a la fois le nom reecrit et
+/// games.white_fide_id/black_fide_id (voir bulk_import et
+/// db::backfill_fide_ids). None des qu'il reste la moindre ambiguite, meme
+/// apres depart par Elo (voir resolve_candidate).
+pub fn canonicalize(conn: &Connection, raw_name: &str, elo_hint: Option<i32>) -> Option<(String, String)> {
+    resolve_candidate(conn, raw_name, elo_hint).map(|c| (c.name, c.fide_id))
 }
 
 fn prefix_bounds(value: &str) -> (String, String) {
@@ -412,6 +424,14 @@ pub fn refresh(app_data_dir: &Path, mut on_progress: impl FnMut(u32)) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Les tests ci-dessous datent d'avant l'ajout de l'identifiant FIDE au
+    // resultat de la resolution (voir canonicalize) : ce raccourci local leur
+    // evite de re-extraire (nom, id) partout pour un cas qui ne teste que le
+    // nom.
+    fn canonicalize_name(conn: &Connection, raw_name: &str, elo_hint: Option<i32>) -> Option<String> {
+        canonicalize(conn, raw_name, elo_hint).map(|(name, _)| name)
+    }
 
     fn sample_line() -> String {
         // reconstruit une ligne au bon alignement a partir des offsets reels,
@@ -582,5 +602,29 @@ mod tests {
         // ambigu, ne doit pas choisir au hasard.
         let conn = conn_with_rated_players(&[("Nguyen, Anh", Some(2400)), ("Nguyen, Anton", Some(2420))]);
         assert_eq!(canonicalize_name(&conn, "Nguyen,A", Some(2410)), None);
+    }
+
+    // canonicalize() partage resolve_candidate avec canonicalize_name (voir
+    // plus haut, deja couvert en detail) : ces quelques tests verifient juste
+    // que le fide_id renvoye en plus correspond bien au meme candidat resolu,
+    // pas toute la logique de desambiguisation encore une fois.
+    #[test]
+    fn canonicalize_resolves_name_and_fide_id_together() {
+        let conn = conn_with_players(&["Giri, Anish"]);
+        assert_eq!(canonicalize(&conn, "Giri,A", None), Some(("Giri, Anish".to_string(), "0".to_string())));
+    }
+
+    #[test]
+    fn canonicalize_returns_none_when_ambiguous_or_no_match() {
+        let conn = conn_with_players(&["Nguyen, Anh", "Nguyen, Anton"]);
+        assert_eq!(canonicalize(&conn, "Nguyen,A", None), None);
+        assert_eq!(canonicalize(&conn, "Doe, John", None), None);
+    }
+
+    #[test]
+    fn canonicalize_disambiguates_by_elo_and_returns_the_matching_fide_id() {
+        let conn = conn_with_rated_players(&[("Giri, Anish", Some(2750)), ("Giri, Andrea", Some(2100))]);
+        assert_eq!(canonicalize(&conn, "Giri,A", Some(2748)), Some(("Giri, Anish".to_string(), "0".to_string())));
+        assert_eq!(canonicalize(&conn, "Giri,A", Some(2095)), Some(("Giri, Andrea".to_string(), "1".to_string())));
     }
 }

@@ -51,6 +51,7 @@ function stripUnknownPlaceholder(raw: string | undefined): string {
 export function SaveBasePicker({ tabId, activeBasePath, tags, onConfirm, onCancel }: SaveBasePickerProps) {
   const { t } = useTranslation();
   const [bases, setBases] = useState<BaseInfo[]>([]);
+  const [basesLoading, setBasesLoading] = useState(true);
   const [selectedPath, setSelectedPath] = useState<string | null>(activeBasePath);
   const [error, setError] = useAutoDismissError();
 
@@ -70,7 +71,8 @@ export function SaveBasePicker({ tabId, activeBasePath, tags, onConfirm, onCance
   useEffect(() => {
     invoke<BaseInfo[]>("list_bases")
       .then(setBases)
-      .catch((e) => setError(String(e)));
+      .catch((e) => setError(String(e)))
+      .finally(() => setBasesLoading(false));
   }, []);
 
   async function handleCreateBase() {
@@ -203,7 +205,7 @@ export function SaveBasePicker({ tabId, activeBasePath, tags, onConfirm, onCance
           </label>
         </div>
         <div className="modal-table-wrap">
-          <BasesTable bases={bases} selectedPath={selectedPath} onSelect={(b) => setSelectedPath(b.path)} />
+          <BasesTable bases={bases} loading={basesLoading} selectedPath={selectedPath} onSelect={(b) => setSelectedPath(b.path)} />
         </div>
         <div className="modal-actions">
           <button onClick={handleCreateBase}>{t("common.newBase")}</button>

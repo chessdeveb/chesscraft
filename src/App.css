@@ -996,6 +996,12 @@ textarea {
 
 .modal-table-wrap {
   overflow: auto;
+  /* .modal n'a pas de largeur fixe (voir plus haut, sized to content up to
+     max-width: 90vw) : sans minimum, les fenetres de choix de base (chemins
+     complets dans la colonne .bases-table-path, deja en word-break: break-all)
+     se retrouvaient trop etroites et le chemin se cassait n'importe ou --
+     rapporte par l'utilisateur comme trop petit. */
+  min-width: min(560px, 90vw);
 }
 
 .modal-actions {

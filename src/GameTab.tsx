@@ -11,6 +11,7 @@ import { persistDockviewLayout, syncPanelCheckedStates, tryRestoreDockviewLayout
 import { EVAL_NAG_CODES, MOVE_NAG_CODES } from "./nag";
 import { SaveBasePicker } from "./components/SaveBasePicker";
 import { useAutoDismissError } from "./useAutoDismissError";
+import { useLatestFetch } from "./useLatestFetch";
 import type {
   EcoInfo,
   EngineInfo,
@@ -125,6 +126,7 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const dockviewApiRef = useRef<DockviewApi | null>(null);
   const gameLayoutCleanupRef = useRef<(() => void) | null>(null);
+  const explorerVisibilitySyncCleanupRef = useRef<(() => void) | null>(null);
   const theme = useDockviewTheme();
   const [boardTheme, setBoardThemeState] = useState(() => localStorage.getItem("boardTheme") ?? "brown");
   const setBoardTheme = useCallback((value: string) => {
@@ -511,7 +513,21 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
 
   // --- Explorateur d'ouvertures ---
   const [explorerStats, setExplorerStats] = useState<OpeningMoveStat[]>([]);
+  // Distingue "en cours de chargement" de "vraiment aucune partie a cette
+  // position" (voir OpeningExplorer, explorer.empty) : sans ca, le premier
+  // chargement (ex. juste apres "Se preparer contre", explorerVisible
+  // devenant vrai des l'ouverture) affichait le message "aucune partie"
+  // pendant l'attente, avant meme que la reponse soit revenue -- rapporte
+  // par l'utilisateur comme trompeur.
+  const [explorerStatsLoading, setExplorerStatsLoading] = useState(false);
   const [explorerError, setExplorerError] = useAutoDismissError();
+  // Vrai seulement quand l'onglet Explorateur est reellement au premier
+  // plan (voir onDockviewReady, onDidActivePanelChange) -- pas juste
+  // "present quelque part dans la disposition" : gate les deux requetes
+  // par coup plus bas (opening_explorer/opening_explorer_games), inutile
+  // de les payer pour un onglet existant mais pas regarde. Valeur initiale
+  // ici juste une estimation avant que dockview ne soit pret ; corrigee
+  // tout de suite apres (onDockviewReady).
   const [explorerVisible, setExplorerVisible] = useState(() => isPlayerPrep || loadGamePanelPrefs().explorer);
   // Nettoyage en tache de fond du "+"/"#" laisse par un import en masse
   // anterieur a la correction de bulk_import (voir maybe_start_check_suffix_cleanup,
@@ -575,20 +591,33 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
     };
   }
 
-  useEffect(() => {
-    // ne pas interroger la base de reference tant que le panneau n'est pas
-    // affiche : sur une base de plusieurs millions de parties, les premiers
-    // coups d'une partie restent lents a agreger (voir opening_explorer cote
-    // Rust), inutile de payer ce cout a chaque coup si personne ne regarde.
-    if (!tree || !explorerVisible) return;
-    const moves = pathSans(tree, currentNodeId);
-    invoke<OpeningMoveStat[]>("opening_explorer", { tabId, moves, ...explorerFilterArgs(explorerFilters) })
-      .then((stats) => {
-        setExplorerStats(stats);
-        setExplorerError(null);
-      })
-      .catch((e) => setExplorerError(String(e)));
-  }, [tabId, tree, currentNodeId, explorerVisible, explorerFilters]);
+  // ne pas interroger la base de reference tant que le panneau n'est pas
+  // affiche : sur une base de plusieurs millions de parties, les premiers
+  // coups d'une partie restent lents a agreger (voir opening_explorer cote
+  // Rust), inutile de payer ce cout a chaque coup si personne ne regarde.
+  // useLatestFetch (pas un useEffect direct) : jouer les coups vite
+  // enchainait sinon une requete par coup, l'explorateur accusant un
+  // retard perceptible sur l'echiquier (rapporte par l'utilisateur) --
+  // ici, un seul appel a la fois, toujours pour la position la plus
+  // recente une fois le precedent revenu.
+  useLatestFetch(
+    !!tree && explorerVisible,
+    [tabId, tree, currentNodeId, explorerVisible, explorerFilters],
+    () => {
+      setExplorerStatsLoading(true);
+      const moves = pathSans(tree!, currentNodeId);
+      return invoke<OpeningMoveStat[]>("opening_explorer", { tabId, moves, ...explorerFilterArgs(explorerFilters) });
+    },
+    (stats) => {
+      setExplorerStats(stats);
+      setExplorerStatsLoading(false);
+      setExplorerError(null);
+    },
+    (e) => {
+      setExplorerStatsLoading(false);
+      setExplorerError(String(e));
+    }
+  );
 
   useEffect(() => {
     // Classification ECO : cout negligeable (recherche en memoire dans un
@@ -656,38 +685,37 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentNodeId, explorerFilters]);
 
-  useEffect(() => {
-    if (!tree || !explorerVisible) return;
-    const moves = pathSans(tree, currentNodeId);
-    let cancelled = false;
-    setExplorerGamesLoading(true);
-    invoke<ExplorerGamesPage>("opening_explorer_games", {
-      tabId,
-      moves,
-      offset: explorerGamesPage * EXPLORER_GAMES_PAGE_SIZE,
-      limit: EXPLORER_GAMES_PAGE_SIZE,
-      sortBy: explorerGamesSort?.column,
-      sortDir: explorerGamesSort?.dir,
-      ...explorerFilterArgs(explorerFilters),
-    })
-      .then((page) => {
-        if (cancelled) return;
-        setExplorerGames(page.games);
-        setExplorerGamesTotal(page.total);
-        setExplorerGamesBasePath(page.basePath);
-        setExplorerGamesError(null);
-      })
-      .catch((e) => {
-        if (cancelled) return;
-        setExplorerGamesError(String(e));
-      })
-      .finally(() => {
-        if (!cancelled) setExplorerGamesLoading(false);
+  // Meme raison/mecanique que l'effet opening_explorer plus haut (voir
+  // useLatestFetch) : un coup par requete rendait aussi cette liste a la
+  // traine en jouant vite.
+  useLatestFetch(
+    !!tree && explorerVisible,
+    [tabId, tree, currentNodeId, explorerVisible, explorerGamesPage, explorerGamesSort, explorerFilters],
+    () => {
+      setExplorerGamesLoading(true);
+      const moves = pathSans(tree!, currentNodeId);
+      return invoke<ExplorerGamesPage>("opening_explorer_games", {
+        tabId,
+        moves,
+        offset: explorerGamesPage * EXPLORER_GAMES_PAGE_SIZE,
+        limit: EXPLORER_GAMES_PAGE_SIZE,
+        sortBy: explorerGamesSort?.column,
+        sortDir: explorerGamesSort?.dir,
+        ...explorerFilterArgs(explorerFilters),
       });
-    return () => {
-      cancelled = true;
-    };
-  }, [tabId, tree, currentNodeId, explorerVisible, explorerGamesPage, explorerGamesSort, explorerFilters]);
+    },
+    (page) => {
+      setExplorerGames(page.games);
+      setExplorerGamesTotal(page.total);
+      setExplorerGamesBasePath(page.basePath);
+      setExplorerGamesError(null);
+      setExplorerGamesLoading(false);
+    },
+    (e) => {
+      setExplorerGamesError(String(e));
+      setExplorerGamesLoading(false);
+    }
+  );
 
   const handleSelectPreviewGame = useCallback(
     async (id: number) => {
@@ -826,6 +854,19 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
     (event: DockviewReadyEvent) => {
       dockviewApiRef.current = event.api;
       const api = event.api;
+      // explorerVisible ne veut dire "l'onglet Explorateur est au premier
+      // plan" (celui reellement affiche a l'ecran), pas juste "il existe
+      // quelque part dans la disposition" (getPanel) : sur une base de
+      // plusieurs millions de parties, laisser tourner opening_explorer/
+      // opening_explorer_games a chaque coup pour un onglet qui existe mais
+      // qu'on ne regarde pas (partage un groupe avec Notation, par exemple)
+      // coute cher pour rien (rapporte par l'utilisateur). onDidActivePanelChange
+      // couvre aussi bien changer d'onglet dans le meme groupe que fermer
+      // l'onglet actif (quel que soit le chemin -- bouton "x" ou menu) : la
+      // fermeture via son propre bouton ne passait auparavant par aucun code
+      // a nous, laissant explorerVisible bloque a true indefiniment.
+      const explorerActiveDisposable = api.onDidActivePanelChange(() => setExplorerVisible(api.activePanel?.id === "explorer"));
+      explorerVisibilitySyncCleanupRef.current = () => explorerActiveDisposable.dispose();
       api.addPanel({ id: "board", component: "board", title: t("gameTab.panel.board") });
       if (isPlayerPrep) {
         // onglet de preparation d'adversaire : pas de coups a lister (partie
@@ -843,7 +884,7 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
           // case a cocher a l'epoque), il resterait sinon introuvable pour
           // toujours : on le regarantit toujours present.
           if (!api.getPanel("board")) setPanelVisible("board", true);
-          setExplorerVisible(!!api.getPanel("explorer"));
+          setExplorerVisible(api.activePanel?.id === "explorer");
         }
         syncPanelCheckedStates(api, GAME_PANEL_IDS);
         gameLayoutCleanupRef.current = persistDockviewLayout(api, GAME_LAYOUT_KEY_PREP, GAME_PANEL_IDS);
@@ -851,7 +892,7 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
       }
       if (tryRestoreDockviewLayout(api, GAME_LAYOUT_KEY)) {
         if (!api.getPanel("board")) setPanelVisible("board", true);
-        setExplorerVisible(!!api.getPanel("explorer"));
+        setExplorerVisible(api.activePanel?.id === "explorer");
         syncPanelCheckedStates(api, GAME_PANEL_IDS);
         gameLayoutCleanupRef.current = persistDockviewLayout(api, GAME_LAYOUT_KEY, GAME_PANEL_IDS);
         return;
@@ -861,6 +902,7 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
       if (prefs.explorer) setPanelVisible("explorer", true);
       if (prefs.engine) setPanelVisible("engine", true);
       api.getPanel("notation")?.api.setActive();
+      setExplorerVisible(api.activePanel?.id === "explorer");
       syncPanelCheckedStates(api, GAME_PANEL_IDS);
       gameLayoutCleanupRef.current = persistDockviewLayout(api, GAME_LAYOUT_KEY, GAME_PANEL_IDS);
     },
@@ -868,6 +910,7 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
   );
 
   useEffect(() => () => gameLayoutCleanupRef.current?.(), []);
+  useEffect(() => () => explorerVisibilitySyncCleanupRef.current?.(), []);
 
   // plusieurs onglets partagent un seul menu natif : en changer d'actif doit
   // resynchroniser les cases "Affichage > panneau" sur celui-ci, sinon elles
@@ -906,6 +949,7 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
     handleSetComment,
     handleToggleNag,
     explorerStats,
+    explorerStatsLoading,
     explorerError,
     checkSuffixesCleanupCount,
     ecoInfo,

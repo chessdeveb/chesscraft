@@ -20,6 +20,14 @@ export function GamePickerWindow() {
   const [games, setGames] = useState<PgnGameSummary[]>([]);
   const [error, setError] = useAutoDismissError();
 
+  // Petite fenetre utilitaire : pas de menu natif souhaite (voir
+  // lib.rs::remove_window_menu -- sous Windows, une fenetre creee sans menu
+  // explicite peut malgre tout heriter du menu partage de l'appli, de facon
+  // intermittente).
+  useEffect(() => {
+    invoke("remove_window_menu").catch(() => {});
+  }, []);
+
   useEffect(() => {
     invoke<PgnGameSummary[]>("list_pgn_games", { path })
       .then(setGames)

@@ -141,7 +141,15 @@ fn tally_rows_to_stats(rows: impl Iterator<Item = rusqlite::Result<(String, Opti
 /// dans opening_prefix_stats. Au-dela, une partie de plus en plus petite de
 /// la base correspond au prefixe : la requete a la volee (voir plus bas)
 /// reste rapide sans avoir besoin d'etre precalculee.
-pub(crate) const PRECOMPUTED_MAX_DEPTH: usize = 2;
+///
+/// 20 (10 coups pleins) plutot que 2 : couvre la quasi-totalite de ce qu'on
+/// explore reellement (theorie d'ouverture), l'utilisateur ayant rapporte un
+/// decalage perceptible des qu'on en sortait -- un lookup indexe reste
+/// instantane quelle que soit la taille de opening_prefix_stats, seul le
+/// recalcul complet (voir rebuild_prefix_stats) prend plus longtemps avec
+/// cette profondeur (deja en tache de fond avec progression, voir
+/// lib.rs::rebuild_explorer_stats).
+pub(crate) const PRECOMPUTED_MAX_DEPTH: usize = 20;
 
 /// "*" pour un resultat manquant/vide : opening_prefix_stats.result est NOT
 /// NULL (necessaire pour la contrainte d'unicite utilisee par les mises a
@@ -223,6 +231,24 @@ fn precomputed_stats(conn: &Connection, prefix: &str) -> Result<Vec<OpeningMoveS
     }
 }
 
+/// Progression d'un rebuild_*_stats : deux phases bien distinctes plutot
+/// qu'un seul compteur qui grossit sans autre precision -- une lecture
+/// (parties examinees, borne par le nombre de parties de la base) suivie
+/// d'une ecriture (lignes distinctes inserees, dont le total n'est connu
+/// qu'une fois la lecture terminee). Les additionner en un seul nombre
+/// continu (essaye d'abord) donnait un total qui depasse le nombre de
+/// parties de la base des que l'ecriture a plus de lignes que la lecture
+/// n'a de parties (le cas courant depuis que PRECOMPUTED_MAX_DEPTH est passe
+/// a 20 : beaucoup de lignes distinctes profondes, une par ligne de partie
+/// rarement partagee) -- rapporte par l'utilisateur comme un chiffre qui ne
+/// semblait pas avoir de sens.
+#[derive(Serialize, Clone, Copy)]
+#[serde(tag = "phase", rename_all = "camelCase")]
+pub enum RebuildProgress {
+    Reading { examined: u64 },
+    Writing { written: u64, total: u64 },
+}
+
 /// Reconstruit entierement la table opening_prefix_stats a partir des
 /// parties actuelles : necessaire apres un import en masse, ou pour la
 /// premiere ouverture d'une base importee avant l'ajout de cette table (voir
@@ -231,7 +257,13 @@ fn precomputed_stats(conn: &Connection, prefix: &str) -> Result<Vec<OpeningMoveS
 /// sur la base -- de l'ordre de la seconde a quelques secondes sur plusieurs
 /// millions de parties, contre 10 a 20s par requete a la volee sur les tout
 /// premiers coups.
-pub fn rebuild_prefix_stats(conn: &mut Connection) -> Result<(), String> {
+pub fn rebuild_prefix_stats(conn: &mut Connection, mut on_progress: impl FnMut(RebuildProgress)) -> Result<(), String> {
+    // examine chaque ligne au fil de son arrivee depuis SQLite (query_map
+    // pioche une a une dans le curseur sous-jacent, la requete elle-meme
+    // reste unique) : pas besoin de paginer manuellement (voir
+    // db::strip_check_suffixes) pour signaler une progression ici, un simple
+    // compteur suffit.
+    const PROGRESS_EVERY: u64 = 20_000;
     let tally = {
         let mut stmt = conn
             .prepare("SELECT mainline_sans, result FROM games WHERE mainline_sans IS NOT NULL AND mainline_sans <> ''")
@@ -241,29 +273,70 @@ pub fn rebuild_prefix_stats(conn: &mut Connection) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
 
         let mut tally: HashMap<(String, String, String), u64> = HashMap::new();
+        let mut examined = 0u64;
         for row in rows {
             let (mainline, result) = row.map_err(|e| e.to_string())?;
             let result = normalize_result(result.as_deref());
             for (prefix, next_move) in prefixes_for_mainline(&mainline) {
                 *tally.entry((prefix, next_move, result.clone())).or_insert(0) += 1;
             }
+            examined += 1;
+            if examined % PROGRESS_EVERY == 0 {
+                on_progress(RebuildProgress::Reading { examined });
+            }
         }
+        on_progress(RebuildProgress::Reading { examined });
         tally
     };
 
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    tx.execute("DELETE FROM opening_prefix_stats", []).map_err(|e| e.to_string())?;
-    {
-        let mut insert = tx
-            .prepare("INSERT INTO opening_prefix_stats (prefix, next_move, result, cnt) VALUES (?1, ?2, ?3, ?4)")
-            .map_err(|e| e.to_string())?;
-        for ((prefix, next_move, result), cnt) in &tally {
-            insert
-                .execute(rusqlite::params![prefix, next_move, result, *cnt as i64])
+    let total_to_write = tally.len() as u64;
+    on_progress(RebuildProgress::Writing { written: 0, total: total_to_write });
+
+    // DELETE sans WHERE : SQLite reconnait ce cas ("truncate optimization")
+    // et vide la table sans journaliser chaque ligne individuellement, reste
+    // rapide et leger sur le WAL meme a 60M+ lignes -- pas besoin de le
+    // batcher lui aussi.
+    conn.execute("DELETE FROM opening_prefix_stats", []).map_err(|e| e.to_string())?;
+
+    // Ecriture par lots valides regulierement plutot qu'une seule transaction
+    // geante (essaye d'abord) : sur les dizaines de millions de lignes
+    // distinctes qu'ecrit desormais cette fonction (PRECOMPUTED_MAX_DEPTH=20),
+    // une transaction unique laissait le fichier WAL grossir sans jamais
+    // pouvoir etre "checkpointe" avant le tout dernier commit -- observe en
+    // pratique a plus de 20 Go de WAL non rapatrie, ralentissant severement
+    // toute requete sur la base (y compris sans rapport avec l'explorateur)
+    // jusqu'au prochain checkpoint. Meme principe que db::strip_check_suffixes/
+    // db::scan_duplicates ailleurs dans ce fichier.
+    const COMMIT_BATCH_SIZE: u64 = 100_000;
+    let mut written = 0u64;
+    let mut entries = tally.iter();
+    loop {
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        {
+            let mut insert = tx
+                .prepare("INSERT INTO opening_prefix_stats (prefix, next_move, result, cnt) VALUES (?1, ?2, ?3, ?4)")
                 .map_err(|e| e.to_string())?;
+            let mut in_batch = 0u64;
+            for ((prefix, next_move, result), cnt) in entries.by_ref() {
+                insert
+                    .execute(rusqlite::params![prefix, next_move, result, *cnt as i64])
+                    .map_err(|e| e.to_string())?;
+                written += 1;
+                in_batch += 1;
+                if written % PROGRESS_EVERY == 0 {
+                    on_progress(RebuildProgress::Writing { written, total: total_to_write });
+                }
+                if in_batch >= COMMIT_BATCH_SIZE {
+                    break;
+                }
+            }
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        if written >= total_to_write {
+            break;
         }
     }
-    tx.commit().map_err(|e| e.to_string())?;
+    on_progress(RebuildProgress::Writing { written: total_to_write, total: total_to_write });
     Ok(())
 }
 
@@ -662,7 +735,7 @@ mod tests {
         )
         .unwrap();
 
-        rebuild_prefix_stats(&mut conn).unwrap();
+        rebuild_prefix_stats(&mut conn, |_| {}).unwrap();
 
         // profondeur 0 (position de depart) : precalcule
         let opening = explore(&conn, &[], &ExplorerFilters::default()).unwrap();
