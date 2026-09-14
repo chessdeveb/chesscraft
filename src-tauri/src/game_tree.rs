@@ -185,6 +185,24 @@ impl GameTree {
         out
     }
 
+    /// Les identifiants de noeuds de la ligne principale, racine incluse (la
+    /// racine represente la position avant le premier coup -- necessaire au
+    /// rapport de partie, voir lib.rs::start_game_report, pour evaluer aussi
+    /// bien la position de depart que chaque position apres coup).
+    pub fn mainline_node_ids(&self) -> Vec<u32> {
+        let mut out = vec![0u32];
+        let mut current = self.node(0).and_then(|root| root.children.first().copied());
+        while let Some(id) = current {
+            out.push(id);
+            current = self.node(id).and_then(|n| n.children.first().copied());
+        }
+        out
+    }
+
+    pub fn node_fen(&self, id: u32) -> Option<String> {
+        self.node(id).map(|n| position_fen(&n.position))
+    }
+
     pub fn legal_moves(&self, node_id: u32) -> Result<Vec<MoveDto>, String> {
         let node = self.node(node_id).ok_or_else(|| "nœud introuvable".to_string())?;
         Ok(node
@@ -293,6 +311,49 @@ impl GameTree {
         node.comment_before = before.filter(|s| !s.is_empty());
         node.comment_after = after.filter(|s| !s.is_empty());
         Ok(())
+    }
+
+    /// Fait de la branche menant a `node_id` la ligne principale, a chaque
+    /// embranchement traverse depuis la racine (pas seulement le dernier) --
+    /// l'inverse de jouer un coup alternatif qui cree une variante. Bouton
+    /// "promouvoir la variante" du panneau Notation.
+    pub fn promote_variation(&mut self, node_id: u32) -> Result<(), String> {
+        let mut chain = Vec::new();
+        let mut current = node_id;
+        while let Some(parent_id) = self.node(current).ok_or_else(|| "nœud introuvable".to_string())?.parent {
+            chain.push((parent_id, current));
+            current = parent_id;
+        }
+        if chain.is_empty() {
+            return Err("rien à promouvoir".to_string());
+        }
+        for (parent_id, child_id) in chain {
+            let parent = &mut self.nodes[parent_id as usize];
+            if let Some(pos) = parent.children.iter().position(|&c| c == child_id) {
+                if pos > 0 {
+                    parent.children.remove(pos);
+                    parent.children.insert(0, child_id);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Retire `node_id` (et toute sa descendance, restee dans self.nodes
+    /// mais desormais inatteignable depuis la racine -- ni to_dto ni
+    /// pgn::write_game ne la reserialisent, tous deux parcourent l'arbre par
+    /// les liens children a partir de la racine) de la liste des enfants de
+    /// son parent. Bouton "supprimer la variante" du panneau Notation.
+    /// Renvoie l'id du parent, pour que l'appelant y repositionne la
+    /// selection courante (node_id n'existe plus dans l'arbre affiche).
+    pub fn delete_variation(&mut self, node_id: u32) -> Result<u32, String> {
+        let parent_id = self
+            .node(node_id)
+            .ok_or_else(|| "nœud introuvable".to_string())?
+            .parent
+            .ok_or_else(|| "impossible de supprimer le début de la partie".to_string())?;
+        self.nodes[parent_id as usize].children.retain(|&c| c != node_id);
+        Ok(parent_id)
     }
 
     pub fn set_tags(&mut self, tags: BTreeMap<String, String>) {
@@ -413,5 +474,50 @@ mod tests {
         let conn = crate::db::open(std::path::Path::new(":memory:")).unwrap();
         assert!(crate::explorer::explore(&conn, &moves, &crate::explorer::ExplorerFilters::default()).is_ok());
         assert!(crate::db::games_at_position(&conn, &moves, &crate::explorer::ExplorerFilters::default(), "", "", 20, 0).is_ok());
+    }
+
+    #[test]
+    fn promote_variation_moves_the_whole_branch_to_the_front_at_every_fork_crossed() {
+        let mut tree = GameTree::new();
+        let e4 = tree.play_move(0, "e2", "e4", None).unwrap();
+        let d4 = tree.play_move(0, "d2", "d4", None).unwrap();
+        let e5 = tree.play_move(e4, "e7", "e5", None).unwrap();
+        let c5 = tree.play_move(e4, "c7", "c5", None).unwrap();
+        assert_eq!(tree.node(0).unwrap().children, vec![e4, d4]);
+        assert_eq!(tree.node(e4).unwrap().children, vec![e5, c5]);
+
+        // variante profonde (c5, deuxieme enfant de e4 lui-meme deja premier
+        // enfant de la racine) : ne doit reordonner que le niveau ou elle
+        // n'est pas deja en tete
+        tree.promote_variation(c5).unwrap();
+        assert_eq!(tree.node(0).unwrap().children, vec![e4, d4]);
+        assert_eq!(tree.node(e4).unwrap().children, vec![c5, e5]);
+
+        // variante de premier coup (d4) : devient la ligne principale a la racine
+        tree.promote_variation(d4).unwrap();
+        assert_eq!(tree.node(0).unwrap().children, vec![d4, e4]);
+    }
+
+    #[test]
+    fn promote_variation_on_the_root_fails() {
+        let mut tree = GameTree::new();
+        assert!(tree.promote_variation(0).is_err());
+    }
+
+    #[test]
+    fn delete_variation_removes_the_branch_and_returns_its_parent() {
+        let mut tree = GameTree::new();
+        let e4 = tree.play_move(0, "e2", "e4", None).unwrap();
+        let d4 = tree.play_move(0, "d2", "d4", None).unwrap();
+
+        let parent = tree.delete_variation(d4).unwrap();
+        assert_eq!(parent, 0);
+        assert_eq!(tree.node(0).unwrap().children, vec![e4]);
+    }
+
+    #[test]
+    fn delete_variation_on_the_root_fails() {
+        let mut tree = GameTree::new();
+        assert!(tree.delete_variation(0).is_err());
     }
 }

@@ -47,6 +47,35 @@ export interface EngineInfo {
   pv: PvMove[];
 }
 
+export interface GameReportProgress {
+  done: number;
+  total: number;
+}
+
+export interface GameReportMoveEval {
+  nodeId: number;
+  ply: number;
+  san: string | null;
+  whiteWinPercent: number;
+  scoreCp: number | null;
+  scoreMate: number | null;
+  classification: number | null;
+}
+
+export interface GameReportSideStats {
+  accuracy: number;
+  blunders: number;
+  mistakes: number;
+  inaccuracies: number;
+  avgCentipawnLoss: number;
+}
+
+export interface GameReportSummary {
+  white: GameReportSideStats;
+  black: GameReportSideStats;
+  moves: GameReportMoveEval[];
+}
+
 export interface PgnGameSummary {
   index: number;
   white: string;

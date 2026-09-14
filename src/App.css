@@ -549,6 +549,152 @@ textarea {
   min-height: 0;
 }
 
+.notation-toolbar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-bottom: 8px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.notation-toolbar-progress {
+  margin-right: auto;
+  color: var(--ink-2);
+  font-size: 0.9em;
+}
+
+.game-report {
+  flex-shrink: 0;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.game-report-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.game-report-side {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 10px;
+  row-gap: 2px;
+  font-size: 0.85em;
+}
+
+.game-report-side-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-basis: 100%;
+}
+
+.game-report-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.game-report-dot--white {
+  background: #f6f5f2;
+  border: 1px solid #b9b8b4;
+}
+
+.game-report-dot--black {
+  background: #3a3a3a;
+  border: 1px solid #3a3a3a;
+}
+
+.game-report-side-name {
+  font-weight: 600;
+  color: var(--ink-1);
+}
+
+.game-report-side-accuracy {
+  margin-left: auto;
+  font-weight: 600;
+  color: var(--ink-1);
+}
+
+.game-report-side-counts {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 12px;
+  row-gap: 2px;
+  padding-left: 16px;
+  color: var(--ink-2);
+}
+
+.game-report-count--inaccuracy {
+  color: #4a90d9;
+}
+
+.game-report-count--mistake {
+  color: #c98a1b;
+}
+
+.game-report-count--blunder {
+  color: #d64545;
+}
+
+.game-report-chart {
+  display: block;
+  width: 100%;
+  height: 90px;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.game-report-chart-bg {
+  fill: #f6f5f2;
+}
+
+.game-report-chart-area-above {
+  fill: #f6f5f2;
+}
+
+.game-report-chart-area-below {
+  fill: #a3a3a0;
+}
+
+.game-report-chart-midline {
+  stroke: #c9c8c4;
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.game-report-chart-line {
+  fill: none;
+  stroke: #e2883a;
+  stroke-width: 2;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.game-report-chart-cursor {
+  stroke: #2b6cb0;
+  stroke-width: 1.4;
+  opacity: 0.75;
+  vector-effect: non-scaling-stroke;
+}
+
+.game-report-chart-hit {
+  fill: transparent;
+  cursor: pointer;
+}
+
+.game-report-chart-hit:hover {
+  fill: rgba(0, 0, 0, 0.06);
+}
+
 .notation-header {
   flex-shrink: 0;
   padding-bottom: 8px;
@@ -1479,6 +1625,12 @@ textarea {
 
 .annotate-icon:hover {
   background-color: var(--accent-weak);
+}
+
+.annotate-icon:disabled {
+  cursor: default;
+  opacity: 0.4;
+  background-color: transparent;
 }
 
 .annotate-icon--active {

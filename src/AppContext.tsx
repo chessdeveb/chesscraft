@@ -7,6 +7,8 @@ import type {
   ExplorerGameSummary,
   ExplorerGamesSort,
   ExplorerGamesSortColumn,
+  GameReportProgress,
+  GameReportSummary,
   NodeDto,
   OpeningMoveStat,
   ShapeDto,
@@ -29,6 +31,8 @@ export interface AppContextValue {
   chooseVariation: (id: number) => void;
   handleSetComment: (before: string, after: string) => void;
   handleToggleNag: (code: number) => void;
+  handlePromoteVariation: () => void;
+  handleDeleteVariation: () => void;
   explorerStats: OpeningMoveStat[];
   explorerStatsLoading: boolean;
   explorerError: string | null;
@@ -76,6 +80,12 @@ export interface AppContextValue {
   handleStopEngine: () => void;
   handlePauseEngine: () => void;
   handleResumeEngine: () => void;
+
+  gameReportRunning: boolean;
+  gameReportProgress: GameReportProgress | null;
+  gameReportError: string | null;
+  gameReportSummary: GameReportSummary | null;
+  handleStartGameReport: (depth: number, threads: number) => void;
 }
 
 export const AppContext = createContext<AppContextValue | null>(null);

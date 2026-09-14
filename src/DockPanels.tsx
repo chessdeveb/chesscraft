@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { IDockviewPanelProps } from "dockview-react";
 import type { Color, Key } from "@lichess-org/chessground/types";
 import { useTranslation } from "react-i18next";
@@ -71,6 +71,20 @@ export function BoardPanel() {
   // l'echiquier des que le panneau est plus large que haut.
   const [boardSize, setBoardSize] = useState(480);
   const [flipped, setFlipped] = useState(false);
+  // Une partie/etude demarrant d'une position personnalisee (tag FEN) au
+  // trait des Noirs s'affiche par defaut echiquier retourne (Noirs en bas) --
+  // plus naturel pour evaluer/etudier depuis le point de vue du camp au
+  // trait, convention courante pour ce genre de position. Applique une seule
+  // fois, au tout premier chargement de l'arbre (autoOrientedRef) : ne doit
+  // jamais annuler un retournement manuel fait ensuite pendant qu'on avance
+  // dans la partie (tree change a chaque coup).
+  const autoOrientedRef = useRef(false);
+  useEffect(() => {
+    if (autoOrientedRef.current || !tree) return;
+    autoOrientedRef.current = true;
+    const root = tree.nodes.find((n) => n.parent === null);
+    if (root?.turn === "black") setFlipped(true);
+  }, [tree]);
   if (!currentNode) return null;
   const lastMove: [Key, Key] | null =
     currentNode.from && currentNode.to ? [currentNode.from as Key, currentNode.to as Key] : null;
@@ -154,6 +168,14 @@ export function NotationPanelView() {
     chooseVariation,
     handleSetComment,
     handleToggleNag,
+    handlePromoteVariation,
+    handleDeleteVariation,
+    maxThreads,
+    gameReportRunning,
+    gameReportProgress,
+    gameReportError,
+    gameReportSummary,
+    handleStartGameReport,
   } = useAppContext();
   if (!tree) return null;
   return (
@@ -180,6 +202,14 @@ export function NotationPanelView() {
         onSelect={handleSelect}
         onSetComment={handleSetComment}
         onToggleNag={handleToggleNag}
+        onPromoteVariation={handlePromoteVariation}
+        onDeleteVariation={handleDeleteVariation}
+        maxThreads={maxThreads}
+        onStartGameReport={handleStartGameReport}
+        gameReportRunning={gameReportRunning}
+        gameReportProgress={gameReportProgress}
+        gameReportError={gameReportError}
+        gameReportSummary={gameReportSummary}
       />
     </div>
   );

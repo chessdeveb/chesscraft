@@ -20,6 +20,8 @@ import type {
   ExplorerGamesPage,
   ExplorerGamesSort,
   ExplorerGamesSortColumn,
+  GameReportProgress,
+  GameReportSummary,
   MoveDto,
   NodeDto,
   OpeningMoveStat,
@@ -288,6 +290,27 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
     [tabId, currentNodeId, tree, refreshTree]
   );
 
+  const handlePromoteVariation = useCallback(async () => {
+    try {
+      await invoke("promote_variation", { tabId, nodeId: currentNodeId });
+      await refreshTree();
+      setIsDirty(true);
+    } catch (e) {
+      setError(String(e));
+    }
+  }, [tabId, currentNodeId, refreshTree]);
+
+  const handleDeleteVariation = useCallback(async () => {
+    try {
+      const parentId = await invoke<number>("delete_variation", { tabId, nodeId: currentNodeId });
+      await refreshTree();
+      setCurrentNodeId(parentId);
+      setIsDirty(true);
+    } catch (e) {
+      setError(String(e));
+    }
+  }, [tabId, currentNodeId, refreshTree]);
+
   const handleExport = useCallback(async () => {
     if (!tree) return;
     try {
@@ -424,6 +447,57 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
   const handleResumeEngine = useCallback(() => {
     setEnginePaused(false);
   }, []);
+
+  // --- Rapport de partie ---
+  const [gameReportRunning, setGameReportRunning] = useState(false);
+  const [gameReportProgress, setGameReportProgress] = useState<GameReportProgress | null>(null);
+  const [gameReportSummary, setGameReportSummary] = useState<GameReportSummary | null>(null);
+  const [gameReportError, setGameReportError] = useAutoDismissError();
+
+  useEffect(() => {
+    if (!gameReportRunning) return;
+    const unlistenPromises = [
+      listen<GameReportProgress>(`game-report-progress-${tabId}`, (event) => {
+        setGameReportProgress(event.payload);
+      }),
+      listen<GameReportSummary>(`game-report-done-${tabId}`, async (event) => {
+        setGameReportRunning(false);
+        setGameReportProgress(null);
+        setGameReportSummary(event.payload);
+        await refreshTree();
+        setIsDirty(true);
+      }),
+      listen<string>(`game-report-error-${tabId}`, (event) => {
+        setGameReportRunning(false);
+        setGameReportProgress(null);
+        setGameReportError(event.payload);
+      }),
+    ];
+    return () => {
+      unlistenPromises.forEach((p) => p.then((unlisten) => unlisten()));
+    };
+  }, [tabId, gameReportRunning, refreshTree]);
+
+  const handleStartGameReport = useCallback(
+    async (depth: number, threads: number) => {
+      if (!enginePath) {
+        setGameReportError(t("gameReport.noEnginePath"));
+        return;
+      }
+      setGameReportError(null);
+      setGameReportSummary(null);
+      setGameReportProgress({ done: 0, total: 0 });
+      setGameReportRunning(true);
+      try {
+        await invoke("start_game_report", { tabId, enginePath, depth, threads });
+      } catch (e) {
+        setGameReportRunning(false);
+        setGameReportProgress(null);
+        setGameReportError(String(e));
+      }
+    },
+    [tabId, enginePath, t]
+  );
 
   const setPanelVisible = useCallback((id: "board" | "notation" | "explorer" | "engine", visible: boolean) => {
     if (id === "explorer") setExplorerVisible(visible);
@@ -948,6 +1022,8 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
     chooseVariation,
     handleSetComment,
     handleToggleNag,
+    handlePromoteVariation,
+    handleDeleteVariation,
     explorerStats,
     explorerStatsLoading,
     explorerError,
@@ -992,6 +1068,11 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
     handleStopEngine,
     handlePauseEngine,
     handleResumeEngine,
+    gameReportRunning,
+    gameReportProgress,
+    gameReportError,
+    gameReportSummary,
+    handleStartGameReport,
   };
 
   return (

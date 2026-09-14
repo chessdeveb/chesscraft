@@ -1,9 +1,10 @@
 use crate::game_tree::{role_to_str, GameTree, Node, STANDARD_TAGS};
 use pgn_reader::{Nag, RawComment, RawTag, Reader, SanPlus, Skip, Visitor};
 use serde::Serialize;
+use shakmaty::fen::Fen;
 use shakmaty::san::San;
 use shakmaty::uci::UciMove;
-use shakmaty::{Chess, Position};
+use shakmaty::{CastlingMode, Chess, Position};
 use std::collections::BTreeMap;
 use std::ops::ControlFlow;
 
@@ -37,8 +38,16 @@ pub fn write_game(tree: &GameTree) -> String {
     }
     out.push('\n');
 
+    // Trait/numero de coup a la racine (position de depart standard --
+    // Blancs au trait, coup 1 -- ou celle d'un tag FEN personnalise, voir
+    // GameVisitor::begin_movetext) : sans ca, une partie/etude demarrant
+    // d'un FEN a un numero de coup > 1 (ou au trait des Noirs) se
+    // renumerotait a tort a partir de "1." en la resauvegardant.
+    let root_white = tree.node(0).map(|root| root.position.turn().is_white()).unwrap_or(true);
+    let root_fullmove = tree.node(0).map(|root| root.position.fullmoves().get()).unwrap_or(1);
+
     if let Some(first) = tree.node(0).and_then(|root| root.children.first().copied()) {
-        write_line(tree, first, true, &mut out);
+        write_line(tree, first, true, root_white, root_fullmove, &mut out);
     }
 
     out.push_str(tree.tags.get("Result").map(|s| s.as_str()).unwrap_or("*"));
@@ -65,15 +74,27 @@ fn depth_of(tree: &GameTree, id: u32) -> u32 {
     depth
 }
 
-fn write_line(tree: &GameTree, start_id: u32, force_number: bool, out: &mut String) {
+/// (est-ce le trait des Blancs, numero de coup PGN) pour un noeud a `depth`
+/// demi-coups de la racine, sachant que la racine elle-meme est au trait de
+/// `root_white` et porte le numero `root_fullmove` (1/Blancs pour une partie
+/// standard ; ce que porte le tag FEN sinon). Le numero de coup n'avance
+/// qu'apres le coup des Noirs, exactement comme la convention PGN/FEN.
+fn move_number_at(depth: u32, root_white: bool, root_fullmove: u32) -> (bool, u32) {
+    if root_white {
+        (depth % 2 == 1, root_fullmove + (depth - 1) / 2)
+    } else {
+        (depth % 2 == 0, root_fullmove + depth / 2)
+    }
+}
+
+fn write_line(tree: &GameTree, start_id: u32, force_number: bool, root_white: bool, root_fullmove: u32, out: &mut String) {
     let mut current_id = Some(start_id);
     let mut need_number = force_number;
 
     while let Some(id) = current_id {
         let node = tree.node(id).expect("noeud connu");
         let depth = depth_of(tree, id);
-        let is_white = depth % 2 == 1;
-        let move_number = (depth + 1) / 2;
+        let (is_white, move_number) = move_number_at(depth, root_white, root_fullmove);
 
         if let Some(before) = node.comment_before.as_deref().filter(|s| !s.is_empty()) {
             out.push_str("{ ");
@@ -102,7 +123,7 @@ fn write_line(tree: &GameTree, start_id: u32, force_number: bool, out: &mut Stri
         let main_child = node.children.first().copied();
         for &variation_id in node.children.iter().skip(1) {
             out.push_str("( ");
-            write_line(tree, variation_id, true, out);
+            write_line(tree, variation_id, true, root_white, root_fullmove, out);
             out.push_str(") ");
         }
 
@@ -287,7 +308,28 @@ impl Visitor for GameVisitor {
         ControlFlow::Continue(())
     }
 
+    // Une partie demarrant d'une position personnalisee (etude, extrait de
+    // livre...) porte un tag FEN (par convention accompagne de SetUp "1",
+    // mais SetUp n'est pas verifie ici : sa valeur exacte ne change rien,
+    // seule la presence d'un FEN exploitable importe). Sans ce correctif, la
+    // racine restait Chess::default() (voir GameVisitor::new) : les coups du
+    // fichier source, illegaux depuis le depart standard, echouaient tous
+    // silencieusement au parsing (voir san() plus bas, `let Ok(mv) = ...
+    // else` ignore un coup illegal) et la partie s'ouvrait vide. Un FEN
+    // invalide/illegal est ignore silencieusement (retombe sur le depart
+    // standard) plutot que de faire echouer tout l'import pour une seule
+    // donnee de tag douteuse.
     fn begin_movetext(&mut self, _tags: Self::Tags) -> ControlFlow<Self::Output, Self::Movetext> {
+        if let Some(fen) = self.tags.get("FEN") {
+            if let Some(position) = fen
+                .trim()
+                .parse::<Fen>()
+                .ok()
+                .and_then(|setup| setup.into_position::<Chess>(CastlingMode::Standard).ok())
+            {
+                self.nodes[0].position = position;
+            }
+        }
         ControlFlow::Continue(())
     }
 
@@ -392,6 +434,53 @@ mod tests {
 
         let truncated: &[u8] = b"[White \"A\"]\n[Black \"B\"]";
         assert!(parse_game_at(truncated, 0).is_ok());
+    }
+
+    // Cas reel rapporte par l'utilisateur : une partie/etude commencant
+    // d'une position personnalisee (tag FEN, generalement accompagne de
+    // SetUp "1") s'ouvrait vide -- les coups du fichier, illegaux depuis le
+    // depart standard (racine figee a Chess::default() avant ce correctif),
+    // echouaient tous silencieusement a se rejouer.
+    #[test]
+    fn parse_game_at_starts_from_the_fen_tag_when_present() {
+        let pgn: &[u8] = b"[White \"Perelshteyn\"]\n[Black \"Elbilia\"]\n[Result \"*\"]\n[SetUp \"1\"]\n[FEN \"3r1r1k/pp3p1p/2p1pn2/5p2/3P3R/1BP4P/PP3PP1/2K1R3 w - - 0 23\"]\n\n23. g4 fxg4 24. hxg4 *\n";
+        let tree = parse_game_at(pgn, 0).unwrap();
+        let root = tree.node(0).unwrap();
+        assert!(root.san.is_none());
+        // depart au trait blanc (w), donc le premier coup joue (g4) doit
+        // etre celui des Blancs -- sur Chess::default() (partie standard),
+        // "g4" serait illegal comme tout premier coup et la partie resterait
+        // sans aucun enfant.
+        let first_move_id = root.children.first().copied().expect("g4 doit avoir ete rejoue");
+        assert_eq!(tree.node(first_move_id).unwrap().san.as_deref(), Some("g4"));
+        assert_eq!(tree.mainline_sans(), vec!["g4", "fxg4", "hxg4"]);
+    }
+
+    // Reexporter une partie demarree d'un FEN (voir le test precedent) doit
+    // garder son numero de coup d'origine (23), pas repartir de "1." -- la
+    // numerotation d'export se base desormais sur le trait/numero de la
+    // racine (write_game::root_white/root_fullmove, lus depuis la position
+    // deja reconstruite, la meme que celle affichee) plutot que de supposer
+    // a tort un depart standard.
+    #[test]
+    fn write_game_keeps_the_fen_starting_move_number() {
+        let pgn: &[u8] = b"[White \"Perelshteyn\"]\n[Black \"Elbilia\"]\n[Result \"*\"]\n[SetUp \"1\"]\n[FEN \"3r1r1k/pp3p1p/2p1pn2/5p2/3P3R/1BP4P/PP3PP1/2K1R3 w - - 0 23\"]\n\n23. g4 fxg4 24. hxg4 *\n";
+        let tree = parse_game_at(pgn, 0).unwrap();
+        let exported = write_game(&tree);
+        assert!(exported.contains("23. g4 fxg4 24. hxg4"), "numerotation inattendue :\n{exported}");
+    }
+
+    // Meme chose quand le FEN de depart est au trait des Noirs : le tout
+    // premier coup ecrit doit porter le suffixe "N... " (convention PGN pour
+    // "on reprend en cours de coup"), pas "N. " comme s'il s'agissait des
+    // Blancs.
+    #[test]
+    fn write_game_uses_ellipsis_notation_when_the_fen_starts_on_black_to_move() {
+        let pgn: &[u8] =
+            b"[White \"A\"]\n[Black \"B\"]\n[Result \"*\"]\n[SetUp \"1\"]\n[FEN \"rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2\"]\n\n2... Nc6 3. Bb5 *\n";
+        let tree = parse_game_at(pgn, 0).unwrap();
+        let exported = write_game(&tree);
+        assert!(exported.contains("2... Nc6 3. Bb5"), "numerotation inattendue :\n{exported}");
     }
 
     #[test]

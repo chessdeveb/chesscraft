@@ -232,6 +232,93 @@ fn wait_for(reader: &mut BufReader<std::process::ChildStdout>, token: &str) -> R
     }
 }
 
+/// Evaluation finale d'une position (score ramene a la perspective des
+/// Blancs, comme EngineInfoPayload) -- voir analyze_positions.
+#[derive(Clone, Copy)]
+pub struct PositionEval {
+    pub score_cp: Option<i32>,
+    pub score_mate: Option<i32>,
+}
+
+/// Analyse une liste de positions les unes apres les autres avec un process
+/// moteur dedie (distinct de l'EngineHandle du panneau interactif) :
+/// EngineHandle::analyze est concu pour du flux (go depth D rendu la main
+/// immediatement, les resultats arrivant au fil de l'eau via les evenements
+/// "engine-info-{tab}") -- inadapte ici, ou il faut la derniere evaluation
+/// *finale* de chaque position, une a la fois, pour le rapport de partie
+/// (voir start_game_report dans lib.rs). Bloquant : attend "bestmove" avant
+/// de passer a la position suivante.
+pub fn analyze_positions(
+    path: &str,
+    fens: &[String],
+    depth: u32,
+    threads: u32,
+    mut on_progress: impl FnMut(usize),
+) -> Result<Vec<PositionEval>, String> {
+    let mut command = Command::new(path);
+    command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+    hide_console_window(&mut command);
+    let mut child = command.spawn().map_err(|e| format!("impossible de lancer le moteur : {e}"))?;
+
+    let mut stdin = child.stdin.take().ok_or("stdin indisponible")?;
+    let stdout = child.stdout.take().ok_or("stdout indisponible")?;
+    let mut reader = BufReader::new(stdout);
+
+    write_line(&mut stdin, "uci")?;
+    wait_for(&mut reader, "uciok")?;
+    write_line(&mut stdin, &format!("setoption name Threads value {threads}"))?;
+    write_line(&mut stdin, "isready")?;
+    wait_for(&mut reader, "readyok")?;
+    write_line(&mut stdin, "ucinewgame")?;
+
+    let mut results = Vec::with_capacity(fens.len());
+    let mut line = String::new();
+    for (i, fen) in fens.iter().enumerate() {
+        write_line(&mut stdin, &format!("position fen {fen}"))?;
+        write_line(&mut stdin, &format!("go depth {depth}"))?;
+
+        let white_to_move = fen.split_whitespace().nth(1) != Some("b");
+        let mut last_score_cp = None;
+        let mut last_score_mate = None;
+        loop {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) => return Err("le moteur s'est arrêté de manière inattendue".to_string()),
+                Ok(_) => {
+                    let trimmed = line.trim_end();
+                    if let Some(info) = parse_info_line(trimmed) {
+                        if info.multipv <= 1 {
+                            if info.score_cp.is_some() {
+                                last_score_cp = info.score_cp;
+                                last_score_mate = None;
+                            } else if info.score_mate.is_some() {
+                                last_score_mate = info.score_mate;
+                                last_score_cp = None;
+                            }
+                        }
+                    } else if trimmed.starts_with("bestmove") {
+                        break;
+                    }
+                }
+                Err(e) => return Err(e.to_string()),
+            }
+        }
+
+        let sign = if white_to_move { 1 } else { -1 };
+        results.push(PositionEval {
+            score_cp: last_score_cp.map(|v| v * sign),
+            score_mate: last_score_mate.map(|v| v * sign),
+        });
+        on_progress(i + 1);
+    }
+
+    let _ = write_line(&mut stdin, "quit");
+    let _ = child.kill();
+    let _ = child.wait();
+
+    Ok(results)
+}
+
 impl EngineHandle {
     pub fn analyze(&mut self, fen: &str, depth: u32, multipv: u32, threads: u32) -> Result<(), String> {
         *self.current_fen.lock().unwrap() = fen.to_string();

@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { EVAL_NAG_CHOICES, EVAL_NAG_CODES, MOVE_NAG_CHOICES, MOVE_NAG_CODES, nagSymbol } from "../nag";
-import type { NodeDto, TreeDto } from "../types";
+import type { GameReportProgress, GameReportSummary, NodeDto, TreeDto } from "../types";
+import { GameReportChart } from "./GameReportChart";
+import { GameReportDialog } from "./GameReportDialog";
 
 interface NotationProps {
   tree: TreeDto;
@@ -9,8 +11,22 @@ interface NotationProps {
   onSelect: (id: number) => void;
   onSetComment?: (before: string, after: string) => void;
   onToggleNag?: (code: number) => void;
+  /** Fait de la branche du coup courant la ligne principale (bouton a
+      gauche des NAG). */
+  onPromoteVariation?: () => void;
+  /** Supprime la branche du coup courant (bouton a gauche des NAG). */
+  onDeleteVariation?: () => void;
   /** Aperçu en lecture seule (Explorateur) : pas de barre d'annotation. */
   readOnly?: boolean;
+  /** Nombre de coeurs logiques disponibles, pour le reglage du rapport de
+      partie -- absent en lecture seule (le bouton n'est alors pas affiche). */
+  maxThreads?: number;
+  /** Depth/threads choisis dans la pop-up de reglage -- lance l'analyse cote backend. */
+  onStartGameReport?: (depth: number, threads: number) => void;
+  gameReportRunning?: boolean;
+  gameReportProgress?: GameReportProgress | null;
+  gameReportError?: string | null;
+  gameReportSummary?: GameReportSummary | null;
 }
 
 const CLOCK_RE = /\[%clk\s+([\d:.]+)\]/;
@@ -59,10 +75,26 @@ function InlineCommentEditor({
   );
 }
 
-export function Notation({ tree, currentNodeId, onSelect, onSetComment, onToggleNag, readOnly }: NotationProps) {
+export function Notation({
+  tree,
+  currentNodeId,
+  onSelect,
+  onSetComment,
+  onToggleNag,
+  onPromoteVariation,
+  onDeleteVariation,
+  readOnly,
+  maxThreads,
+  onStartGameReport,
+  gameReportRunning,
+  gameReportProgress,
+  gameReportError,
+  gameReportSummary,
+}: NotationProps) {
   const { t } = useTranslation();
   const byId = new Map(tree.nodes.map((n) => [n.id, n]));
   const [editing, setEditing] = useState<"before" | "after" | null>(null);
+  const [showReportDialog, setShowReportDialog] = useState(false);
   const currentMoveRef = useRef<HTMLSpanElement | null>(null);
 
   // navigation clavier (fleches) ou via l'echiquier : le coup courant doit
@@ -149,6 +181,20 @@ export function Notation({ tree, currentNodeId, onSelect, onSetComment, onToggle
   const activeMoveNag = currentNode?.nags.find((n) => MOVE_NAG_CODES.has(n));
   const activeEvalNag = currentNode?.nags.find((n) => EVAL_NAG_CODES.has(n));
 
+  // Un coup est "sur la ligne principale" si, a chaque embranchement
+  // remonte jusqu'a la racine, il est le premier enfant de son parent --
+  // desactive alors le bouton "promouvoir" (rien a promouvoir).
+  function isOnMainline(id: number): boolean {
+    let node = byId.get(id);
+    while (node && node.parent !== null) {
+      const parent = byId.get(node.parent);
+      if (!parent || parent.children[0] !== node.id) return false;
+      node = parent;
+    }
+    return true;
+  }
+  const currentIsVariation = !!currentNode && currentNode.parent !== null && !isOnMainline(currentNode.id);
+
   const elo = (color: "White" | "Black") => {
     const value = tree.tags[`${color}Elo`];
     return value && value !== "?" ? ` (${value})` : "";
@@ -161,6 +207,21 @@ export function Notation({ tree, currentNodeId, onSelect, onSetComment, onToggle
 
   return (
     <div className="notation-wrapper">
+      {!readOnly && (
+        <div className="notation-toolbar">
+          {gameReportError && <span className="error">{gameReportError}</span>}
+          {gameReportRunning && gameReportProgress && (
+            <span className="notation-toolbar-progress">
+              {gameReportProgress.total > 0
+                ? t("gameReport.progress", { done: gameReportProgress.done, total: gameReportProgress.total })
+                : t("gameReport.starting")}
+            </span>
+          )}
+          <button disabled={gameReportRunning} onClick={() => setShowReportDialog(true)}>
+            {t("gameReport.button")}
+          </button>
+        </div>
+      )}
       {(white !== "?" || black !== "?" || event || date) && (
         <div className="notation-header">
           <div className="notation-header-players">
@@ -187,6 +248,25 @@ export function Notation({ tree, currentNodeId, onSelect, onSetComment, onToggle
       {currentNode && !readOnly && (
         <div className="annotate-bar">
           <div className="annotate-toolbar">
+            <button
+              className="annotate-icon"
+              title={t("notation.promoteVariation")}
+              aria-label={t("notation.promoteVariation")}
+              disabled={!currentIsVariation}
+              onClick={() => onPromoteVariation?.()}
+            >
+              ⬆️
+            </button>
+            <button
+              className="annotate-icon"
+              title={t("notation.deleteVariation")}
+              aria-label={t("notation.deleteVariation")}
+              disabled={!currentNode || currentNode.parent === null}
+              onClick={() => onDeleteVariation?.()}
+            >
+              🗑️
+            </button>
+            <span className="annotate-toolbar-sep" />
             {MOVE_NAG_CHOICES.map((n) => (
               <button
                 key={n.code}
@@ -241,6 +321,51 @@ export function Notation({ tree, currentNodeId, onSelect, onSetComment, onToggle
             />
           )}
         </div>
+      )}
+      {!readOnly && gameReportSummary && (
+        <div className="game-report">
+          <GameReportChart moves={gameReportSummary.moves} currentNodeId={currentNodeId} onSelect={selectAndReset} />
+          <div className="game-report-stats">
+            {(
+              [
+                ["white", white !== "?" ? white : t("common.white"), gameReportSummary.white],
+                ["black", black !== "?" ? black : t("common.black"), gameReportSummary.black],
+              ] as const
+            ).map(([side, name, stats]) => (
+              <div className="game-report-side" key={side}>
+                <div className="game-report-side-header">
+                  <span className={`game-report-dot game-report-dot--${side}`} />
+                  <span className="game-report-side-name">{name}</span>
+                  <span className="game-report-side-accuracy">{t("gameReport.accuracy", { value: stats.accuracy.toFixed(1) })}</span>
+                </div>
+                <div className="game-report-side-counts">
+                  <span className="game-report-count game-report-count--inaccuracy">
+                    {stats.inaccuracies} {t("gameReport.inaccuracies")}
+                  </span>
+                  <span className="game-report-count game-report-count--mistake">
+                    {stats.mistakes} {t("gameReport.mistakes")}
+                  </span>
+                  <span className="game-report-count game-report-count--blunder">
+                    {stats.blunders} {t("gameReport.blunders")}
+                  </span>
+                  <span className="game-report-count game-report-count--acpl">
+                    {t("gameReport.acpl", { value: Math.round(stats.avgCentipawnLoss) })}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {showReportDialog && (
+        <GameReportDialog
+          maxThreads={maxThreads ?? 1}
+          onCancel={() => setShowReportDialog(false)}
+          onConfirm={(depth, threads) => {
+            setShowReportDialog(false);
+            onStartGameReport?.(depth, threads);
+          }}
+        />
       )}
     </div>
   );

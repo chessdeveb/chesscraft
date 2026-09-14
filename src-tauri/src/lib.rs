@@ -75,6 +75,11 @@ struct AppState {
     // l'utilisateur en lance deux a la fois, et ca evite en prime deux
     // ecrivains concurrents sur la meme base choisie.
     tool_job_running: Mutex<bool>,
+    // Empeche deux rapports de partie simultanes (un seul process moteur
+    // dedie a la fois, voir start_game_report) -- champ distinct de
+    // tool_job_running car semantique differente (analyse d'une partie
+    // precise dans un onglet, pas maintenance d'une base).
+    game_report_running: Mutex<bool>,
     // Connexion vers la base de reference, reutilisee entre les appels de
     // l'explorateur d'ouvertures : en rouvrir une a chaque coup joue coute
     // tres cher sur une base de plusieurs Go (WAL a re-verifier a chaque
@@ -219,6 +224,20 @@ fn set_nags(state: State<AppState>, tab_id: u32, node_id: u32, nags: Vec<u8>) ->
     let mut sessions = state.sessions.lock().unwrap();
     let session = sessions.get_mut(&tab_id).ok_or_else(|| "onglet introuvable".to_string())?;
     session.tree.set_nags(node_id, nags)
+}
+
+#[tauri::command]
+fn promote_variation(state: State<AppState>, tab_id: u32, node_id: u32) -> Result<(), String> {
+    let mut sessions = state.sessions.lock().unwrap();
+    let session = sessions.get_mut(&tab_id).ok_or_else(|| "onglet introuvable".to_string())?;
+    session.tree.promote_variation(node_id)
+}
+
+#[tauri::command]
+fn delete_variation(state: State<AppState>, tab_id: u32, node_id: u32) -> Result<u32, String> {
+    let mut sessions = state.sessions.lock().unwrap();
+    let session = sessions.get_mut(&tab_id).ok_or_else(|| "onglet introuvable".to_string())?;
+    session.tree.delete_variation(node_id)
 }
 
 #[tauri::command]
@@ -731,6 +750,329 @@ fn pause_engine(state: State<AppState>, tab_id: u32) -> Result<(), String> {
         Some(handle) => handle.pause(),
         None => Err("le moteur n'est pas démarré".to_string()),
     }
+}
+
+// --- Rapport de partie (bouton "Rapport de partie" du panneau Notation) ---
+//
+// Modele repris de lichess (formules publiees dans lila/modules/analyse/src/main/Advice.scala) :
+// conversion score -> pourcentage de gain (Win%), puis perte de Win% d'un
+// coup a l'autre pour la precision et la classification (gaffe/erreur/
+// imprecision). L'agregation par partie ici est une simple moyenne des
+// precisions par coup -- lichess utilise en vrai une moyenne ponderee par
+// fenetre glissante combinee a une moyenne harmonique (explique a
+// l'utilisateur), volontairement simplifiee ici plutot que reproduite a
+// l'identique.
+
+/// Progression du rapport de partie -- evenement propre a l'onglet
+/// ("game-report-progress-{tab_id}"), meme principe que "engine-info-{tab}",
+/// pour ne pas melanger deux rapports lances depuis deux onglets differents.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct GameReportProgress {
+    done: usize,
+    total: usize,
+}
+
+/// Un point de la courbe d'evaluation (voir GameReportChart.tsx) : une
+/// entree par position de la ligne principale, racine (ply 0, avant le
+/// premier coup) incluse pour que la courbe parte d'un point defini.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct GameReportMoveEval {
+    node_id: u32,
+    ply: u32,
+    // SAN du coup qui MENE a cette position (None pour la racine, ply 0) --
+    // pour l'infobulle du graphique cote frontend ("12... Nc3 éval : +0.23").
+    san: Option<String>,
+    white_win_percent: f64,
+    score_cp: Option<i32>,
+    score_mate: Option<i32>,
+    // Code NAG (2/4/6, voir classify_drop) si ce coup est classe comme
+    // imprecision/erreur/gaffe ; None pour la racine et les coups corrects.
+    classification: Option<u8>,
+}
+
+/// Statistiques d'un rapport de partie pour un camp (voir le panneau
+/// "Analyse de l'ordinateur" de chess.com/lichess, dont s'inspire le
+/// panneau cote frontend).
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct GameReportSideStats {
+    accuracy: f64,
+    blunders: u32,
+    mistakes: u32,
+    inaccuracies: u32,
+    // Perte moyenne en centipions (ACPL) -- moyenne, sur les coups de ce
+    // camp, de la difference d'evaluation (dans sa propre perspective,
+    // jamais negative) entre avant et apres son coup.
+    avg_centipawn_loss: f64,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct GameReportSummary {
+    white: GameReportSideStats,
+    black: GameReportSideStats,
+    moves: Vec<GameReportMoveEval>,
+}
+
+/// Empeche deux rapports de partie simultanes (voir AppState::game_report_running).
+fn begin_game_report(state: &State<AppState>) -> Result<(), String> {
+    let mut running = state.game_report_running.lock().unwrap();
+    if *running {
+        return Err("un rapport de partie est déjà en cours".to_string());
+    }
+    *running = true;
+    Ok(())
+}
+
+fn fen_white_to_move(fen: &str) -> bool {
+    fen.split_whitespace().nth(1) != Some("b")
+}
+
+/// Equivalent centipions d'un score, mat compris (approxime -- lichess a sa
+/// propre regle de conversion, non documentee publiquement) : un mat en N
+/// sature vite vers +-100% de Win%, seule la magnitude relative compte pour
+/// nos seuils de classification.
+fn score_to_cp_equivalent(score_cp: Option<i32>, score_mate: Option<i32>) -> f64 {
+    if let Some(mate) = score_mate {
+        let magnitude = 10_000.0 - (mate.unsigned_abs() as f64).min(100.0) * 10.0;
+        if mate > 0 { magnitude } else { -magnitude }
+    } else {
+        score_cp.unwrap_or(0) as f64
+    }
+}
+
+/// Pourcentage de gain du point de vue des Blancs (formule lichess).
+fn win_percent(score_cp: Option<i32>, score_mate: Option<i32>) -> f64 {
+    let cp = score_to_cp_equivalent(score_cp, score_mate);
+    50.0 + 50.0 * (2.0 / (1.0 + (-0.00368208 * cp).exp()) - 1.0)
+}
+
+fn mover_win_percent(eval: &engine::PositionEval, mover_white: bool) -> f64 {
+    let white_win = win_percent(eval.score_cp, eval.score_mate);
+    if mover_white { white_win } else { 100.0 - white_win }
+}
+
+/// Evaluation en centipions du point de vue du joueur au trait (positif =
+/// bon pour lui) -- pour la perte moyenne en centipions (ACPL), distincte
+/// du Win% utilise pour la precision/classification.
+fn mover_cp(eval: &engine::PositionEval, mover_white: bool) -> f64 {
+    let white_cp = score_to_cp_equivalent(eval.score_cp, eval.score_mate);
+    if mover_white { white_cp } else { -white_cp }
+}
+
+/// Precision d'un coup a partir de la perte de Win% qu'il occasionne (formule lichess).
+fn move_accuracy(win_percent_drop: f64) -> f64 {
+    (103.1668 * (-0.04354 * win_percent_drop).exp() - 3.1669).clamp(0.0, 100.0)
+}
+
+/// Classe un coup en gaffe/erreur/imprecision selon la perte de Win% (seuils
+/// lichess : >=30/20/10) -- ramene au code NAG le plus proche deja propose
+/// par l'appli (voir nag.ts, MOVE_NAG_CHOICES) : ?? gaffe, ? erreur, ?!
+/// imprecision (pas de code NAG standard dedie a l'imprecision, ?! est
+/// celui qui s'en rapproche le plus parmi ceux deja geres par l'appli).
+fn classify_drop(win_percent_drop: f64) -> Option<u8> {
+    if win_percent_drop >= 30.0 {
+        Some(4)
+    } else if win_percent_drop >= 20.0 {
+        Some(2)
+    } else if win_percent_drop >= 10.0 {
+        Some(6)
+    } else {
+        None
+    }
+}
+
+fn format_eval(eval: &engine::PositionEval) -> String {
+    if let Some(mate) = eval.score_mate {
+        format!("#{mate}")
+    } else {
+        format!("{:.2}", eval.score_cp.unwrap_or(0) as f64 / 100.0)
+    }
+}
+
+/// Retire une eventuelle annotation "[%eval ...]" deja presente (rapport
+/// relance sur la meme partie) avant d'ajouter la nouvelle -- sinon elles
+/// s'empilent a chaque relance.
+fn strip_eval_tag(comment: &str) -> String {
+    let mut out = comment.to_string();
+    if let Some(start) = out.find("[%eval") {
+        if let Some(end_rel) = out[start..].find(']') {
+            let end = start + end_rel + 1;
+            out.replace_range(start..end, "");
+        }
+    }
+    out.trim().to_string()
+}
+
+fn mean(values: &[f64]) -> f64 {
+    if values.is_empty() {
+        100.0
+    } else {
+        values.iter().sum::<f64>() / values.len() as f64
+    }
+}
+
+/// Applique les evaluations calculees a l'arbre : classification (NAG) et
+/// annotation "[%eval ...]" (convention PGN standard, voir parseClock cote
+/// frontend pour le precedent avec "[%clk ...]") sur chaque coup de la
+/// ligne principale -- se retrouve donc automatiquement dans la base au
+/// prochain enregistrement de la partie (pgn::write_game serialise les
+/// commentaires), sans mecanisme de sauvegarde dedie.
+#[derive(Default)]
+struct SideAccumulator {
+    accuracies: Vec<f64>,
+    cp_losses: Vec<f64>,
+    blunders: u32,
+    mistakes: u32,
+    inaccuracies: u32,
+}
+
+impl SideAccumulator {
+    fn into_stats(self) -> GameReportSideStats {
+        GameReportSideStats {
+            accuracy: mean(&self.accuracies),
+            blunders: self.blunders,
+            mistakes: self.mistakes,
+            inaccuracies: self.inaccuracies,
+            avg_centipawn_loss: if self.cp_losses.is_empty() {
+                0.0
+            } else {
+                self.cp_losses.iter().sum::<f64>() / self.cp_losses.len() as f64
+            },
+        }
+    }
+}
+
+fn apply_game_report(
+    tree: &mut GameTree,
+    mainline_ids: &[u32],
+    fens: &[String],
+    evals: &[engine::PositionEval],
+) -> GameReportSummary {
+    let mut white_acc = SideAccumulator::default();
+    let mut black_acc = SideAccumulator::default();
+    let mut moves = Vec::with_capacity(mainline_ids.len());
+    moves.push(GameReportMoveEval {
+        node_id: mainline_ids[0],
+        ply: 0,
+        san: None,
+        white_win_percent: win_percent(evals[0].score_cp, evals[0].score_mate),
+        score_cp: evals[0].score_cp,
+        score_mate: evals[0].score_mate,
+        classification: None,
+    });
+
+    for i in 1..mainline_ids.len() {
+        let node_id = mainline_ids[i];
+        let mover_white = fen_white_to_move(&fens[i - 1]);
+        let win_before = mover_win_percent(&evals[i - 1], mover_white);
+        let win_after = mover_win_percent(&evals[i], mover_white);
+        let drop = win_before - win_after;
+        let accuracy = move_accuracy(drop);
+        let cp_loss = (mover_cp(&evals[i - 1], mover_white) - mover_cp(&evals[i], mover_white)).max(0.0);
+        let acc = if mover_white { &mut white_acc } else { &mut black_acc };
+        acc.accuracies.push(accuracy);
+        acc.cp_losses.push(cp_loss);
+
+        let classification = classify_drop(drop);
+        let mut nags = Vec::new();
+        if let Some(code) = classification {
+            match code {
+                4 => acc.blunders += 1,
+                2 => acc.mistakes += 1,
+                6 => acc.inaccuracies += 1,
+                _ => {}
+            }
+            nags.push(code);
+        }
+        let _ = tree.set_nags(node_id, nags);
+
+        let existing_after = tree.node(node_id).and_then(|n| n.comment_after.clone()).unwrap_or_default();
+        let stripped = strip_eval_tag(&existing_after);
+        let eval_tag = format!("[%eval {}]", format_eval(&evals[i]));
+        let comment = if stripped.is_empty() { eval_tag } else { format!("{stripped} {eval_tag}") };
+        let before = tree.node(node_id).and_then(|n| n.comment_before.clone());
+        let _ = tree.set_comment(node_id, before, Some(comment));
+
+        moves.push(GameReportMoveEval {
+            node_id,
+            ply: i as u32,
+            san: tree.node(node_id).and_then(|n| n.san.clone()),
+            white_win_percent: win_percent(evals[i].score_cp, evals[i].score_mate),
+            score_cp: evals[i].score_cp,
+            score_mate: evals[i].score_mate,
+            classification,
+        });
+    }
+
+    GameReportSummary {
+        white: white_acc.into_stats(),
+        black: black_acc.into_stats(),
+        moves,
+    }
+}
+
+/// Bouton "Rapport de partie" du panneau Notation : analyse chaque position
+/// de la ligne principale avec un process moteur dedie (voir
+/// engine::analyze_positions), puis annote l'arbre (NAG + "[%eval ...]").
+/// En tache de fond (meme raison que rebuild_explorer_stats : ne pas geler
+/// la boucle de messages Win32 le temps de l'analyse).
+#[tauri::command]
+fn start_game_report(
+    app: AppHandle,
+    state: State<AppState>,
+    tab_id: u32,
+    engine_path: String,
+    depth: u32,
+    threads: u32,
+) -> Result<(), String> {
+    begin_game_report(&state)?;
+
+    let extraction = {
+        let sessions = state.sessions.lock().unwrap();
+        sessions.get(&tab_id).map(|session| {
+            let ids = session.tree.mainline_node_ids();
+            let fens: Vec<String> = ids.iter().map(|&id| session.tree.node_fen(id).unwrap_or_default()).collect();
+            (ids, fens)
+        })
+    };
+    let Some((mainline_ids, fens)) = extraction else {
+        *state.game_report_running.lock().unwrap() = false;
+        return Err("onglet introuvable".to_string());
+    };
+    if mainline_ids.len() < 2 {
+        *state.game_report_running.lock().unwrap() = false;
+        return Err("aucun coup à analyser".to_string());
+    }
+
+    std::thread::spawn(move || {
+        let progress_event = format!("game-report-progress-{tab_id}");
+        let done_event = format!("game-report-done-{tab_id}");
+        let error_event = format!("game-report-error-{tab_id}");
+        let total = fens.len();
+        let progress_app = app.clone();
+
+        let outcome = engine::analyze_positions(&engine_path, &fens, depth, threads, |done| {
+            let _ = progress_app.emit(&progress_event, GameReportProgress { done, total });
+        });
+
+        let app_state = app.state::<AppState>();
+        let summary = outcome.and_then(|evals| {
+            let mut sessions = app_state.sessions.lock().unwrap();
+            let session = sessions.get_mut(&tab_id).ok_or_else(|| "onglet introuvable".to_string())?;
+            Ok(apply_game_report(&mut session.tree, &mainline_ids, &fens, &evals))
+        });
+
+        let _ = match &summary {
+            Ok(s) => app.emit(&done_event, s),
+            Err(e) => app.emit(&error_event, e),
+        };
+        *app_state.game_report_running.lock().unwrap() = false;
+    });
+
+    Ok(())
 }
 
 // L'explorateur (stats, liste de parties, aperçu) s'appuie toujours sur la
@@ -1484,6 +1826,7 @@ pub fn run() {
                 fide_refresh_running: Mutex::new(false),
                 check_suffixes_cleanup_running: Mutex::new(false),
                 tool_job_running: Mutex::new(false),
+                game_report_running: Mutex::new(false),
                 reference_conn: Mutex::new(None),
                 explorer_cache: Mutex::new(HashMap::new()),
                 language: Mutex::new(initial_lang.clone()),
@@ -1556,6 +1899,8 @@ pub fn run() {
             play_move,
             set_comment,
             set_nags,
+            promote_variation,
+            delete_variation,
             set_shapes,
             set_tags,
             list_pgn_games,
@@ -1570,6 +1915,7 @@ pub fn run() {
             start_engine,
             stop_engine,
             analyze_position,
+            start_game_report,
             pause_engine,
             classify_opening,
             opening_explorer,
