@@ -176,6 +176,7 @@ export function NotationPanelView() {
     gameReportError,
     gameReportSummary,
     handleStartGameReport,
+    boardTheme,
   } = useAppContext();
   if (!tree) return null;
   return (
@@ -210,6 +211,7 @@ export function NotationPanelView() {
         gameReportProgress={gameReportProgress}
         gameReportError={gameReportError}
         gameReportSummary={gameReportSummary}
+        boardTheme={boardTheme}
       />
     </div>
   );

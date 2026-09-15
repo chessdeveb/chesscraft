@@ -46,9 +46,12 @@ pub fn write_game(tree: &GameTree) -> String {
     let root_white = tree.node(0).map(|root| root.position.turn().is_white()).unwrap_or(true);
     let root_fullmove = tree.node(0).map(|root| root.position.fullmoves().get()).unwrap_or(1);
 
-    if let Some(first) = tree.node(0).and_then(|root| root.children.first().copied()) {
-        write_line(tree, first, true, root_white, root_fullmove, &mut out);
-    }
+    // Demarre a la racine elle-meme (pas root.children[0]) : la racine n'a
+    // pas de coup propre (write_line l'ignore, voir has_move plus bas) mais
+    // peut avoir plusieurs enfants (coups 1 alternatifs) -- s'arreter a
+    // children[0] les aurait tous perdus a l'export/sauvegarde, meme
+    // correctif que Notation.tsx::renderLine cote frontend.
+    write_line(tree, 0, true, root_white, root_fullmove, &mut out);
 
     out.push_str(tree.tags.get("Result").map(|s| s.as_str()).unwrap_or("*"));
     out.push('\n');
@@ -90,11 +93,20 @@ fn move_number_at(depth: u32, root_white: bool, root_fullmove: u32) -> (bool, u3
 fn write_line(tree: &GameTree, start_id: u32, force_number: bool, root_white: bool, root_fullmove: u32, out: &mut String) {
     let mut current_id = Some(start_id);
     let mut need_number = force_number;
+    // Variantes rattachees au noeud qu'on s'apprete a ecrire (ses propres
+    // freres et soeurs cote parent, donc des alternatives a CE noeud) --
+    // reportees d'une iteration : la norme PGN (§8.2.5) place une RAV juste
+    // apres le coup auquel elle sert d'alternative, jamais avant. Meme
+    // correctif que Notation.tsx::renderLine cote frontend.
+    let mut pending_variations: Vec<u32> = Vec::new();
 
     while let Some(id) = current_id {
         let node = tree.node(id).expect("noeud connu");
-        let depth = depth_of(tree, id);
-        let (is_white, move_number) = move_number_at(depth, root_white, root_fullmove);
+        // false uniquement pour la racine (position de depart, avant le
+        // premier coup) : pas de numero/SAN a ecrire pour elle, seulement
+        // un eventuel commentaire d'introduction et ses variantes (coups 1
+        // alternatifs), qui suivent le meme traitement que tout le reste.
+        let has_move = node.san.is_some();
 
         if let Some(before) = node.comment_before.as_deref().filter(|s| !s.is_empty()) {
             out.push_str("{ ");
@@ -102,17 +114,21 @@ fn write_line(tree: &GameTree, start_id: u32, force_number: bool, root_white: bo
             out.push_str(" } ");
         }
 
-        if is_white {
-            out.push_str(&format!("{move_number}. "));
-        } else if need_number {
-            out.push_str(&format!("{move_number}... "));
-        }
+        if has_move {
+            let depth = depth_of(tree, id);
+            let (is_white, move_number) = move_number_at(depth, root_white, root_fullmove);
+            if is_white {
+                out.push_str(&format!("{move_number}. "));
+            } else if need_number {
+                out.push_str(&format!("{move_number}... "));
+            }
 
-        out.push_str(node.san.as_deref().unwrap_or("?"));
-        for nag in &node.nags {
-            out.push_str(&format!(" ${nag}"));
+            out.push_str(node.san.as_deref().unwrap_or("?"));
+            for nag in &node.nags {
+                out.push_str(&format!(" ${nag}"));
+            }
+            out.push(' ');
         }
-        out.push(' ');
 
         if let Some(after) = node.comment_after.as_deref().filter(|s| !s.is_empty()) {
             out.push_str("{ ");
@@ -120,14 +136,21 @@ fn write_line(tree: &GameTree, start_id: u32, force_number: bool, root_white: bo
             out.push_str(" } ");
         }
 
-        let main_child = node.children.first().copied();
-        for &variation_id in node.children.iter().skip(1) {
+        let printed_variation = !pending_variations.is_empty();
+        for &variation_id in &pending_variations {
             out.push_str("( ");
             write_line(tree, variation_id, true, root_white, root_fullmove, out);
             out.push_str(") ");
         }
 
-        need_number = node.children.len() > 1;
+        let main_child = node.children.first().copied();
+        pending_variations = node.children.iter().skip(1).copied().collect();
+        // Le prochain coup a besoin du "N... " s'il suit une variante qu'on
+        // vient d'ecrire (convention PGN), ou si ce noeud-ci n'avait de
+        // toute facon aucun coup a ecrire (la racine) : dans ce dernier cas
+        // rien n'a consomme le besoin recu en entree, donc on le propage
+        // tel quel au premier vrai coup de la ligne.
+        need_number = printed_variation || (!has_move && need_number);
         current_id = main_child;
     }
 }
@@ -481,6 +504,26 @@ mod tests {
         let tree = parse_game_at(pgn, 0).unwrap();
         let exported = write_game(&tree);
         assert!(exported.contains("2... Nc6 3. Bb5"), "numerotation inattendue :\n{exported}");
+    }
+
+    // Reproduit le bug signale : promouvoir/creer une variante au tout
+    // premier coup la faisait disparaitre completement de l'export/
+    // sauvegarde (write_game ne parcourait que root.children[0]) ; verifie
+    // au passage l'ordre (la variante suit le coup dont elle est
+    // l'alternative, jamais l'inverse -- norme PGN §8.2.5).
+    #[test]
+    fn write_game_exports_root_level_variations_after_the_move_they_replace() {
+        let mut tree = GameTree::new();
+        let e4 = tree.play_move(0, "e2", "e4", None).unwrap();
+        tree.play_move(e4, "e7", "e5", None).unwrap();
+        let d4 = tree.play_move(0, "d2", "d4", None).unwrap();
+        tree.play_move(d4, "d7", "d5", None).unwrap();
+
+        let exported = write_game(&tree);
+        assert!(
+            exported.contains("1. e4 ( 1. d4 d5 ) 1... e5"),
+            "variante du premier coup absente ou mal placee :\n{exported}"
+        );
     }
 
     #[test]

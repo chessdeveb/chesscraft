@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { createPortal } from "react-dom";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useTranslation } from "react-i18next";
 import type { Color, Dests, Key } from "@lichess-org/chessground/types";
@@ -134,9 +135,20 @@ export function EnginePanel({
     if (path) onEnginePathChange(path);
   }
 
+  // Taille fixe du petit echiquier (voir .engine-hover-preview dans
+  // App.css) : sert a le garder entierement a l'ecran (voir clamp ci-dessous).
+  const PREVIEW_SIZE = 200;
+  const EDGE_MARGIN = 8;
+
   function handleMoveHover(move: PvMove, e: React.MouseEvent) {
     const rect = e.currentTarget.getBoundingClientRect();
-    setHover({ fen: move.fen, from: move.from, to: move.to, x: rect.left, y: rect.bottom });
+    let x = rect.left;
+    let y = rect.bottom;
+    if (x + PREVIEW_SIZE + EDGE_MARGIN > window.innerWidth) x = window.innerWidth - PREVIEW_SIZE - EDGE_MARGIN;
+    if (y + PREVIEW_SIZE + EDGE_MARGIN > window.innerHeight) y = rect.top - PREVIEW_SIZE;
+    x = Math.max(EDGE_MARGIN, x);
+    y = Math.max(EDGE_MARGIN, y);
+    setHover({ fen: move.fen, from: move.from, to: move.to, x, y });
   }
 
   return (
@@ -243,20 +255,28 @@ export function EnginePanel({
         </div>
       )}
 
-      {hover && (
-        <div className="engine-hover-preview" style={{ left: hover.x, top: hover.y }}>
-          <Board
-            fen={hover.fen}
-            turnColor={(hover.fen.split(" ")[1] === "b" ? "black" : "white") as Color}
-            dests={NO_DESTS}
-            shapes={[]}
-            theme={boardTheme}
-            lastMove={hover.from && hover.to ? [hover.from as Key, hover.to as Key] : null}
-            onMove={() => {}}
-            onShapesChange={() => {}}
-          />
-        </div>
-      )}
+      {hover &&
+        createPortal(
+          // Portail direct dans <body> : dockview place transform/contain sur
+          // ses conteneurs de panneaux (optimisation de rendu), ce qui cree
+          // un nouveau bloc englobant pour tout descendant en position:fixed
+          // -- sans portail, l'apercu restait piege dans les limites du
+          // panneau Moteur au lieu du viewport entier, invisible des qu'il
+          // aurait du deborder par-dessus un autre panneau.
+          <div className="engine-hover-preview" style={{ left: hover.x, top: hover.y }}>
+            <Board
+              fen={hover.fen}
+              turnColor={(hover.fen.split(" ")[1] === "b" ? "black" : "white") as Color}
+              dests={NO_DESTS}
+              shapes={[]}
+              theme={boardTheme}
+              lastMove={hover.from && hover.to ? [hover.from as Key, hover.to as Key] : null}
+              onMove={() => {}}
+              onShapesChange={() => {}}
+            />
+          </div>,
+          document.body
+        )}
     </div>
   );
 }

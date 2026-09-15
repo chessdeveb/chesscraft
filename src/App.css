@@ -1351,9 +1351,22 @@ textarea {
   opacity: 0.6;
 }
 
+.nag-prefix {
+  color: var(--accent);
+}
+
 .notation-result {
   font-weight: 600;
   margin-left: 4px;
+}
+
+.notation-diagram {
+  display: block;
+  width: 220px;
+  height: 220px;
+  max-width: 100%;
+  margin: 8px 0;
+  line-height: normal;
 }
 
 .move {
@@ -1566,7 +1579,7 @@ textarea {
    dessous, pas de flicker d'entree/sortie sur l'apercu lui-meme. */
 .engine-hover-preview {
   position: fixed;
-  z-index: 20;
+  z-index: 1100;
   width: 200px;
   height: 200px;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
@@ -1610,6 +1623,81 @@ textarea {
   align-self: stretch;
   background-color: var(--line);
   margin: 0 4px;
+}
+
+.nag-cluster-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.nag-cluster-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.nag-cluster-dot--white {
+  background: #f6f5f2;
+  border: 1px solid #b9b8b4;
+}
+
+.nag-cluster-dot--black {
+  background: #3a3a3a;
+  border: 1px solid #3a3a3a;
+}
+
+.nag-cluster-flyout {
+  position: fixed;
+  z-index: 1100;
+  min-width: 190px;
+  max-height: 260px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+  padding: 4px 0;
+}
+
+.nag-cluster-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 3px 10px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.85em;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.nag-cluster-item:hover {
+  background-color: var(--accent-weak);
+}
+
+.nag-cluster-item--active {
+  background-color: var(--accent-strong);
+  font-weight: 600;
+}
+
+.nag-cluster-item-symbol {
+  flex-shrink: 0;
+  min-width: 22px;
+  text-align: center;
+  color: var(--ink-2);
+}
+
+.nag-cluster-item-label {
+  flex: 1;
+  white-space: normal;
 }
 
 .annotate-icon {

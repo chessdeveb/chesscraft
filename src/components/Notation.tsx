@@ -1,9 +1,17 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { EVAL_NAG_CHOICES, EVAL_NAG_CODES, MOVE_NAG_CHOICES, MOVE_NAG_CODES, nagSymbol } from "../nag";
+import type { Dests } from "@lichess-org/chessground/types";
+import { NAG_CLUSTERS, PREFIX_NAG_CODES, nagSymbol } from "../nag";
 import type { GameReportProgress, GameReportSummary, NodeDto, TreeDto } from "../types";
+import { Board } from "./Board";
 import { GameReportChart } from "./GameReportChart";
 import { GameReportDialog } from "./GameReportDialog";
+import { NagClusterButton } from "./NagClusterButton";
+
+const NO_DESTS: Dests = new Map();
+// NAG $220/221 (bouton editorial "diagramme") : orientation choisie pour le
+// petit echiquier persistant insere dans la notation, voir renderLine.
+const DIAGRAM_ORIENTATION: Record<number, "white" | "black"> = { 220: "white", 221: "black" };
 
 interface NotationProps {
   tree: TreeDto;
@@ -27,6 +35,12 @@ interface NotationProps {
   gameReportProgress?: GameReportProgress | null;
   gameReportError?: string | null;
   gameReportSummary?: GameReportSummary | null;
+  /** Theme de l'echiquier, pour les diagrammes persistants (NAG $220/221)
+      inseres dans la notation -- absent en lecture seule (pas de barre
+      d'annotation, donc pas moyen d'en ajouter, mais un diagramme deja
+      present dans une partie importee doit quand meme s'afficher : voir
+      son usage plus bas, avec un theme par defaut si absent). */
+  boardTheme?: string;
 }
 
 const CLOCK_RE = /\[%clk\s+([\d:.]+)\]/;
@@ -90,6 +104,7 @@ export function Notation({
   gameReportProgress,
   gameReportError,
   gameReportSummary,
+  boardTheme,
 }: NotationProps) {
   const { t } = useTranslation();
   const byId = new Map(tree.nodes.map((n) => [n.id, n]));
@@ -126,24 +141,38 @@ export function Notation({
     const isWhite = depth % 2 === 1;
     const moveNumber = Math.ceil(depth / 2);
     const label = isWhite ? `${moveNumber}.` : showEllipsis ? `${moveNumber}...` : "";
-    const nagText = node.nags.map(nagSymbol).join("");
+    // Les NAG "editoriaux" (avec l'idee de..., mieux vaut..., diagramme...)
+    // introduisent ce qui suit plutot que de qualifier le coup lui-meme --
+    // affiches avant le coup, pas apres comme les autres (qualite, eval...).
+    const prefixNagText = node.nags.filter((n) => PREFIX_NAG_CODES.has(n)).map(nagSymbol).join("");
+    const suffixNagText = node.nags.filter((n) => !PREFIX_NAG_CODES.has(n)).map(nagSymbol).join("");
     const isCurrent = node.id === currentNodeId;
     const before = parseClock(node.commentBefore);
     const after = parseClock(node.commentAfter);
+    // node.san est null uniquement pour la racine (position de depart,
+    // avant le premier coup) -- renderLine() l'appelle desormais comme tout
+    // autre noeud pour que ses variantes (coups 1 alternatifs) soient
+    // visibles, voir plus bas ; elle n'a elle-meme aucun coup a afficher,
+    // seulement un eventuel commentaire d'introduction.
+    const hasMove = node.san !== null;
 
     return (
       <span key={node.id}>
-        {label && <span className="move-number">{label} </span>}
+        {hasMove && label && <span className="move-number">{label} </span>}
         {before.rest && <span className="comment">{before.rest} </span>}
         {before.clock && <span className="move-clock">🕐{before.clock} </span>}
-        <span
-          ref={isCurrent ? currentMoveRef : undefined}
-          className={"move" + (isCurrent ? " move--current" : "")}
-          onClick={() => selectAndReset(node.id)}
-        >
-          {node.san}
-          {nagText}
-        </span>{" "}
+        {hasMove && prefixNagText && <span className="nag-prefix">{prefixNagText} </span>}
+        {hasMove && (
+          <span
+            ref={isCurrent ? currentMoveRef : undefined}
+            className={"move" + (isCurrent ? " move--current" : "")}
+            onClick={() => selectAndReset(node.id)}
+          >
+            {node.san}
+            {suffixNagText}
+          </span>
+        )}
+        {hasMove && " "}
         {after.clock && <span className="move-clock">🕐{after.clock} </span>}
         {after.rest && <span className="comment">{after.rest} </span>}
       </span>
@@ -154,12 +183,40 @@ export function Notation({
     const out: ReactNode[] = [];
     let node = byId.get(startId);
     let showEllipsis = forceNumberOnFirst;
+    // Variantes rattachees au noeud qu'on s'apprete a afficher (ses propres
+    // freres et soeurs cote parent, donc des alternatives a CE noeud) --
+    // reportees d'une iteration : la norme PGN place une RAV juste apres le
+    // coup auquel elle sert d'alternative, jamais avant (§8.2.5 du
+    // standard). Avant ce report, une variante du premier coup se
+    // retrouvait affichee AVANT ce premier coup au lieu d'apres.
+    let pendingVariations: number[] = [];
 
     while (node) {
       out.push(renderMove(node, showEllipsis));
 
-      const [mainChildId, ...variationIds] = node.children;
-      for (const varId of variationIds) {
+      // Diagramme persistant (NAG $220/221, bouton editorial) : petit
+      // echiquier fige a la position de ce coup, en bloc a part (casse le
+      // flux de texte, comme dans un livre d'echecs imprime) -- pas besoin
+      // de rien stocker de plus, la position est deja connue via node.fen.
+      const diagramNag = node.nags.find((n) => n in DIAGRAM_ORIENTATION);
+      if (node.san !== null && diagramNag !== undefined) {
+        out.push(
+          <div className="notation-diagram" key={`diagram-${node.id}`}>
+            <Board
+              fen={node.fen}
+              turnColor={node.turn}
+              orientation={DIAGRAM_ORIENTATION[diagramNag]}
+              dests={NO_DESTS}
+              shapes={[]}
+              theme={boardTheme ?? "brown"}
+              onMove={() => {}}
+              onShapesChange={() => {}}
+            />
+          </div>
+        );
+      }
+
+      for (const varId of pendingVariations) {
         out.push(
           <span key={`var-${varId}`} className="variation">
             ({renderLine(varId, true)})
@@ -168,18 +225,17 @@ export function Notation({
         out.push(" ");
       }
 
+      const [mainChildId, ...variationIds] = node.children;
       if (mainChildId === undefined) break;
       node = byId.get(mainChildId);
       showEllipsis = variationIds.length > 0;
+      pendingVariations = variationIds;
     }
     return out;
   }
 
   const rootNode = byId.get(tree.root);
-  const firstMoveId = rootNode?.children[0];
   const currentNode = byId.get(currentNodeId);
-  const activeMoveNag = currentNode?.nags.find((n) => MOVE_NAG_CODES.has(n));
-  const activeEvalNag = currentNode?.nags.find((n) => EVAL_NAG_CODES.has(n));
 
   // Un coup est "sur la ligne principale" si, a chaque embranchement
   // remonte jusqu'a la racine, il est le premier enfant de son parent --
@@ -238,8 +294,8 @@ export function Notation({
         </div>
       )}
       <div className="notation">
-        {firstMoveId !== undefined ? (
-          renderLine(firstMoveId, true)
+        {rootNode && rootNode.children.length > 0 ? (
+          renderLine(tree.root, true)
         ) : (
           <p className="notation-empty">{t("notation.empty")}</p>
         )}
@@ -267,26 +323,14 @@ export function Notation({
               🗑️
             </button>
             <span className="annotate-toolbar-sep" />
-            {MOVE_NAG_CHOICES.map((n) => (
-              <button
-                key={n.code}
-                title={t(n.labelKey)}
-                className={"nag-button" + (activeMoveNag === n.code ? " nag-button--active" : "")}
-                onClick={() => onToggleNag?.(n.code)}
-              >
-                {n.symbol}
-              </button>
-            ))}
-            <span className="annotate-toolbar-sep" />
-            {EVAL_NAG_CHOICES.map((n) => (
-              <button
-                key={n.code}
-                title={t(n.labelKey)}
-                className={"nag-button" + (activeEvalNag === n.code ? " nag-button--active" : "")}
-                onClick={() => onToggleNag?.(n.code)}
-              >
-                {n.symbol}
-              </button>
+            {NAG_CLUSTERS.map((cluster) => (
+              <NagClusterButton
+                key={cluster.id}
+                cluster={cluster}
+                activeCodes={new Set(currentNode.nags)}
+                onToggle={(code) => onToggleNag?.(code)}
+                moverWhite={currentNode.turn === "black"}
+              />
             ))}
             <span className="annotate-toolbar-sep" />
             <button

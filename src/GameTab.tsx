@@ -8,7 +8,7 @@ import { useTranslation } from "react-i18next";
 import { AppContext, type AppContextValue } from "./AppContext";
 import { dockviewComponents } from "./DockPanels";
 import { persistDockviewLayout, syncPanelCheckedStates, tryRestoreDockviewLayout, useDockviewTheme } from "./dockviewPersistence";
-import { EVAL_NAG_CODES, MOVE_NAG_CODES } from "./nag";
+import { nagExclusivityGroup } from "./nag";
 import { SaveBasePicker } from "./components/SaveBasePicker";
 import { useAutoDismissError } from "./useAutoDismissError";
 import { useLatestFetch } from "./useLatestFetch";
@@ -276,7 +276,12 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
       const node = tree?.nodes.find((n) => n.id === currentNodeId);
       const currentNags = node?.nags ?? [];
       const isActive = currentNags.includes(code);
-      const group = MOVE_NAG_CODES.has(code) ? MOVE_NAG_CODES : EVAL_NAG_CODES;
+      // Un seul NAG actif a la fois par sous-groupe d'exclusivite (voir
+      // nag.ts::nagExclusivityGroup) -- ex. activer "espace decisif Blancs"
+      // desactive "espace leger Blancs" (meme echelle), mais pas "roi bien
+      // place Blancs" (echelle independante, meme si les deux sont
+      // regroupes sous le meme bouton dans la barre d'annotation).
+      const group = nagExclusivityGroup(code);
       const withoutGroup = currentNags.filter((n) => !group.has(n));
       const nextNags = isActive ? withoutGroup : [...withoutGroup, code];
       try {
