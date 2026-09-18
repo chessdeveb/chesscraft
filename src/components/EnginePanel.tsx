@@ -25,6 +25,10 @@ interface EnginePanelProps {
       la ligne principale (trait et numero de coup de depart). */
   analyzedFen: string | null;
   boardTheme: string;
+  /** Orientation de l'echiquier principal (voir AppContext::boardFlipped) --
+      l'apercu au survol d'une ligne doit s'afficher dans le meme sens, pas
+      systematiquement Blancs en bas. */
+  orientation: Color;
   onStart: () => void;
   onStop: () => void;
   onPause: () => void;
@@ -117,6 +121,7 @@ export function EnginePanel({
   error,
   analyzedFen,
   boardTheme,
+  orientation,
   onStart,
   onStop,
   onPause,
@@ -271,6 +276,7 @@ export function EnginePanel({
               shapes={[]}
               theme={boardTheme}
               lastMove={hover.from && hover.to ? [hover.from as Key, hover.to as Key] : null}
+              orientation={orientation}
               onMove={() => {}}
               onShapesChange={() => {}}
             />

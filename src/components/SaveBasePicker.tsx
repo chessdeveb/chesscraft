@@ -6,7 +6,10 @@ import { useTranslation } from "react-i18next";
 import { BasesTable } from "./BasesTable";
 import { FideNameInput } from "./FideNameInput";
 import { useAutoDismissError } from "../useAutoDismissError";
+import { classifyTimeControl, type TimeControlCategory } from "../timeControl";
 import type { BaseInfo } from "../types";
+
+const TIME_CONTROL_CATEGORIES: TimeControlCategory[] = ["blitz", "rapid", "classical"];
 
 interface SaveBasePickerProps {
   tabId: number;
@@ -67,6 +70,16 @@ export function SaveBasePicker({ tabId, activeBasePath, tags, onConfirm, onCance
   const [event, setEvent] = useState(stripUnknownPlaceholder(tags.Event));
   const [site, setSite] = useState(stripUnknownPlaceholder(tags.Site));
   const [round, setRound] = useState(stripUnknownPlaceholder(tags.Round));
+  const [timeControl, setTimeControl] = useState(stripUnknownPlaceholder(tags.TimeControl));
+  // Coche automatiquement la bonne categorie a chaque frappe (voir
+  // classifyTimeControl), mais reste un choix independant ensuite : cliquer
+  // sur un bouton la change sans toucher au texte tape, pour corriger un cas
+  // que la formule estimerait mal sans avoir a inventer une autre cadence.
+  const [category, setCategory] = useState<TimeControlCategory | null>(() => classifyTimeControl(timeControl));
+  function handleTimeControlChange(value: string) {
+    setTimeControl(value);
+    setCategory(classifyTimeControl(value));
+  }
 
   useEffect(() => {
     invoke<BaseInfo[]>("list_bases")
@@ -103,6 +116,7 @@ export function SaveBasePicker({ tabId, activeBasePath, tags, onConfirm, onCance
           Event: event,
           Site: site,
           Round: round,
+          TimeControl: timeControl,
         },
       });
       onConfirm(selectedPath);
@@ -203,6 +217,31 @@ export function SaveBasePicker({ tabId, activeBasePath, tags, onConfirm, onCance
             {t("savePicker.round")}
             <input value={round} onChange={(e) => setRound(e.target.value)} />
           </label>
+          <label>
+            <span className="savepicker-label-with-help">
+              {t("savePicker.timeControl")}
+              <span className="help-bubble" title={t("savePicker.timeControlHelp")}>
+                ⓘ
+              </span>
+            </span>
+            <input
+              value={timeControl}
+              onChange={(e) => handleTimeControlChange(e.target.value)}
+              placeholder={t("savePicker.timeControlPlaceholder")}
+            />
+          </label>
+        </div>
+        <div className="savepicker-category-row">
+          {TIME_CONTROL_CATEGORIES.map((cat) => (
+            <button
+              key={cat}
+              type="button"
+              className={"savepicker-category-btn" + (category === cat ? " savepicker-category-btn--active" : "")}
+              onClick={() => setCategory(cat)}
+            >
+              {t(`savePicker.category.${cat}`)}
+            </button>
+          ))}
         </div>
         <div className="modal-table-wrap">
           <BasesTable bases={bases} loading={basesLoading} selectedPath={selectedPath} onSelect={(b) => setSelectedPath(b.path)} />

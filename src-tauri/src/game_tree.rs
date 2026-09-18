@@ -114,6 +114,54 @@ fn position_fen(position: &Chess) -> String {
     Fen::from_position(position, EnPassantMode::Legal).to_string()
 }
 
+/// FEN de depart pour la position Chess960 (Fischer Random) numero `n`
+/// (0..=959), selon le schema de numerotation standard (Scharnagl) --
+/// utilise aussi par lichess/chess.com/FIDE, donc un numero donne toujours
+/// la meme position d'un logiciel a l'autre. Droits de roque exprimes en
+/// notation X-FEN classique ("KQkq") : le parseur FEN de shakmaty resout
+/// deja K/Q vers la tour la plus exterieure de chaque cote, quel que soit
+/// son fichier (voir shakmaty::fen), donc pas besoin de la notation
+/// Shredder-FEN (lettres de colonne).
+pub fn chess960_start_fen(n: u16) -> Result<String, String> {
+    if n >= 960 {
+        return Err(format!("numéro de position Chess960 invalide : {n} (attendu 0-959)"));
+    }
+    let mut rest = n;
+    let b_light = (rest % 4) as usize;
+    rest /= 4;
+    let b_dark = (rest % 4) as usize;
+    rest /= 4;
+    let q = (rest % 6) as usize;
+    rest /= 6;
+    const KNIGHT_PAIRS: [(usize, usize); 10] =
+        [(0, 1), (0, 2), (0, 3), (0, 4), (1, 2), (1, 3), (1, 4), (2, 3), (2, 4), (3, 4)];
+    let (k1, k2) = KNIGHT_PAIRS[rest as usize];
+
+    const LIGHT_FILES: [usize; 4] = [1, 3, 5, 7]; // b, d, f, h (cases claires sur la 1ere rangee)
+    const DARK_FILES: [usize; 4] = [0, 2, 4, 6]; // a, c, e, g (cases sombres)
+    let mut squares: [Option<char>; 8] = [None; 8];
+    squares[LIGHT_FILES[b_light]] = Some('b');
+    squares[DARK_FILES[b_dark]] = Some('b');
+
+    let empty: Vec<usize> = (0..8).filter(|&i| squares[i].is_none()).collect();
+    squares[empty[q]] = Some('q');
+
+    let empty: Vec<usize> = (0..8).filter(|&i| squares[i].is_none()).collect();
+    squares[empty[k1]] = Some('n');
+    squares[empty[k2]] = Some('n');
+
+    // 3 cases restantes, triees par colonne croissante : Tour, Roi, Tour --
+    // seul ordre possible puisque le roi doit se trouver entre les deux tours.
+    let empty: Vec<usize> = (0..8).filter(|&i| squares[i].is_none()).collect();
+    squares[empty[0]] = Some('r');
+    squares[empty[1]] = Some('k');
+    squares[empty[2]] = Some('r');
+
+    let black_rank: String = squares.iter().map(|c| c.expect("8 cases toutes remplies")).collect();
+    let white_rank = black_rank.to_uppercase();
+    Ok(format!("{black_rank}/pppppppp/8/8/8/8/PPPPPPPP/{white_rank} w KQkq - 0 1"))
+}
+
 impl GameTree {
     pub fn new() -> Self {
         let root = Node {
@@ -149,8 +197,14 @@ impl GameTree {
     /// coup.
     pub fn from_fen(fen: &str) -> Result<Self, String> {
         let setup: Fen = fen.trim().parse().map_err(|e| format!("FEN invalide : {e}"))?;
+        // detect() plutot que Standard fige : une position Chess960 (roi hors
+        // colonne e, ou tours hors colonnes a/h) a des droits de roque valides
+        // uniquement sous ce mode -- voir chess960_start_fen. Une position
+        // classique detecte toujours Standard, donc ne change rien au
+        // comportement existant.
+        let mode = CastlingMode::detect(setup.as_setup());
         let position: Chess = setup
-            .into_position(CastlingMode::Standard)
+            .into_position(mode)
             .map_err(|e| format!("Position illégale : {e}"))?;
         let root = Node {
             id: 0,
@@ -447,6 +501,39 @@ mod tests {
     #[test]
     fn from_fen_rejects_malformed_syntax() {
         assert!(GameTree::from_fen("pas un fen").is_err());
+    }
+
+    #[test]
+    fn chess960_start_fen_rejects_out_of_range_numbers() {
+        assert!(chess960_start_fen(960).is_err());
+    }
+
+    #[test]
+    fn chess960_start_fen_position_0_is_bbqnnrkr() {
+        // position #0 du schema de numerotation standard (Scharnagl), valeur
+        // de reference connue -- meme position que sur lichess.org/chess.com.
+        let fen = chess960_start_fen(0).unwrap();
+        assert_eq!(fen, "bbqnnrkr/pppppppp/8/8/8/8/PPPPPPPP/BBQNNRKR w KQkq - 0 1");
+    }
+
+    #[test]
+    fn chess960_start_fen_position_518_is_the_standard_start() {
+        // position #518 du meme schema correspond a la partie classique --
+        // verifie que le generateur retombe bien sur l'ordinaire au bon numero.
+        let fen = chess960_start_fen(518).unwrap();
+        assert_eq!(fen, "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+    }
+
+    #[test]
+    fn chess960_start_fen_builds_into_a_legal_tree() {
+        // Roi/tours hors des colonnes e/a/h : ne doit pas etre rejete par
+        // from_fen (detect() doit y reconnaitre Chess960, pas echouer comme
+        // le ferait CastlingMode::Standard fige).
+        let fen = chess960_start_fen(0).unwrap();
+        let tree = GameTree::from_fen(&fen).unwrap();
+        let dto = tree.to_dto();
+        assert_eq!(dto.nodes[0].fen, fen);
+        assert!(tree.legal_moves(0).is_ok());
     }
 
     #[test]

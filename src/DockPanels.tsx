@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import type { IDockviewPanelProps } from "dockview-react";
 import type { Color, Key } from "@lichess-org/chessground/types";
 import { useTranslation } from "react-i18next";
@@ -8,6 +8,7 @@ import { EnginePanel } from "./components/EnginePanel";
 import { ExplorerFiltersBar } from "./components/ExplorerFiltersBar";
 import { ExplorerGamesList } from "./components/ExplorerGamesList";
 import { ExplorerPreview } from "./components/ExplorerPreview";
+import { GameTypeButton } from "./components/GameTypeButton";
 import { Notation } from "./components/Notation";
 import { OpeningExplorer } from "./components/OpeningExplorer";
 import type { TreeDto } from "./types";
@@ -62,7 +63,19 @@ function clocksAtNode(tree: TreeDto, nodeId: number): { white: string | null; bl
 
 export function BoardPanel() {
   const { t } = useTranslation();
-  const { tree, currentNode, currentNodeId, dests, boardTheme, handleMove, handleShapesChange, onStep } = useAppContext();
+  const {
+    tree,
+    currentNode,
+    currentNodeId,
+    dests,
+    boardTheme,
+    boardFlipped,
+    setBoardFlipped,
+    handleMove,
+    handleShapesChange,
+    onStep,
+    handleNewChess960,
+  } = useAppContext();
   const [fenCopied, setFenCopied] = useState(false);
   // largeur reelle (px) de l'echiquier, remontee par Board via onSizeChange :
   // l'echiquier est un carre centre dans .board-panel-board (qui, lui, fait
@@ -70,21 +83,6 @@ export function BoardPanel() {
   // (comme un simple flex justify-content:flex-end) deborde du bord reel de
   // l'echiquier des que le panneau est plus large que haut.
   const [boardSize, setBoardSize] = useState(480);
-  const [flipped, setFlipped] = useState(false);
-  // Une partie/etude demarrant d'une position personnalisee (tag FEN) au
-  // trait des Noirs s'affiche par defaut echiquier retourne (Noirs en bas) --
-  // plus naturel pour evaluer/etudier depuis le point de vue du camp au
-  // trait, convention courante pour ce genre de position. Applique une seule
-  // fois, au tout premier chargement de l'arbre (autoOrientedRef) : ne doit
-  // jamais annuler un retournement manuel fait ensuite pendant qu'on avance
-  // dans la partie (tree change a chaque coup).
-  const autoOrientedRef = useRef(false);
-  useEffect(() => {
-    if (autoOrientedRef.current || !tree) return;
-    autoOrientedRef.current = true;
-    const root = tree.nodes.find((n) => n.parent === null);
-    if (root?.turn === "black") setFlipped(true);
-  }, [tree]);
   if (!currentNode) return null;
   const lastMove: [Key, Key] | null =
     currentNode.from && currentNode.to ? [currentNode.from as Key, currentNode.to as Key] : null;
@@ -104,8 +102,8 @@ export function BoardPanel() {
   const clockRowStyle = { width: boardSize, marginLeft: "auto", marginRight: "auto" };
   // en haut = camp affiche en haut de l'echiquier : Noirs normalement,
   // Blancs une fois l'echiquier retourne.
-  const topClock = flipped ? clocks.white : clocks.black;
-  const bottomClock = flipped ? clocks.black : clocks.white;
+  const topClock = boardFlipped ? clocks.white : clocks.black;
+  const bottomClock = boardFlipped ? clocks.black : clocks.white;
 
   return (
     <div className="board-panel">
@@ -122,7 +120,7 @@ export function BoardPanel() {
           shapes={currentNode.shapes}
           theme={boardTheme}
           lastMove={lastMove}
-          orientation={flipped ? "black" : "white"}
+          orientation={boardFlipped ? "black" : "white"}
           onMove={handleMove}
           onShapesChange={handleShapesChange}
           onSizeChange={setBoardSize}
@@ -134,7 +132,7 @@ export function BoardPanel() {
         </div>
       )}
       <div className="transport">
-        <button onClick={() => setFlipped((v) => !v)} title={t("board.flip")}>
+        <button onClick={() => setBoardFlipped(!boardFlipped)} title={t("board.flip")}>
           🔄
         </button>
         <button onClick={() => onStep("start")} title={t("explorer.previewStart")}>
@@ -152,6 +150,7 @@ export function BoardPanel() {
         <button onClick={handleCopyFen} title={t("board.copyFen")}>
           {fenCopied ? "✓" : "📋"}
         </button>
+        <GameTypeButton onStartChess960={handleNewChess960} />
       </div>
     </div>
   );
@@ -248,6 +247,7 @@ export function ExplorerPanelView() {
     onOpenPreviewGame,
     onClosePreview,
     boardTheme,
+    boardFlipped,
   } = useAppContext();
   return (
     <div className="dock-panel-content explorer-panel">
@@ -285,6 +285,7 @@ export function ExplorerPanelView() {
           onOpen={onOpenPreviewGame}
           onClose={onClosePreview}
           boardTheme={boardTheme}
+          initialFlipped={boardFlipped}
         />
       </div>
     </div>
@@ -313,6 +314,7 @@ export function EnginePanelView(props: IDockviewPanelProps) {
     handleResumeEngine,
     currentNode,
     boardTheme,
+    boardFlipped,
   } = useAppContext();
 
   return (
@@ -334,6 +336,7 @@ export function EnginePanelView(props: IDockviewPanelProps) {
         error={engineError}
         analyzedFen={currentNode?.fen ?? null}
         boardTheme={boardTheme}
+        orientation={boardFlipped ? "black" : "white"}
         onStart={handleStartEngine}
         onStop={handleStopEngine}
         onPause={handlePauseEngine}

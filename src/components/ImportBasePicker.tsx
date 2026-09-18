@@ -7,7 +7,9 @@ import { useAutoDismissError } from "../useAutoDismissError";
 import type { BaseInfo } from "../types";
 
 interface ImportBasePickerProps {
-  pgnPath: string;
+  /** Ce qu'on s'apprete a importer, affiche tel quel (chemin de fichier PGN,
+      ou "Lichess : pseudo" -- voir HomeWindow.tsx). Purement informatif. */
+  sourceLabel: string;
   onConfirm: (basePath: string) => void;
   onCancel: () => void;
 }
@@ -17,7 +19,7 @@ function baseNameFromPath(path: string): string {
   return fileName.replace(/\.sqlite$/i, "");
 }
 
-export function ImportBasePicker({ pgnPath, onConfirm, onCancel }: ImportBasePickerProps) {
+export function ImportBasePicker({ sourceLabel, onConfirm, onCancel }: ImportBasePickerProps) {
   const { t } = useTranslation();
   const [bases, setBases] = useState<BaseInfo[]>([]);
   const [basesLoading, setBasesLoading] = useState(true);
@@ -48,7 +50,7 @@ export function ImportBasePicker({ pgnPath, onConfirm, onCancel }: ImportBasePic
     <div className="modal-overlay" onClick={onCancel}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <h2>{t("importPicker.title")}</h2>
-        <p className="picker-path">{pgnPath}</p>
+        <p className="picker-path">{sourceLabel}</p>
         {error && <p className="error">{error}</p>}
         <div className="modal-table-wrap">
           <BasesTable bases={bases} loading={basesLoading} selectedPath={selectedPath} onSelect={(b) => setSelectedPath(b.path)} />

@@ -135,6 +135,25 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
     setBoardThemeState(value);
     localStorage.setItem("boardTheme", value);
   }, []);
+  // Orientation de l'echiquier principal -- dans AppContext (pas locale au
+  // panneau Echiquier) pour que l'apercu au survol d'une ligne du panneau
+  // Moteur (EnginePanel, autre panneau dockview) s'affiche dans le meme sens
+  // plutot que de revenir systematiquement aux Blancs en bas.
+  const [boardFlipped, setBoardFlipped] = useState(false);
+  // Une partie/etude demarrant d'une position personnalisee (tag FEN) au
+  // trait des Noirs s'affiche par defaut echiquier retourne (Noirs en bas) --
+  // plus naturel pour evaluer/etudier depuis le point de vue du camp au
+  // trait, convention courante pour ce genre de position. Applique une seule
+  // fois, au tout premier chargement de l'arbre (autoOrientedRef) : ne doit
+  // jamais annuler un retournement manuel fait ensuite pendant qu'on avance
+  // dans la partie (tree change a chaque coup).
+  const autoOrientedRef = useRef(false);
+  useEffect(() => {
+    if (autoOrientedRef.current || !tree) return;
+    autoOrientedRef.current = true;
+    const root = tree.nodes.find((n) => n.parent === null);
+    if (root?.turn === "black") setBoardFlipped(true);
+  }, [tree]);
 
   // hydratation initiale de cet onglet (la session existe deja cote backend :
   // creee par l'accueil via new_game/open_game/import_pgn avant l'ouverture de l'onglet)
@@ -146,6 +165,12 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
     // si la partie vient d'une base (open_game), la sauvegarde doit
     // proposer cette meme base par defaut plutot que de repartir a vide
     invoke<string | null>("get_active_base_path", { tabId }).then(setActiveBasePath);
+    // Rapport de partie deja calcule sur une session precedente (NAG +
+    // "[%eval ...]" persistes avec la partie, voir apply_game_report cote
+    // backend) : le reconstruit ici pour qu'il reste affiche a la
+    // reouverture, au lieu de disparaitre tant qu'on ne relance pas
+    // l'analyse. Repart de null si la ligne principale n'a pas ete analysee.
+    invoke<GameReportSummary | null>("get_game_report", { tabId }).then(setGameReportSummary);
   }, [tabId]);
 
   useEffect(() => {
@@ -315,6 +340,35 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
       setError(String(e));
     }
   }, [tabId, currentNodeId, refreshTree]);
+
+  // Bouton "type de jeu" (transport, panneau Echiquier) : remplace la partie
+  // de CET onglet par une nouvelle partie Chess960 -- pas un nouvel onglet,
+  // contrairement a Fichier > Nouvelle position. Demande confirmation des
+  // qu'au moins un coup a ete joue, comme toute action qui jetterait la
+  // partie en cours.
+  const handleNewChess960 = useCallback(
+    async (positionNumber: number) => {
+      if (tree && tree.nodes.length > 1) {
+        const proceed = await ask(t("gameTab.chess960ConfirmReplace"), {
+          title: t("gameTab.chess960ConfirmTitle"),
+          kind: "warning",
+        });
+        if (!proceed) return;
+      }
+      try {
+        await invoke("new_chess960_game", { tabId, positionNumber });
+        await refreshTree();
+        setCurrentNodeId(0);
+        setActiveBasePath(null);
+        setIsDirty(false);
+        setGameReportSummary(null);
+        setError(null);
+      } catch (e) {
+        setError(String(e));
+      }
+    },
+    [tabId, tree, refreshTree, t]
+  );
 
   const handleExport = useCallback(async () => {
     if (!tree) return;
@@ -1018,6 +1072,8 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
     dests,
     boardTheme,
     setBoardTheme,
+    boardFlipped,
+    setBoardFlipped,
     handleMove,
     handleShapesChange,
     handleSelect,
@@ -1029,6 +1085,7 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
     handleToggleNag,
     handlePromoteVariation,
     handleDeleteVariation,
+    handleNewChess960,
     explorerStats,
     explorerStatsLoading,
     explorerError,

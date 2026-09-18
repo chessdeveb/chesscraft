@@ -5,6 +5,7 @@ import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { ask, message, open } from "@tauri-apps/plugin-dialog";
 import { useTranslation } from "react-i18next";
 import { HomeDockview } from "./HomeDockview";
+import { AccountImportDialog, type AccountImportParams } from "./components/AccountImportDialog";
 import { ImportBasePicker } from "./components/ImportBasePicker";
 import { ToolBasePicker } from "./components/ToolBasePicker";
 import i18n, { useSyncLanguage } from "./i18n";
@@ -89,6 +90,17 @@ export function HomeWindow() {
   const [error, setError] = useAutoDismissError();
 
   const [bulkImportPgnPath, setBulkImportPgnPath] = useState<string | null>(null);
+  // Site dont le dialogue (AccountImportDialog) est actuellement ouvert --
+  // pseudo/periode/cadences pas encore choisis. null si aucun des deux n'est ouvert.
+  const [accountImportSite, setAccountImportSite] = useState<"lichess" | "chesscom" | null>(null);
+  // Pseudo/periode/cadences deja choisis (AccountImportDialog confirme), en
+  // attente du choix de la base cible (ImportBasePicker, meme etape que pour
+  // un fichier PGN local) -- garde aussi le site pour appeler la bonne
+  // commande backend (import_lichess_games / import_chesscom_games) et
+  // afficher le bon libelle source.
+  const [pendingAccountImport, setPendingAccountImport] = useState<{ site: "lichess" | "chesscom"; params: AccountImportParams } | null>(
+    null
+  );
   // Operation de maintenance choisie via le menu Outils : reste posee pour
   // toute la duree du flux (choix de la base, execution, et pour Dedoublonner
   // le compte intermediaire avant confirmation), remise a null seulement une
@@ -261,6 +273,32 @@ export function HomeWindow() {
       });
     },
     [bulkImportPgnPath]
+  );
+
+  const handleLichessImportClick = useCallback(() => {
+    setAccountImportSite("lichess");
+  }, []);
+
+  const handleChesscomImportClick = useCallback(() => {
+    setAccountImportSite("chesscom");
+  }, []);
+
+  const handleAccountImportConfirm = useCallback(
+    (basePath: string) => {
+      // Meme precaution qu'au-dessus (handleBulkImportConfirm) : l'effet de
+      // bord doit rester hors du callback de setState.
+      if (!pendingAccountImport) return;
+      const { site, params } = pendingAccountImport;
+      const { username, sinceMs, untilMs, perfTypes } = params;
+      setPendingAccountImport(null);
+      setBulkImportProgress({ total: 0, imported: 0, skippedDuplicates: 0, skippedInvalid: 0, failed: 0 });
+      const command = site === "lichess" ? "import_lichess_games" : "import_chesscom_games";
+      invoke(command, { dbPath: basePath, username, sinceMs, untilMs, perfTypes }).catch((e) => {
+        setBulkImportProgress(null);
+        setBulkImportResult({ kind: "error", message: String(e) });
+      });
+    },
+    [pendingAccountImport]
   );
 
   // Titre affiche par ToolBasePicker : un seul modal pour les trois
@@ -439,6 +477,8 @@ export function HomeWindow() {
       listen("menu-new-position", () => handleNewPosition()),
       listen("menu-import-pgn", () => handleImport()),
       listen("menu-bulk-import-pgn", () => handleBulkImportClick()),
+      listen("menu-import-lichess", () => handleLichessImportClick()),
+      listen("menu-import-chesscom", () => handleChesscomImportClick()),
       listen("menu-rebuild-explorer-stats", () => {
         setToolAction("rebuild-stats");
         setToolPickerOpen(true);
@@ -456,7 +496,15 @@ export function HomeWindow() {
     return () => {
       unlistenPromises.forEach((p) => p.then((unlisten) => unlisten()));
     };
-  }, [handleNewGame, handleNewPosition, handleImport, handleBulkImportClick, handleShowAbout]);
+  }, [
+    handleNewGame,
+    handleNewPosition,
+    handleImport,
+    handleBulkImportClick,
+    handleLichessImportClick,
+    handleChesscomImportClick,
+    handleShowAbout,
+  ]);
 
   // --- Raccourcis clavier ---
   // Les accelerateurs natifs du menu (voir build_menu, Rust) ne se
@@ -506,9 +554,27 @@ export function HomeWindow() {
       />
       {bulkImportPgnPath && (
         <ImportBasePicker
-          pgnPath={bulkImportPgnPath}
+          sourceLabel={bulkImportPgnPath}
           onConfirm={handleBulkImportConfirm}
           onCancel={() => setBulkImportPgnPath(null)}
+        />
+      )}
+      {accountImportSite && (
+        <AccountImportDialog
+          i18nPrefix={accountImportSite === "lichess" ? "lichessImport" : "chesscomImport"}
+          getPerfTypesCommand="get_lichess_perf_types"
+          onConfirm={(params) => {
+            setPendingAccountImport({ site: accountImportSite, params });
+            setAccountImportSite(null);
+          }}
+          onCancel={() => setAccountImportSite(null)}
+        />
+      )}
+      {pendingAccountImport && (
+        <ImportBasePicker
+          sourceLabel={t(`${pendingAccountImport.site}Import.sourceLabel`, { username: pendingAccountImport.params.username })}
+          onConfirm={handleAccountImportConfirm}
+          onCancel={() => setPendingAccountImport(null)}
         />
       )}
       {toolPickerOpen && (

@@ -781,6 +781,59 @@ textarea {
   background-color: var(--accent-weak);
 }
 
+.game-type-popover {
+  position: fixed;
+  z-index: 1100;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+  padding: 8px 10px;
+}
+
+.game-type-popover-label {
+  font-size: 0.85em;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+
+.game-type-popover-row {
+  display: flex;
+  gap: 6px;
+}
+
+.game-type-popover-row input {
+  width: 64px;
+  font: inherit;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  background: transparent;
+  color: inherit;
+  padding: 4px 6px;
+}
+
+.game-type-popover-row button {
+  cursor: pointer;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  padding: 4px 10px;
+}
+
+.game-type-popover-row button:hover:not(:disabled) {
+  background-color: var(--accent-weak);
+}
+
+.game-type-popover-row button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .explorer-table {
   width: 100%;
   border-collapse: collapse;
@@ -1140,6 +1193,52 @@ textarea {
   color: var(--ink-1);
 }
 
+.savepicker-label-with-help {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.help-bubble {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1px solid var(--line-strong);
+  font-size: 0.85em;
+  line-height: 1;
+  cursor: help;
+  opacity: 0.7;
+}
+
+.savepicker-category-row {
+  display: flex;
+  gap: 6px;
+  margin-top: -2px;
+}
+
+.savepicker-category-btn {
+  cursor: pointer;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  background: transparent;
+  color: inherit;
+  padding: 3px 10px;
+  font: inherit;
+  font-size: 0.85em;
+}
+
+.savepicker-category-btn:hover {
+  background-color: var(--accent-weak);
+}
+
+.savepicker-category-btn--active {
+  background-color: var(--accent-strong);
+  font-weight: 600;
+}
+
 .modal-table-wrap {
   overflow: auto;
   /* .modal n'a pas de largeur fixe (voir plus haut, sized to content up to
@@ -1163,6 +1262,61 @@ textarea {
   color: inherit;
   padding: 6px 12px;
   font: inherit;
+}
+
+.account-import-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: min(360px, 90vw);
+}
+
+.account-import-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 0.85em;
+  opacity: 0.85;
+}
+
+.account-import-field input {
+  font: inherit;
+  border-radius: var(--r-md);
+  border: 1px solid var(--line-strong);
+  padding: 4px 6px;
+  background-color: var(--panel);
+  color: var(--ink-1);
+}
+
+.account-import-dates {
+  display: flex;
+  gap: 12px;
+}
+
+.account-import-dates .account-import-field {
+  flex: 1;
+}
+
+.account-import-perf-types {
+  display: flex;
+  gap: 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  padding: 8px 10px;
+  margin: 0;
+}
+
+.account-import-perf-types legend {
+  font-size: 0.8em;
+  opacity: 0.7;
+  padding: 0 4px;
+}
+
+.account-import-perf-type {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.9em;
 }
 
 .picker-window {

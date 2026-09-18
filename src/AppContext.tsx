@@ -22,6 +22,8 @@ export interface AppContextValue {
   dests: Dests;
   boardTheme: string;
   setBoardTheme: (theme: string) => void;
+  boardFlipped: boolean;
+  setBoardFlipped: (flipped: boolean) => void;
   handleMove: (from: Key, to: Key) => void;
   handleShapesChange: (shapes: ShapeDto[]) => void;
   handleSelect: (id: number) => void;
@@ -33,6 +35,7 @@ export interface AppContextValue {
   handleToggleNag: (code: number) => void;
   handlePromoteVariation: () => void;
   handleDeleteVariation: () => void;
+  handleNewChess960: (positionNumber: number) => void;
   explorerStats: OpeningMoveStat[];
   explorerStatsLoading: boolean;
   explorerError: string | null;

@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { Color, Dests, Key } from "@lichess-org/chessground/types";
 import { Board } from "./Board";
@@ -17,10 +18,17 @@ interface ExplorerPreviewProps {
   onOpen: () => void;
   onClose: () => void;
   boardTheme: string;
+  /** Orientation de depart de CET echiquier -- meme sens que l'echiquier
+      principal au premier affichage, mais ensuite retournable independamment
+      (voir le bouton 🔄 ci-dessous) : cet apercu montre souvent une AUTRE
+      partie que celle en cours sur l'echiquier principal, retourner l'un ne
+      doit pas affecter l'autre. */
+  initialFlipped: boolean;
 }
 
-export function ExplorerPreview({ gameId, tree, nodeId, error, onSelectNode, onStep, onOpen, onClose, boardTheme }: ExplorerPreviewProps) {
+export function ExplorerPreview({ gameId, tree, nodeId, error, onSelectNode, onStep, onOpen, onClose, boardTheme, initialFlipped }: ExplorerPreviewProps) {
   const { t } = useTranslation();
+  const [flipped, setFlipped] = useState(initialFlipped);
 
   if (gameId === null) {
     return (
@@ -46,11 +54,15 @@ export function ExplorerPreview({ gameId, tree, nodeId, error, onSelectNode, onS
               shapes={[]}
               theme={boardTheme}
               lastMove={currentNode.from && currentNode.to ? [currentNode.from as Key, currentNode.to as Key] : null}
+              orientation={flipped ? "black" : "white"}
               onMove={NO_OP}
               onShapesChange={NO_OP}
             />
           </div>
           <div className="explorer-preview-controls">
+            <button onClick={() => setFlipped((v) => !v)} title={t("board.flip")}>
+              🔄
+            </button>
             <button onClick={() => onStep("start")} title={t("explorer.previewStart")}>
               ⏮
             </button>

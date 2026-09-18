@@ -12,9 +12,18 @@ const FIDE_PAGE_SIZE = 200;
 
 export function BasesPanelView() {
   const { t } = useTranslation();
-  const { bases, activeSource, onSelectBase, onCreateBase, onAddExistingBase, onDropGamesOnBase, error } =
-    useHomeContext();
-  const selectedPath = activeSource?.kind === "base" ? activeSource.base.path : null;
+  const {
+    bases,
+    activeSource,
+    onSelectBase,
+    onCreateBase,
+    onAddExistingBase,
+    onDropGamesOnBase,
+    onToggleReference,
+    onDeleteBase,
+    error,
+  } = useHomeContext();
+  const selectedBase = activeSource?.kind === "base" ? activeSource.base : null;
   return (
     <div className="dock-panel-content">
       {error && <p className="error">{error}</p>}
@@ -22,8 +31,18 @@ export function BasesPanelView() {
         <h2>{t("home.bases")}</h2>
         <button onClick={onCreateBase}>{t("home.newBase")}</button>
         <button onClick={onAddExistingBase}>{t("home.openExistingBase")}</button>
+        {selectedBase && (
+          <>
+            {!selectedBase.missing && (
+              <button onClick={onToggleReference}>
+                {selectedBase.isReference ? t("home.unmarkReference") : t("home.markReference")}
+              </button>
+            )}
+            <button onClick={onDeleteBase}>{t("common.delete")}</button>
+          </>
+        )}
       </div>
-      <BasesTable bases={bases} selectedPath={selectedPath} onSelect={onSelectBase} onDropGames={onDropGamesOnBase} />
+      <BasesTable bases={bases} selectedPath={selectedBase?.path ?? null} onSelect={onSelectBase} onDropGames={onDropGamesOnBase} />
     </div>
   );
 }
@@ -68,8 +87,6 @@ export function PartiesPanelView() {
     onTransferGames,
     selectedGameIds,
     onGamesSelectionChange,
-    onToggleReference,
-    onDeleteBase,
     pgnGames,
     onOpenPgnGame,
   } = useHomeContext();
@@ -128,12 +145,6 @@ export function PartiesPanelView() {
           {base.missing && <span title={t("home.fileMissing")}>⚠️ </span>}
           {base.name}
         </h2>
-        {!base.missing && (
-          <button onClick={onToggleReference}>
-            {base.isReference ? t("home.unmarkReference") : t("home.markReference")}
-          </button>
-        )}
-        <button onClick={onDeleteBase}>{t("common.delete")}</button>
       </div>
       {!base.missing && (
         <div className="games-pagination">

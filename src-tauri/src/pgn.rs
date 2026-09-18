@@ -344,12 +344,10 @@ impl Visitor for GameVisitor {
     // donnee de tag douteuse.
     fn begin_movetext(&mut self, _tags: Self::Tags) -> ControlFlow<Self::Output, Self::Movetext> {
         if let Some(fen) = self.tags.get("FEN") {
-            if let Some(position) = fen
-                .trim()
-                .parse::<Fen>()
-                .ok()
-                .and_then(|setup| setup.into_position::<Chess>(CastlingMode::Standard).ok())
-            {
+            if let Some(position) = fen.trim().parse::<Fen>().ok().and_then(|setup| {
+                let mode = CastlingMode::detect(setup.as_setup());
+                setup.into_position::<Chess>(mode).ok()
+            }) {
                 self.nodes[0].position = position;
             }
         }
@@ -477,6 +475,21 @@ mod tests {
         let first_move_id = root.children.first().copied().expect("g4 doit avoir ete rejoue");
         assert_eq!(tree.node(first_move_id).unwrap().san.as_deref(), Some("g4"));
         assert_eq!(tree.mainline_sans(), vec!["g4", "fxg4", "hxg4"]);
+    }
+
+    // Reproduit un import Chess960 signale par l'utilisateur : le FEN de
+    // depart utilise la notation castling Shredder-FEN ("HBhb", lettres de
+    // colonne des tours) plutot que X-FEN ("KQkq") -- shakmaty accepte les
+    // deux nativement, mais seulement avec CastlingMode::detect() (une tour
+    // hors des colonnes a/h fait echouer le mode Standard fige).
+    #[test]
+    fn parse_game_at_starts_from_a_chess960_fen_tag_with_shredder_castling() {
+        let pgn: &[u8] = b"[White \"A\"]\n[Black \"B\"]\n[Result \"*\"]\n[Variant \"chess960\"]\n[SetUp \"1\"]\n[FEN \"nrbbknqr/pppppppp/8/8/8/8/PPPPPPPP/NRBBKNQR w HBhb - 0 0\"]\n\n1. Nb3 *\n";
+        let tree = parse_game_at(pgn, 0).unwrap();
+        let dto = tree.to_dto();
+        assert_eq!(dto.nodes[0].fen, "nrbbknqr/pppppppp/8/8/8/8/PPPPPPPP/NRBBKNQR w KQkq - 0 1");
+        assert_eq!(dto.nodes[1].san.as_deref(), Some("Nb3"));
+        assert_eq!(dto.nodes[1].fen, "nrbbknqr/pppppppp/8/8/8/1N6/PPPPPPPP/1RBBKNQR b KQkq - 1 1");
     }
 
     // Reexporter une partie demarree d'un FEN (voir le test precedent) doit

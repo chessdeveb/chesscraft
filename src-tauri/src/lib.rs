@@ -1,5 +1,6 @@
 mod bases;
 mod bulk_import;
+mod chess_com;
 // pub : reutilises directement par les outils de maintenance ponctuels sous
 // src/bin/ (voir normalize_sans.rs), qui ne font pas partie de l'appli
 // Tauri elle-meme -- ces modules doivent donc rester atteignables depuis
@@ -11,6 +12,7 @@ pub mod explorer;
 mod fide;
 mod game_tree;
 mod i18n;
+mod lichess;
 mod pgn;
 mod recent_pgns;
 
@@ -145,6 +147,23 @@ fn new_game_from_fen(state: State<AppState>, fen: String) -> Result<TabDto, Stri
     session.tree = GameTree::from_fen(&fen)?;
     let tree = insert_session(&state, tab_id, session);
     Ok(TabDto { tab_id, tree, is_player_prep: false })
+}
+
+/// Remplace la partie de l'onglet `tab_id` par une nouvelle partie Chess960
+/// (bouton "type de jeu" pres de la navigation, fenetre partie) -- contrairement
+/// a new_game_from_fen, ne cree pas de nouvel onglet : reinitialise celui en
+/// cours, comme une "nouvelle partie" locale. La confirmation de perte des
+/// coups deja joues est geree cote frontend avant l'appel.
+#[tauri::command]
+fn new_chess960_game(state: State<AppState>, tab_id: u32, position_number: u16) -> Result<TreeDto, String> {
+    let fen = game_tree::chess960_start_fen(position_number)?;
+    let mut sessions = state.sessions.lock().unwrap();
+    let session = sessions.get_mut(&tab_id).ok_or_else(|| "onglet introuvable".to_string())?;
+    session.tree = GameTree::from_fen(&fen)?;
+    session.db = None;
+    session.active_base_path = None;
+    session.active_game_id = None;
+    Ok(session.tree.to_dto())
 }
 
 /// Ouvre un nouvel onglet vierge dont l'explorateur d'ouvertures ne
@@ -323,6 +342,56 @@ fn log_bulk_import_result(
     }
 }
 
+/// Coeur commun a bulk_import_pgn (fichier local) et import_lichess_games
+/// (telechargement direct) : ouvre la base, importe le flux PGN donne avec
+/// deduplication + canonicalisation FIDE, recalcule les stats precalculees de
+/// l'explorateur. `source` n'a besoin que de Read -- BufReader sur fichier ou
+/// reponse HTTP en flux, jamais charge entierement en memoire (des bases
+/// source comme LumbrasGigaBase depassent 8 Go ; voir bulk_import::bulk_import).
+fn run_bulk_import(
+    app: &AppHandle,
+    db_path: &str,
+    source: impl std::io::Read,
+    mut on_progress: impl FnMut(&bulk_import::BulkImportSummary),
+    mut should_cancel: impl FnMut() -> bool,
+) -> Result<bulk_import::BulkImportSummary, String> {
+    let mut conn = db::open(Path::new(db_path))?;
+
+    // Reecrit Blancs/Noirs vers leur forme canonique FIDE quand elle est
+    // resolue sans ambiguite (voir fide::canonicalize, departage par Elo en
+    // cas d'homonymie -- ex. "Giri, Anish" vs "Giri, Andrea"), et recupere au
+    // passage l'identifiant FIDE (pose sur games.white_fide_id/black_fide_id,
+    // voir bulk_import::process_one_game) -- memorise par (nom, indice Elo)
+    // deja vu (fide_name_cache) : une source rejoue tres souvent les memes
+    // joueurs a un Elo proche, inutile de refaire la recherche FIDE a chaque
+    // partie (meme principe que rebuild_player_stats/rebuild_prefix_stats).
+    // Base FIDE absente ou pas encore telechargee (voir refresh_fide_players) :
+    // fide_conn est alors None et canonicalize_name ne fait rien, l'import se
+    // deroule normalement.
+    let fide_conn = app.path().app_data_dir().ok().and_then(|dir| fide::open(&dir).ok());
+    let mut fide_name_cache: HashMap<(String, Option<i32>), Option<(String, String)>> = HashMap::new();
+    let canonicalize_name = move |raw: &str, elo_hint: Option<i32>| -> Option<(String, String)> {
+        let conn = fide_conn.as_ref()?;
+        let cache_key = (raw.to_string(), elo_hint);
+        if let Some(cached) = fide_name_cache.get(&cache_key) {
+            return cached.clone();
+        }
+        let resolved = fide::canonicalize(conn, raw, elo_hint);
+        fide_name_cache.insert(cache_key, resolved.clone());
+        resolved
+    };
+
+    let summary = bulk_import::bulk_import(&mut conn, source, &mut on_progress, &mut should_cancel, canonicalize_name)?;
+    // recalcule les stats precalculees de l'explorateur d'ouvertures (voir
+    // explorer::rebuild_prefix_stats) : cout marginal a cote de l'import
+    // lui-meme, evite de retomber sur le calcul a la volee, lent sur les tout
+    // premiers coups, au prochain jeu ouvert. Echec non bloquant :
+    // l'explorateur retombe alors sur le calcul a la volee (voir explorer::explore).
+    let _ = explorer::rebuild_prefix_stats(&mut conn, |_| {});
+    let _ = db::rebuild_player_stats(&mut conn, |_| {});
+    Ok(summary)
+}
+
 #[tauri::command]
 fn bulk_import_pgn(app: AppHandle, state: State<AppState>, db_path: String, pgn_path: String) -> Result<(), String> {
     {
@@ -337,66 +406,163 @@ fn bulk_import_pgn(app: AppHandle, state: State<AppState>, db_path: String, pgn_
         let progress_app = app.clone();
         let cancel_app = app.clone();
         let result = (|| -> Result<bulk_import::BulkImportSummary, String> {
-            // en flux (BufReader), pas charge entierement en memoire : des
-            // bases source comme LumbrasGigaBase depassent 8 Go, et
-            // read_to_string() les chargeait integralement avant meme de
-            // commencer -- gros pic memoire, pouvant epuiser la RAM
-            // disponible et interrompre l'import en cours de route (voir
-            // bulk_import::bulk_import).
             let pgn_file = std::fs::File::open(&pgn_path).map_err(|e| e.to_string())?;
             let pgn_reader = std::io::BufReader::new(pgn_file);
-            let mut conn = db::open(Path::new(&db_path))?;
-
-            // Reecrit Blancs/Noirs vers leur forme canonique FIDE quand elle
-            // est resolue sans ambiguite (voir fide::canonicalize,
-            // departage par Elo en cas d'homonymie -- ex. "Giri, Anish" vs
-            // "Giri, Andrea"), et recupere au passage l'identifiant FIDE
-            // (pose sur games.white_fide_id/black_fide_id, voir
-            // bulk_import::process_one_game) -- memorise par (nom, indice
-            // Elo) deja vu (fide_name_cache) : une base source rejoue tres
-            // souvent les memes joueurs a un Elo proche, inutile de refaire
-            // la recherche FIDE a chaque partie (meme principe que
-            // rebuild_player_stats/rebuild_prefix_stats). Base FIDE absente
-            // ou pas encore telechargee (voir refresh_fide_players) :
-            // fide_conn est alors None et canonicalize_name ne fait rien,
-            // l'import se deroule normalement.
-            let fide_conn = app.path().app_data_dir().ok().and_then(|dir| fide::open(&dir).ok());
-            let mut fide_name_cache: HashMap<(String, Option<i32>), Option<(String, String)>> = HashMap::new();
-            let canonicalize_name = move |raw: &str, elo_hint: Option<i32>| -> Option<(String, String)> {
-                let conn = fide_conn.as_ref()?;
-                let cache_key = (raw.to_string(), elo_hint);
-                if let Some(cached) = fide_name_cache.get(&cache_key) {
-                    return cached.clone();
-                }
-                let resolved = fide::canonicalize(conn, raw, elo_hint);
-                fide_name_cache.insert(cache_key, resolved.clone());
-                resolved
-            };
-
-            let summary = bulk_import::bulk_import(
-                &mut conn,
+            run_bulk_import(
+                &app,
+                &db_path,
                 pgn_reader,
                 move |summary| {
                     let _ = progress_app.emit("bulk-import-progress", summary.clone());
                 },
                 move || *cancel_app.state::<AppState>().bulk_import_cancel.lock().unwrap(),
-                canonicalize_name,
-            )?;
-            // recalcule les stats precalculees de l'explorateur d'ouvertures
-            // (voir explorer::rebuild_prefix_stats) : cout marginal a cote de
-            // l'import lui-meme, evite de retomber sur le calcul a la volee,
-            // lent sur les tout premiers coups, au prochain jeu ouvert.
-            // Echec non bloquant : l'explorateur retombe alors sur le calcul
-            // a la volee (voir explorer::explore).
-            let _ = explorer::rebuild_prefix_stats(&mut conn, |_| {});
-            let _ = db::rebuild_player_stats(&mut conn, |_| {});
-            Ok(summary)
+            )
         })();
 
         log_bulk_import_result(&app, &pgn_path, &db_path, &result);
         // meme en cas d'echec partiel, des lots ont pu etre commit (voir
         // bulk_import::BATCH_SIZE) : le cache de l'explorateur pourrait donc
         // etre perime, on le vide dans tous les cas.
+        app.state::<AppState>().explorer_cache.lock().unwrap().clear();
+
+        match result {
+            Ok(summary) => {
+                let _ = app.emit("bulk-import-done", summary);
+            }
+            Err(e) => {
+                let _ = app.emit("bulk-import-error", e);
+            }
+        }
+        *app.state::<AppState>().bulk_import_running.lock().unwrap() = false;
+    });
+    Ok(())
+}
+
+/// Cadences proposees par les dialogues d'import Lichess ET chess.com (voir
+/// lichess::PERF_TYPES / chess_com::PERF_TYPES -- les deux valent
+/// litteralement ["bullet", "blitz", "rapid"], reutilise donc pour les deux
+/// plutot que d'exposer une commande quasi identique par site) -- expose au
+/// frontend pour ne pas dupliquer la liste exacte attendue par ces API.
+#[tauri::command]
+fn get_lichess_perf_types() -> Vec<String> {
+    lichess::PERF_TYPES.iter().map(|s| s.to_string()).collect()
+}
+
+/// Bouton "Importer depuis Lichess" (accueil, a cote de "Importer en masse") :
+/// telecharge en flux les parties d'un pseudo via l'API publique de Lichess
+/// (aucun jeton requis) puis les fait passer par le meme import en masse que
+/// pour un fichier PGN local (voir run_bulk_import) -- meme deduplication,
+/// mêmes evenements de progression "bulk-import-*", donc reutilise tel quel
+/// cote frontend.
+#[tauri::command]
+fn import_lichess_games(
+    app: AppHandle,
+    state: State<AppState>,
+    db_path: String,
+    username: String,
+    since_ms: Option<i64>,
+    until_ms: Option<i64>,
+    perf_types: Vec<String>,
+) -> Result<(), String> {
+    let username = username.trim().to_string();
+    if !lichess::valid_username(&username) {
+        return Err("pseudo Lichess invalide".to_string());
+    }
+    if perf_types.is_empty() {
+        return Err("choisissez au moins une cadence (bullet, blitz, rapide)".to_string());
+    }
+    {
+        let mut running = state.bulk_import_running.lock().unwrap();
+        if *running {
+            return Err("un import en masse est déjà en cours".to_string());
+        }
+        *running = true;
+    }
+    *state.bulk_import_cancel.lock().unwrap() = false;
+    std::thread::spawn(move || {
+        let progress_app = app.clone();
+        let cancel_app = app.clone();
+        let url = lichess::export_url(&username, since_ms, until_ms, &perf_types);
+        let result = (|| -> Result<bulk_import::BulkImportSummary, String> {
+            let resp = ureq::get(&url)
+                .call()
+                .map_err(|e| format!("Téléchargement Lichess échoué : {e}"))?;
+            run_bulk_import(
+                &app,
+                &db_path,
+                resp.into_reader(),
+                move |summary| {
+                    let _ = progress_app.emit("bulk-import-progress", summary.clone());
+                },
+                move || *cancel_app.state::<AppState>().bulk_import_cancel.lock().unwrap(),
+            )
+        })();
+
+        log_bulk_import_result(&app, &format!("lichess:{username}"), &db_path, &result);
+        app.state::<AppState>().explorer_cache.lock().unwrap().clear();
+
+        match result {
+            Ok(summary) => {
+                let _ = app.emit("bulk-import-done", summary);
+            }
+            Err(e) => {
+                let _ = app.emit("bulk-import-error", e);
+            }
+        }
+        *app.state::<AppState>().bulk_import_running.lock().unwrap() = false;
+    });
+    Ok(())
+}
+
+/// Bouton "Importer > Un compte chess.com" (accueil) : telecharge les
+/// archives mensuelles d'un pseudo via l'API publique chess.com (aucun jeton
+/// requis), filtrees par periode/cadence (voir chess_com::download_pgn), puis
+/// les fait passer par le meme import en masse que Lichess/PGN local (voir
+/// run_bulk_import) -- pas de flux ici (contrairement a Lichess) : chess.com
+/// n'expose les parties que par archive mensuelle complete, tout doit donc
+/// etre assemble en memoire avant de les passer au parseur PGN.
+#[tauri::command]
+fn import_chesscom_games(
+    app: AppHandle,
+    state: State<AppState>,
+    db_path: String,
+    username: String,
+    since_ms: Option<i64>,
+    until_ms: Option<i64>,
+    perf_types: Vec<String>,
+) -> Result<(), String> {
+    let username = username.trim().to_string();
+    if !chess_com::valid_username(&username) {
+        return Err("pseudo chess.com invalide".to_string());
+    }
+    if perf_types.is_empty() {
+        return Err("choisissez au moins une cadence (bullet, blitz, rapide)".to_string());
+    }
+    {
+        let mut running = state.bulk_import_running.lock().unwrap();
+        if *running {
+            return Err("un import en masse est déjà en cours".to_string());
+        }
+        *running = true;
+    }
+    *state.bulk_import_cancel.lock().unwrap() = false;
+    std::thread::spawn(move || {
+        let progress_app = app.clone();
+        let cancel_app = app.clone();
+        let result = (|| -> Result<bulk_import::BulkImportSummary, String> {
+            let pgn_bytes = chess_com::download_pgn(&username, since_ms, until_ms, &perf_types)?;
+            run_bulk_import(
+                &app,
+                &db_path,
+                std::io::Cursor::new(pgn_bytes),
+                move |summary| {
+                    let _ = progress_app.emit("bulk-import-progress", summary.clone());
+                },
+                move || *cancel_app.state::<AppState>().bulk_import_cancel.lock().unwrap(),
+            )
+        })();
+
+        log_bulk_import_result(&app, &format!("chesscom:{username}"), &db_path, &result);
         app.state::<AppState>().explorer_cache.lock().unwrap().clear();
 
         match result {
@@ -914,6 +1080,22 @@ fn mean(values: &[f64]) -> f64 {
     }
 }
 
+/// Retrouve dans un commentaire l'evaluation ecrite par format_eval (voir
+/// apply_game_report) : "#N"/"#-N" pour un mat, sinon un nombre de pions
+/// (converti en centipions). None si le tag est absent ou mal forme.
+fn parse_eval_tag(comment: &str) -> Option<(Option<i32>, Option<i32>)> {
+    let start = comment.find("[%eval")?;
+    let rest = &comment[start + "[%eval".len()..];
+    let end = rest.find(']')?;
+    let value = rest[..end].trim();
+    if let Some(mate_str) = value.strip_prefix('#') {
+        Some((None, Some(mate_str.parse().ok()?)))
+    } else {
+        let pawns: f64 = value.parse().ok()?;
+        Some((Some((pawns * 100.0).round() as i32), None))
+    }
+}
+
 /// Applique les evaluations calculees a l'arbre : classification (NAG) et
 /// annotation "[%eval ...]" (convention PGN standard, voir parseClock cote
 /// frontend pour le precedent avec "[%clk ...]") sur chaque coup de la
@@ -945,8 +1127,14 @@ impl SideAccumulator {
     }
 }
 
-fn apply_game_report(
-    tree: &mut GameTree,
+/// Calcule le rapport (precision, classification par coup) a partir
+/// d'evaluations deja connues -- pure, ne modifie pas l'arbre. Utilisee a la
+/// fois juste apres une analyse fraiche (apply_game_report, qui annote
+/// ensuite l'arbre a partir du meme resultat) et pour reconstruire l'affichage
+/// depuis les "[%eval ...]" deja sauvegardes a la reouverture d'une partie
+/// (voir game_report_from_annotations).
+fn compute_report_summary(
+    tree: &GameTree,
     mainline_ids: &[u32],
     fens: &[String],
     evals: &[engine::PositionEval],
@@ -977,7 +1165,6 @@ fn apply_game_report(
         acc.cp_losses.push(cp_loss);
 
         let classification = classify_drop(drop);
-        let mut nags = Vec::new();
         if let Some(code) = classification {
             match code {
                 4 => acc.blunders += 1,
@@ -985,16 +1172,7 @@ fn apply_game_report(
                 6 => acc.inaccuracies += 1,
                 _ => {}
             }
-            nags.push(code);
         }
-        let _ = tree.set_nags(node_id, nags);
-
-        let existing_after = tree.node(node_id).and_then(|n| n.comment_after.clone()).unwrap_or_default();
-        let stripped = strip_eval_tag(&existing_after);
-        let eval_tag = format!("[%eval {}]", format_eval(&evals[i]));
-        let comment = if stripped.is_empty() { eval_tag } else { format!("{stripped} {eval_tag}") };
-        let before = tree.node(node_id).and_then(|n| n.comment_before.clone());
-        let _ = tree.set_comment(node_id, before, Some(comment));
 
         moves.push(GameReportMoveEval {
             node_id,
@@ -1011,6 +1189,123 @@ fn apply_game_report(
         white: white_acc.into_stats(),
         black: black_acc.into_stats(),
         moves,
+    }
+}
+
+/// Ecrit une annotation "[%eval ...]" sur le noeud donne, en remplacant une
+/// eventuelle annotation precedente (rapport relance sur la meme partie) --
+/// commun a la racine (evaluation avant le premier coup, comment_after
+/// puisqu'elle n'a pas de coup propre) et a chaque coup de la ligne
+/// principale.
+fn annotate_eval(tree: &mut GameTree, node_id: u32, eval: &engine::PositionEval) {
+    let existing_after = tree.node(node_id).and_then(|n| n.comment_after.clone()).unwrap_or_default();
+    let stripped = strip_eval_tag(&existing_after);
+    let eval_tag = format!("[%eval {}]", format_eval(eval));
+    let comment = if stripped.is_empty() { eval_tag } else { format!("{stripped} {eval_tag}") };
+    let before = tree.node(node_id).and_then(|n| n.comment_before.clone());
+    let _ = tree.set_comment(node_id, before, Some(comment));
+}
+
+fn apply_game_report(
+    tree: &mut GameTree,
+    mainline_ids: &[u32],
+    fens: &[String],
+    evals: &[engine::PositionEval],
+) -> GameReportSummary {
+    let summary = compute_report_summary(tree, mainline_ids, fens, evals);
+
+    annotate_eval(tree, mainline_ids[0], &evals[0]);
+    for (i, mv) in summary.moves.iter().enumerate().skip(1) {
+        let mut nags = Vec::new();
+        if let Some(code) = mv.classification {
+            nags.push(code);
+        }
+        let _ = tree.set_nags(mv.node_id, nags);
+        annotate_eval(tree, mv.node_id, &evals[i]);
+    }
+
+    summary
+}
+
+/// Reconstruit le rapport de partie a partir des "[%eval ...]" deja
+/// sauvegardes sur la ligne principale (voir apply_game_report/annotate_eval)
+/// -- pour le reafficher automatiquement a la reouverture d'une partie deja
+/// analysee, sans relancer le moteur. None si la ligne principale ne porte
+/// pas d'evaluation sur chacun de ses noeuds (jamais analysee, ou analyse
+/// partielle/tronquee depuis).
+fn game_report_from_annotations(tree: &GameTree) -> Option<GameReportSummary> {
+    let mainline_ids = tree.mainline_node_ids();
+    if mainline_ids.len() < 2 {
+        return None;
+    }
+    let mut evals = Vec::with_capacity(mainline_ids.len());
+    for &id in &mainline_ids {
+        let comment = tree.node(id).and_then(|n| n.comment_after.clone()).unwrap_or_default();
+        let (score_cp, score_mate) = parse_eval_tag(&comment)?;
+        evals.push(engine::PositionEval { score_cp, score_mate });
+    }
+    let fens: Vec<String> = mainline_ids.iter().map(|&id| tree.node_fen(id).unwrap_or_default()).collect();
+    Some(compute_report_summary(tree, &mainline_ids, &fens, &evals))
+}
+
+#[tauri::command]
+fn get_game_report(state: State<AppState>, tab_id: u32) -> Result<Option<GameReportSummary>, String> {
+    let sessions = state.sessions.lock().unwrap();
+    let session = sessions.get(&tab_id).ok_or_else(|| "onglet introuvable".to_string())?;
+    Ok(game_report_from_annotations(&session.tree))
+}
+
+#[cfg(test)]
+mod game_report_tests {
+    use super::*;
+
+    fn eval(cp: i32) -> engine::PositionEval {
+        engine::PositionEval { score_cp: Some(cp), score_mate: None }
+    }
+
+    #[test]
+    fn parse_eval_tag_reads_centipawns_and_mate() {
+        assert_eq!(parse_eval_tag("[%eval 1.25]"), Some((Some(125), None)));
+        assert_eq!(parse_eval_tag("[%eval -0.40]"), Some((Some(-40), None)));
+        assert_eq!(parse_eval_tag("[%eval #-3]"), Some((None, Some(-3))));
+        assert_eq!(parse_eval_tag("some text [%eval #5] more"), Some((None, Some(5))));
+        assert_eq!(parse_eval_tag("no eval here"), None);
+    }
+
+    // Cas rapporte par l'utilisateur : le rapport de partie disparaissait a
+    // la reouverture d'une partie sauvegardee -- alors que les annotations
+    // dont il depend (NAG + "[%eval ...]") sont bien persistees. Verifie
+    // qu'a partir des seules annotations ecrites par apply_game_report,
+    // game_report_from_annotations reconstruit le meme rapport sans redonner
+    // les evaluations d'origine.
+    #[test]
+    fn game_report_survives_a_save_reload_round_trip() {
+        let mut tree = GameTree::new();
+        let n1 = tree.play_move(0, "e2", "e4", None).unwrap();
+        tree.play_move(n1, "e7", "e5", None).unwrap();
+        let mainline_ids = tree.mainline_node_ids();
+        let fens: Vec<String> = mainline_ids.iter().map(|&id| tree.node_fen(id).unwrap()).collect();
+        // net effondrement du Win% des Blancs apres 1. e4 -- doit se classer gaffe (NAG 4).
+        let evals = vec![eval(20), eval(-600), eval(-590)];
+
+        let live = apply_game_report(&mut tree, &mainline_ids, &fens, &evals);
+        assert_eq!(live.white.blunders, 1);
+        assert_eq!(tree.node(n1).unwrap().nags, vec![4]);
+
+        let reloaded = game_report_from_annotations(&tree).expect("rapport reconstruit depuis les annotations");
+        assert_eq!(reloaded.white.blunders, live.white.blunders);
+        assert_eq!(reloaded.moves.len(), live.moves.len());
+        for (a, b) in reloaded.moves.iter().zip(live.moves.iter()) {
+            assert_eq!(a.classification, b.classification);
+            assert_eq!(a.score_cp, b.score_cp);
+        }
+    }
+
+    #[test]
+    fn game_report_from_annotations_is_none_when_never_analyzed() {
+        let mut tree = GameTree::new();
+        tree.play_move(0, "e2", "e4", None).unwrap();
+        assert!(game_report_from_annotations(&tree).is_none());
     }
 }
 
@@ -1522,9 +1817,20 @@ fn build_menu(app: &AppHandle, home_panels: bool, game_panels: bool, lang: &str,
     let import_item = MenuItemBuilder::with_id("import_pgn", t("menu.file.openPgn"))
         .accelerator("CmdOrCtrl+O")
         .build(app)?;
-    let bulk_import_item = MenuItemBuilder::with_id("bulk_import_pgn", t("menu.file.importPgn"))
+    // Sous-menu "Importer" (fichier PGN local vers une base, ou compte en
+    // ligne Lichess/chess.com) : les trois amenent au meme flux de choix de
+    // base + barre de progression cote frontend (voir HomeWindow.tsx), seule
+    // la source des parties differe.
+    let import_pgn_bulk_item = MenuItemBuilder::with_id("bulk_import_pgn", t("menu.file.import.pgn"))
         .accelerator("CmdOrCtrl+I")
         .build(app)?;
+    let import_lichess_item = MenuItemBuilder::with_id("import_lichess", t("menu.file.import.lichess")).build(app)?;
+    let import_chesscom_item = MenuItemBuilder::with_id("import_chesscom", t("menu.file.import.chesscom")).build(app)?;
+    let import_submenu = SubmenuBuilder::new(app, t("menu.file.import"))
+        .item(&import_pgn_bulk_item)
+        .item(&import_lichess_item)
+        .item(&import_chesscom_item)
+        .build()?;
     let export_item = MenuItemBuilder::with_id("export_pgn", t("menu.file.exportPgn"))
         .accelerator("CmdOrCtrl+E")
         .build(app)?;
@@ -1536,7 +1842,7 @@ fn build_menu(app: &AppHandle, home_panels: bool, game_panels: bool, lang: &str,
         .item(&new_position_item)
         .separator()
         .item(&import_item)
-        .item(&bulk_import_item)
+        .item(&import_submenu)
         .item(&export_item)
         .separator()
         .item(&save_item)
@@ -1858,6 +2164,8 @@ pub fn run() {
                     "new_position" => "menu-new-position",
                     "import_pgn" => "menu-import-pgn",
                     "bulk_import_pgn" => "menu-bulk-import-pgn",
+                    "import_lichess" => "menu-import-lichess",
+                    "import_chesscom" => "menu-import-chesscom",
                     "rebuild_explorer_stats" => "menu-rebuild-explorer-stats",
                     "deduplicate_base" => "menu-deduplicate-base",
                     "backfill_fide_ids" => "menu-backfill-fide-ids",
@@ -1888,6 +2196,7 @@ pub fn run() {
             set_language,
             new_game,
             new_game_from_fen,
+            new_chess960_game,
             refresh_fide_players,
             get_fide_status,
             list_fide_players,
@@ -1906,6 +2215,9 @@ pub fn run() {
             list_pgn_games,
             import_pgn,
             bulk_import_pgn,
+            import_lichess_games,
+            import_chesscom_games,
+            get_lichess_perf_types,
             cancel_bulk_import,
             rebuild_explorer_stats,
             count_duplicate_games,
@@ -1916,6 +2228,7 @@ pub fn run() {
             stop_engine,
             analyze_position,
             start_game_report,
+            get_game_report,
             pause_engine,
             classify_opening,
             opening_explorer,

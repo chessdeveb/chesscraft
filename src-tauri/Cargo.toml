@@ -1,6 +1,6 @@
 [package]
 name = "chesscraft"
-version = "0.4.2"
+version = "0.4.3"
 description = "ChessCraft - gestionnaire de parties d'echecs"
 authors = ["ChessCraft"]
 edition = "2021"
