@@ -83,6 +83,8 @@ export interface PgnGameSummary {
   date: string;
   result: string;
   event: string;
+  whiteElo: number | null;
+  blackElo: number | null;
 }
 
 export interface OpeningMoveStat {
@@ -123,14 +125,13 @@ export interface GameSummary {
   result: string;
   event: string;
   timeControl: string;
+  whiteElo: number | null;
+  blackElo: number | null;
 }
 
 export type SaveResult = { kind: "saved"; id: number } | { kind: "duplicate"; existing: GameSummary };
 
-export interface ExplorerGameSummary extends GameSummary {
-  whiteElo: number | null;
-  blackElo: number | null;
-}
+export type ExplorerGameSummary = GameSummary;
 
 export type ExplorerGamesSortColumn = "white" | "black" | "date" | "whiteElo" | "blackElo";
 export interface ExplorerGamesSort {

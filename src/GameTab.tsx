@@ -89,6 +89,15 @@ function pathSans(tree: TreeDto, nodeId: number): string[] {
   return sans;
 }
 
+// FEN de la racine de l'arbre -- envoye tel quel a opening_explorer/
+// opening_explorer_games (voir GameSession/db::normalize_start_fen cote
+// backend, qui se charge de reconnaitre une position standard) : l'appli ne
+// se demande jamais elle-meme si cette partie a un depart personnalise
+// (Nouvelle position, Chess960), c'est au backend de le determiner.
+function rootFen(tree: TreeDto): string | undefined {
+  return tree.nodes.find((n) => n.parent === null)?.fen;
+}
+
 interface GamePanelPrefs {
   notation: boolean;
   explorer: boolean;
@@ -739,7 +748,7 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
     () => {
       setExplorerStatsLoading(true);
       const moves = pathSans(tree!, currentNodeId);
-      return invoke<OpeningMoveStat[]>("opening_explorer", { tabId, moves, ...explorerFilterArgs(explorerFilters) });
+      return invoke<OpeningMoveStat[]>("opening_explorer", { tabId, moves, startFen: rootFen(tree!), ...explorerFilterArgs(explorerFilters) });
     },
     (stats) => {
       setExplorerStats(stats);
@@ -830,6 +839,7 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
       return invoke<ExplorerGamesPage>("opening_explorer_games", {
         tabId,
         moves,
+        startFen: rootFen(tree!),
         offset: explorerGamesPage * EXPLORER_GAMES_PAGE_SIZE,
         limit: EXPLORER_GAMES_PAGE_SIZE,
         sortBy: explorerGamesSort?.column,

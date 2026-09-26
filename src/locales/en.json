@@ -157,6 +157,9 @@
   "tools.progressResolved": "{{examined}} examined, {{matched}} resolved...",
   "tools.stageOpenings": "Openings",
   "tools.stagePlayers": "Players",
+  "tools.stageStartFen": "Custom positions",
+  "tools.stageCompact": "Compacting the database",
+  "tools.progressRebuildBusy": "{{stage}}: in progress, this step can take a long time (up to tens of minutes)...",
   "tools.progressRebuildReading": "{{stage}}: reading, {{examined}} games examined...",
   "tools.progressRebuildWriting": "{{stage}}: writing, {{written}} / {{total}} rows...",
   "tools.rebuildStatsDone": "Explorer stats rebuilt.",
@@ -201,6 +204,8 @@
   "engine.paused": "Paused",
   "engine.analyzing": "Analyzing…",
 
+  "gamesTable.whiteElo": "W. Elo",
+  "gamesTable.blackElo": "B. Elo",
   "gamesTable.empty": "No games here",
   "gamesTable.deleteGame": "Delete this game",
   "gamesTable.moveGameButton": "Move/copy to another base",
@@ -213,6 +218,8 @@
   "gamesTable.ctxMoveTo": "Move to...",
   "gamesTable.ctxCopyTo": "Copy to...",
   "gamesTable.ctxDelete": "Delete",
+  "gamesTable.performanceSummary": "{{player}}'s performance: {{performance}} (score {{points}}/{{games}}, average opponent {{average}}, {{games}} of {{selected}} selected games)",
+  "gamesTable.performanceNone": "Elo performance unavailable for this selection (missing result or opponent rating)",
 
   "importPicker.title": "Import into which database?",
 

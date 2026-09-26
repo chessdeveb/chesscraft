@@ -319,9 +319,14 @@ mod tests {
                 white TEXT, black TEXT, white_elo INTEGER, black_elo INTEGER,
                 result TEXT, event TEXT, site TEXT, round TEXT, date_played TEXT,
                 eco TEXT, opening_name TEXT, ply_count INTEGER, time_control TEXT,
-                pgn_moves TEXT NOT NULL, extra_tags TEXT, mainline_sans TEXT,
+                pgn_moves TEXT NOT NULL, extra_tags TEXT, mainline_sans TEXT, start_fen TEXT,
                 created_at INTEGER NOT NULL, last_modified INTEGER NOT NULL
-            );",
+            );
+            CREATE TABLE san_dict (id INTEGER PRIMARY KEY, san TEXT NOT NULL UNIQUE);
+            CREATE TABLE positions (
+                zobrist INTEGER NOT NULL, game_id INTEGER NOT NULL, next_id INTEGER, result INTEGER NOT NULL,
+                PRIMARY KEY (zobrist, game_id)
+            ) WITHOUT ROWID;",
         )
         .unwrap();
 
@@ -354,9 +359,14 @@ mod tests {
                 white TEXT, black TEXT, white_elo INTEGER, black_elo INTEGER,
                 result TEXT, event TEXT, site TEXT, round TEXT, date_played TEXT,
                 eco TEXT, opening_name TEXT, ply_count INTEGER, time_control TEXT,
-                pgn_moves TEXT NOT NULL, extra_tags TEXT, mainline_sans TEXT,
+                pgn_moves TEXT NOT NULL, extra_tags TEXT, mainline_sans TEXT, start_fen TEXT,
                 created_at INTEGER NOT NULL, last_modified INTEGER NOT NULL
-            );",
+            );
+            CREATE TABLE san_dict (id INTEGER PRIMARY KEY, san TEXT NOT NULL UNIQUE);
+            CREATE TABLE positions (
+                zobrist INTEGER NOT NULL, game_id INTEGER NOT NULL, next_id INTEGER, result INTEGER NOT NULL,
+                PRIMARY KEY (zobrist, game_id)
+            ) WITHOUT ROWID;",
         )
         .unwrap();
 
@@ -454,9 +464,14 @@ mod tests {
                 white TEXT, black TEXT, white_elo INTEGER, black_elo INTEGER,
                 result TEXT, event TEXT, site TEXT, round TEXT, date_played TEXT,
                 eco TEXT, opening_name TEXT, ply_count INTEGER, time_control TEXT,
-                pgn_moves TEXT NOT NULL, extra_tags TEXT, mainline_sans TEXT,
+                pgn_moves TEXT NOT NULL, extra_tags TEXT, mainline_sans TEXT, start_fen TEXT,
                 created_at INTEGER NOT NULL, last_modified INTEGER NOT NULL
-            );",
+            );
+            CREATE TABLE san_dict (id INTEGER PRIMARY KEY, san TEXT NOT NULL UNIQUE);
+            CREATE TABLE positions (
+                zobrist INTEGER NOT NULL, game_id INTEGER NOT NULL, next_id INTEGER, result INTEGER NOT NULL,
+                PRIMARY KEY (zobrist, game_id)
+            ) WITHOUT ROWID;",
         )
         .unwrap();
 
@@ -478,10 +493,15 @@ mod tests {
                 white TEXT, black TEXT, white_elo INTEGER, black_elo INTEGER,
                 result TEXT, event TEXT, site TEXT, round TEXT, date_played TEXT,
                 eco TEXT, opening_name TEXT, ply_count INTEGER, time_control TEXT,
-                pgn_moves TEXT NOT NULL, extra_tags TEXT, mainline_sans TEXT,
+                pgn_moves TEXT NOT NULL, extra_tags TEXT, mainline_sans TEXT, start_fen TEXT,
                 white_fide_id TEXT, black_fide_id TEXT,
                 created_at INTEGER NOT NULL, last_modified INTEGER NOT NULL
-            );",
+            );
+            CREATE TABLE san_dict (id INTEGER PRIMARY KEY, san TEXT NOT NULL UNIQUE);
+            CREATE TABLE positions (
+                zobrist INTEGER NOT NULL, game_id INTEGER NOT NULL, next_id INTEGER, result INTEGER NOT NULL,
+                PRIMARY KEY (zobrist, game_id)
+            ) WITHOUT ROWID;",
         )
         .unwrap();
         conn

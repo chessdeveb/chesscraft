@@ -1,6 +1,6 @@
 [package]
 name = "chesscraft"
-version = "0.4.3"
+version = "0.5.0"
 description = "ChessCraft - gestionnaire de parties d'echecs"
 authors = ["ChessCraft"]
 edition = "2021"
@@ -57,3 +57,14 @@ zip = "2"
 webview2-com = "0.38"
 windows-core = "0.61"
 
+
+# tauri dev compile par defaut en opt-level 0, y compris SQLite (bundled) et
+# shakmaty : le recalcul de position_index (millions de parties rejouees) y
+# est 10 a 30 fois plus lent qu'en release. On optimise les dependances (une
+# seule fois, elles ne recompilent pas a chaque modification) et un peu le
+# code du projet.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

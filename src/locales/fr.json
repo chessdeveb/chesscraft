@@ -157,6 +157,9 @@
   "tools.progressResolved": "{{examined}} examinées, {{matched}} résolues...",
   "tools.stageOpenings": "Ouvertures",
   "tools.stagePlayers": "Joueurs",
+  "tools.stageStartFen": "Positions personnalisées",
+  "tools.stageCompact": "Compactage de la base",
+  "tools.progressRebuildBusy": "{{stage}} : en cours, cette étape peut durer longtemps (jusqu'à plusieurs dizaines de minutes)...",
   "tools.progressRebuildReading": "{{stage}} : lecture, {{examined}} parties examinées...",
   "tools.progressRebuildWriting": "{{stage}} : écriture, {{written}} / {{total}} lignes...",
   "tools.rebuildStatsDone": "Stats de l'explorateur recalculées.",
@@ -201,6 +204,8 @@
   "engine.paused": "En pause",
   "engine.analyzing": "Analyse en cours…",
 
+  "gamesTable.whiteElo": "Elo B.",
+  "gamesTable.blackElo": "Elo N.",
   "gamesTable.empty": "Aucune partie ici",
   "gamesTable.deleteGame": "Supprimer cette partie",
   "gamesTable.moveGameButton": "Déplacer/copier vers une autre base",
@@ -213,6 +218,8 @@
   "gamesTable.ctxMoveTo": "Déplacer vers...",
   "gamesTable.ctxCopyTo": "Copier vers...",
   "gamesTable.ctxDelete": "Supprimer",
+  "gamesTable.performanceSummary": "Performance de {{player}} : {{performance}} (score {{points}}/{{games}}, Elo moyen des adversaires {{average}}, {{games}} parties sur {{selected}} sélectionnées)",
+  "gamesTable.performanceNone": "Performance Elo non calculable pour cette sélection (résultat ou Elo adverse manquant)",
 
   "importPicker.title": "Importer dans quelle base ?",
 

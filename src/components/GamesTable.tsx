@@ -11,6 +11,8 @@ export interface GameRow {
   date: string;
   result: string;
   event: string;
+  whiteElo?: number | null;
+  blackElo?: number | null;
 }
 
 interface GamesTableProps {
@@ -113,7 +115,9 @@ export function GamesTable({
       <thead>
         <tr>
           <SortableHeader label={t("common.white")} column="white" sort={sort} onSortChange={onSortChange} />
+          <th>{t("gamesTable.whiteElo")}</th>
           <SortableHeader label={t("common.black")} column="black" sort={sort} onSortChange={onSortChange} />
+          <th>{t("gamesTable.blackElo")}</th>
           <SortableHeader label={t("common.date")} column="date" sort={sort} onSortChange={onSortChange} />
           <th>{t("common.result")}</th>
           <th>{t("common.event")}</th>
@@ -134,7 +138,9 @@ export function GamesTable({
               onContextMenu={(e) => handleContextMenu(e, g.key, selected)}
             >
               <td>{g.white}</td>
+              <td>{g.whiteElo ?? ""}</td>
               <td>{g.black}</td>
+              <td>{g.blackElo ?? ""}</td>
               <td>{g.date}</td>
               <td>{g.result}</td>
               <td>{g.event}</td>

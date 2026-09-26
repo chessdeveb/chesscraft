@@ -1946,3 +1946,10 @@ textarea {
   background-color: var(--accent-line) !important;
   font-weight: 600;
 }
+
+.selection-performance {
+  margin: 6px 0 0;
+  padding: 6px 8px;
+  font-size: 0.9em;
+  border-top: 1px solid var(--border, #8884);
+}

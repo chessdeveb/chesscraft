@@ -5,6 +5,7 @@ import { BasesTable } from "./components/BasesTable";
 import { ContextMenu, type ContextMenuItem } from "./components/ContextMenu";
 import { GamesTable, type GameRow } from "./components/GamesTable";
 import { PageNav } from "./components/PageNav";
+import { SelectionPerformance } from "./components/SelectionPerformance";
 
 const GAMES_PAGE_SIZE = 200;
 const PLAYERS_PAGE_SIZE = 200;
@@ -107,6 +108,8 @@ export function PartiesPanelView() {
       date: g.date,
       result: g.result,
       event: g.event,
+      whiteElo: g.whiteElo,
+      blackElo: g.blackElo,
     }));
     return (
       <div className="dock-panel-content">
@@ -126,6 +129,8 @@ export function PartiesPanelView() {
     date: g.date,
     result: g.result,
     event: g.event,
+    whiteElo: g.whiteElo,
+    blackElo: g.blackElo,
   }));
 
   function buildContextMenuItems(ids: number[]): ContextMenuItem[] {
@@ -257,6 +262,7 @@ export function PartiesPanelView() {
         onSelectionChange={onGamesSelectionChange}
         buildContextMenuItems={buildContextMenuItems}
       />
+      <SelectionPerformance basePath={base.path} selectedIds={selectedGameIds} />
     </div>
   );
 }

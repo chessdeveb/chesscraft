@@ -206,6 +206,16 @@ impl GameTree {
         let position: Chess = setup
             .into_position(mode)
             .map_err(|e| format!("Position illégale : {e}"))?;
+        // Forme canonique (position_fen), pas le texte `fen` recu tel quel :
+        // un FEN Chess960 en notation Shredder ("HBhb", lettres de colonne des
+        // tours) se round-trippe en X-FEN standard ("KQkq") des que shakmaty
+        // le reecrit (voir Fen::from_position, meme constat que
+        // pgn::parse_game_at_starts_from_a_chess960_fen_tag_with_shredder_castling) --
+        // stocker la forme brute laisserait le tag FEN et node.fen (calcule
+        // via position_fen partout ailleurs, voir to_dto) diverger
+        // textuellement pour la MEME position, cassant toute comparaison
+        // ulterieure (db::normalize_start_fen, explorateur).
+        let canonical_fen = position_fen(&position);
         let root = Node {
             id: 0,
             parent: None,
@@ -220,7 +230,23 @@ impl GameTree {
             nags: Vec::new(),
             shapes: Vec::new(),
         };
-        Ok(GameTree { nodes: vec![root], tags: default_tags() })
+        let mut tags = default_tags();
+        // Sans ce tag, une partie a depart personnalise (Nouvelle position,
+        // Chess960) perdait sa position de depart des la sauvegarde : ni le
+        // PGN exporte (voir write_game, qui n'ecrit QUE les tags presents
+        // ici) ni la colonne start_fen (voir db::save_game, qui lit ce meme
+        // tag) ne savaient plus qu'elle existait -- la reouverture rejouait
+        // alors les coups depuis la position standard, la plupart du temps
+        // illegaux (silencieusement ignores, voir pgn::GameVisitor::san) et
+        // l'explorateur ne pouvait jamais la retrouver (son hash Zobrist,
+        // recalcule depuis la position standard, ne correspondait plus a
+        // rien). SetUp "1" est la
+        // convention PGN habituelle qui accompagne un tag FEN (jamais
+        // verifiee par cette appli, voir GameVisitor::begin_movetext, mais
+        // attendue par d'autres logiciels PGN).
+        tags.insert("FEN".to_string(), canonical_fen);
+        tags.insert("SetUp".to_string(), "1".to_string());
+        Ok(GameTree { nodes: vec![root], tags })
     }
 
     pub(crate) fn node(&self, id: u32) -> Option<&Node> {
@@ -542,14 +568,14 @@ mod tests {
         assert!(GameTree::from_fen("8/8/8/8/8/8/8/4K3 w - - 0 1").is_err());
     }
 
-    // Cas reel qui a revele le bug du plafond de balayage (voir
-    // db::SHALLOW_SCAN_ROW_CAP) : une capture en passant depuis une position
-    // personnalisee (editeur de position) produit un premier coup ("dxe3")
-    // qui n'a de sens pour aucune vraie partie -- verifie ici que jouer ce
-    // coup et interroger l'explorateur dessus ne panique pas et reste rapide
-    // (ce test servait a l'origine a confirmer/infirmer un blocage signale
-    // par l'utilisateur ; le vrai probleme etait cote db::games_at_position,
-    // voir ses propres tests).
+    // Cas reel qui a motive le passage a une recherche par hash Zobrist :
+    // une capture en passant depuis une position personnalisee (editeur de
+    // position) produit un premier coup ("dxe3") qui n'a de sens pour aucune
+    // vraie partie demarree normalement -- verifie ici que jouer ce coup et
+    // interroger l'explorateur dessus (a partir du depart standard, donc
+    // sans aucun sens) ne panique pas : replay_position echoue proprement
+    // (coup illegal depuis cette position), explore() renvoie une liste
+    // vide et current_zobrist renvoie None plutot que de planter.
     #[test]
     fn plays_and_queries_an_en_passant_capture_from_a_custom_position() {
         let mut tree = GameTree::from_fen("4k3/8/8/8/3pP3/8/8/4K3 b - e3 0 1").unwrap();
@@ -559,8 +585,8 @@ mod tests {
 
         let moves = vec!["dxe3".to_string()];
         let conn = crate::db::open(std::path::Path::new(":memory:")).unwrap();
-        assert!(crate::explorer::explore(&conn, &moves, &crate::explorer::ExplorerFilters::default()).is_ok());
-        assert!(crate::db::games_at_position(&conn, &moves, &crate::explorer::ExplorerFilters::default(), "", "", 20, 0).is_ok());
+        assert!(crate::explorer::explore(&conn, &moves, &crate::explorer::ExplorerFilters::default(), None).unwrap().is_empty());
+        assert_eq!(crate::explorer::current_zobrist(&moves, None), None);
     }
 
     #[test]

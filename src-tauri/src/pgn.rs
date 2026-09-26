@@ -17,6 +17,8 @@ pub struct PgnGameSummary {
     pub date: String,
     pub result: String,
     pub event: String,
+    pub white_elo: Option<i32>,
+    pub black_elo: Option<i32>,
 }
 
 /// Serialise l'arbre de partie en PGN standard (tags + movetext).
@@ -214,6 +216,8 @@ pub fn list_games(pgn_bytes: &[u8]) -> Result<Vec<PgnGameSummary>, String> {
             date: get("Date", "????.??.??"),
             result: get("Result", "*"),
             event: get("Event", "?"),
+            white_elo: tags.get("WhiteElo").and_then(|v| v.trim().parse().ok()),
+            black_elo: tags.get("BlackElo").and_then(|v| v.trim().parse().ok()),
         });
         index += 1;
     }
@@ -504,6 +508,30 @@ mod tests {
         let tree = parse_game_at(pgn, 0).unwrap();
         let exported = write_game(&tree);
         assert!(exported.contains("23. g4 fxg4 24. hxg4"), "numerotation inattendue :\n{exported}");
+    }
+
+    // Cas rapporte par l'utilisateur : une partie a depart personnalise
+    // (Nouvelle position, Chess960 -- GameTree::from_fen, voir lib.rs::
+    // new_game_from_fen/new_chess960_game) perdait sa position de depart des
+    // la sauvegarde. write_game n'ecrit QUE les tags presents dans
+    // tree.tags ; si from_fen ne pose pas elle-meme un tag FEN, ni le PGN
+    // exporte ni la colonne db::start_fen (qui lit ce meme tag) ne savent
+    // plus que cette partie ne demarre pas de la position standard --
+    // silencieusement introuvable ensuite par l'explorateur, et illisible
+    // en cas de reimport (les coups, joues depuis une AUTRE position,
+    // deviennent illegaux et sont ignores, voir GameVisitor::san).
+    #[test]
+    fn write_game_after_from_fen_keeps_the_custom_starting_position() {
+        let fen = crate::game_tree::chess960_start_fen(0).unwrap();
+        let tree = GameTree::from_fen(&fen).unwrap();
+        let exported = write_game(&tree);
+        assert!(exported.contains("[SetUp \"1\"]"), "tag SetUp manquant :\n{exported}");
+        assert!(exported.contains(&format!("[FEN \"{fen}\"]")), "tag FEN manquant/different :\n{exported}");
+
+        // round-trip complet : reimporter ce PGN doit retrouver EXACTEMENT
+        // la meme position de depart, pas la position standard.
+        let reimported = parse_game_at(exported.as_bytes(), 0).unwrap();
+        assert_eq!(reimported.node(0).unwrap().position, tree.node(0).unwrap().position);
     }
 
     // Meme chose quand le FEN de depart est au trait des Noirs : le tout

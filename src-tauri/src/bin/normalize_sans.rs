@@ -123,11 +123,11 @@ fn main() {
 
     if !dry_run && changed > 0 {
         println!("recalcul des stats de l'explorateur...");
-        explorer::rebuild_prefix_stats(&mut conn, |progress| match progress {
-            explorer::RebuildProgress::Reading { examined } => println!("  opening_prefix_stats: lecture, {examined} parties examinees"),
-            explorer::RebuildProgress::Writing { written, total } => println!("  opening_prefix_stats: ecriture, {written} / {total} lignes"),
-        })
-        .expect("rebuild_prefix_stats");
+        explorer::rebuild_position_index(&mut conn, |progress| match progress {
+            explorer::RebuildProgress::Reading { examined } => println!("  position_index: lecture, {examined} parties examinees"),
+            explorer::RebuildProgress::Writing { written, total } => println!("  position_index: ecriture, {written} / {total} lignes"),
+        }, || false)
+        .expect("rebuild_position_index");
         db::rebuild_player_stats(&mut conn, |progress| match progress {
             explorer::RebuildProgress::Reading { examined } => println!("  player_stats: lecture, {examined} parties examinees"),
             explorer::RebuildProgress::Writing { written, total } => println!("  player_stats: ecriture, {written} / {total} lignes"),

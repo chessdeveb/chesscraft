@@ -13,6 +13,7 @@ mod fide;
 mod game_tree;
 mod i18n;
 mod lichess;
+mod performance;
 mod pgn;
 mod recent_pgns;
 
@@ -364,7 +365,7 @@ fn run_bulk_import(
     // voir bulk_import::process_one_game) -- memorise par (nom, indice Elo)
     // deja vu (fide_name_cache) : une source rejoue tres souvent les memes
     // joueurs a un Elo proche, inutile de refaire la recherche FIDE a chaque
-    // partie (meme principe que rebuild_player_stats/rebuild_prefix_stats).
+    // partie (meme principe que rebuild_player_stats).
     // Base FIDE absente ou pas encore telechargee (voir refresh_fide_players) :
     // fide_conn est alors None et canonicalize_name ne fait rien, l'import se
     // deroule normalement.
@@ -382,12 +383,13 @@ fn run_bulk_import(
     };
 
     let summary = bulk_import::bulk_import(&mut conn, source, &mut on_progress, &mut should_cancel, canonicalize_name)?;
-    // recalcule les stats precalculees de l'explorateur d'ouvertures (voir
-    // explorer::rebuild_prefix_stats) : cout marginal a cote de l'import
-    // lui-meme, evite de retomber sur le calcul a la volee, lent sur les tout
-    // premiers coups, au prochain jeu ouvert. Echec non bloquant :
-    // l'explorateur retombe alors sur le calcul a la volee (voir explorer::explore).
-    let _ = explorer::rebuild_prefix_stats(&mut conn, |_| {});
+    // `positions` est deja a jour : chaque partie importee l'indexe en
+    // ligne (voir bulk_import::process_one_game -> db::save_game ->
+    // explorer::index_game, dont l'erreur est propagee, pas un simple cache
+    // best-effort) -- un rebuild_position_index complet ici serait un second
+    // balayage integral redondant. player_stats, lui, s'incremente aussi en
+    // ligne mais en best-effort (`let _ =`, voir increment_player_stats) :
+    // ce rebuild complet rattrape tout increment silencieusement manque.
     let _ = db::rebuild_player_stats(&mut conn, |_| {});
     Ok(summary)
 }
@@ -608,7 +610,7 @@ struct ToolProgress {
     matched: u64,
 }
 
-/// Progression d'un rebuild_prefix_stats/rebuild_player_stats, avec le nom
+/// Progression d'un rebuild_position_index/rebuild_player_stats, avec le nom
 /// de l'etape en cours ("openings"/"players") -- voir
 /// explorer::RebuildProgress pour la distinction lecture/ecriture (les
 /// additionner en un seul compteur, essaye d'abord, produisait un total
@@ -624,8 +626,8 @@ struct ToolRebuildProgress {
 }
 
 /// Menu Outils > Recalculer les stats de l'explorateur : reconstruit
-/// opening_prefix_stats/player_stats sur une base choisie manuellement (voir
-/// explorer::rebuild_prefix_stats, db::rebuild_player_stats). Sert a rattraper
+/// positions/player_stats sur une base choisie manuellement (voir
+/// explorer::rebuild_position_index, db::rebuild_player_stats). Sert a rattraper
 /// un import en masse interrompu avant sa fin (l'appli fermee en cours de
 /// route) -- ce recalcul automatique n'a alors jamais eu lieu, voir
 /// bulk_import_pgn.
@@ -648,11 +650,32 @@ fn rebuild_explorer_stats(app: AppHandle, state: State<AppState>, path: String) 
         let progress_app = app.clone();
         let result = (|| -> Result<(), String> {
             let mut conn = db::open(Path::new(&path))?;
-            explorer::rebuild_prefix_stats(&mut conn, |progress| {
+            // Rattrapage start_fen (voir db::backfill_start_fen) : doit passer
+            // AVANT rebuild_position_index, qui rejoue chaque partie depuis sa
+            // colonne start_fen (parties a depart personnalise enregistrees
+            // avant l'ajout de cette colonne).
+            db::backfill_start_fen(&mut conn, |examined| {
+                let _ = progress_app.emit(
+                    "tool-rebuild-stats-progress",
+                    ToolRebuildProgress { stage: "startFen", progress: explorer::RebuildProgress::Reading { examined } },
+                );
+            }, || false)?;
+            explorer::rebuild_position_index(&mut conn, |progress| {
                 let _ = progress_app.emit("tool-rebuild-stats-progress", ToolRebuildProgress { stage: "openings", progress });
-            })?;
+            }, || false)?;
+            // Restes des anciennes recherches de position (ancienne table
+            // position_index, opening_prefix_stats...) : inutiles une fois
+            // `positions` reconstruite, on les retire.
+            db::drop_legacy_explorer_structures(&conn)?;
             db::rebuild_player_stats(&mut conn, |progress| {
                 let _ = progress_app.emit("tool-rebuild-stats-progress", ToolRebuildProgress { stage: "players", progress });
+            })?;
+            // Rend au disque l'espace libere par les tables supprimees.
+            db::compact_if_worthwhile(&conn, || {
+                let _ = progress_app.emit(
+                    "tool-rebuild-stats-progress",
+                    ToolRebuildProgress { stage: "compact", progress: explorer::RebuildProgress::Writing { written: 0, total: 0 } },
+                );
             })?;
             Ok(())
         })();
@@ -712,9 +735,6 @@ fn deduplicate_base(app: AppHandle, state: State<AppState>, path: String) -> Res
                 // etape-ci a sa propre forme (stage + phase lecture/ecriture,
                 // voir ToolRebuildProgress), les melanger sous le meme nom
                 // d'evenement aurait ete ambigu a interpreter cote frontend.
-                explorer::rebuild_prefix_stats(&mut conn, |progress| {
-                    let _ = progress_app.emit("tool-deduplicate-rebuild-progress", ToolRebuildProgress { stage: "openings", progress });
-                })?;
                 db::rebuild_player_stats(&mut conn, |progress| {
                     let _ = progress_app.emit("tool-deduplicate-rebuild-progress", ToolRebuildProgress { stage: "players", progress });
                 })?;
@@ -1491,6 +1511,10 @@ fn classify_opening(moves: Vec<String>) -> Option<eco::EcoInfo> {
     eco::classify(&moves)
 }
 
+/// Delai maximum d'une requete de l'explorateur sur la base de reference (voir
+/// explorer::with_time_limit).
+const EXPLORER_QUERY_LIMIT: std::time::Duration = std::time::Duration::from_secs(15);
+
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 fn opening_explorer(
@@ -1498,6 +1522,7 @@ fn opening_explorer(
     state: State<AppState>,
     tab_id: u32,
     moves: Vec<String>,
+    start_fen: Option<String>,
     player_name: Option<String>,
     player_white: Option<bool>,
     rating_min: Option<i32>,
@@ -1507,26 +1532,32 @@ fn opening_explorer(
 ) -> Result<Vec<OpeningMoveStat>, String> {
     ensure_reference_conn(&app, &state)?;
     let filters = build_explorer_filters(&state, tab_id, player_name, player_white, rating_min, rating_max, year_min, year_max);
+    // Normalise ici (pas cote frontend) : le frontend envoie systematiquement
+    // le FEN racine de l'onglet affiche, standard ou non -- seul le backend a
+    // besoin de savoir que la position standard vaut None (voir
+    // db::normalize_start_fen).
+    let start_fen = db::normalize_start_fen(start_fen.as_deref());
 
-    // le cache partage (explorer_cache) ne couvre que la vue non filtree,
-    // commune a tous les onglets ; des que le moindre filtre (preparation ou
-    // ad-hoc) est actif, la reponse est propre a cette combinaison precise
-    // et reste rapide sans avoir besoin d'etre mise en cache (voir
-    // explorer::ExplorerFilters).
-    if filters.is_empty() {
+    // le cache partage (explorer_cache) ne couvre que la vue non filtree, a
+    // depart standard, commune a tous les onglets ; des que le moindre filtre
+    // (preparation ou ad-hoc) est actif OU que la partie affichee ne demarre
+    // pas de la position standard (Nouvelle position, Chess960), la reponse
+    // est propre a cette combinaison precise et reste rapide sans avoir
+    // besoin d'etre mise en cache (voir explorer::ExplorerFilters).
+    if filters.is_empty() && start_fen.is_none() {
         let key = moves.join(" ");
         if let Some(cached) = state.explorer_cache.lock().unwrap().get(&key) {
             return Ok(cached.clone());
         }
         let conn_cache = state.reference_conn.lock().unwrap();
         let conn = &conn_cache.as_ref().unwrap().1;
-        let stats = explorer::explore(conn, &moves, &filters)?;
+        let stats = explorer::with_time_limit(conn, EXPLORER_QUERY_LIMIT, || explorer::explore(conn, &moves, &filters, None))?;
         state.explorer_cache.lock().unwrap().insert(key, stats.clone());
         return Ok(stats);
     }
     let conn_cache = state.reference_conn.lock().unwrap();
     let conn = &conn_cache.as_ref().unwrap().1;
-    explorer::explore(conn, &moves, &filters)
+    explorer::with_time_limit(conn, EXPLORER_QUERY_LIMIT, || explorer::explore(conn, &moves, &filters, start_fen.as_deref()))
 }
 
 #[derive(Serialize, Clone)]
@@ -1548,6 +1579,7 @@ fn opening_explorer_games(
     state: State<AppState>,
     tab_id: u32,
     moves: Vec<String>,
+    start_fen: Option<String>,
     offset: u32,
     limit: u32,
     sort_by: Option<String>,
@@ -1561,10 +1593,30 @@ fn opening_explorer_games(
 ) -> Result<ExplorerGamesPage, String> {
     ensure_reference_conn(&app, &state)?;
     let filters = build_explorer_filters(&state, tab_id, player_name, player_white, rating_min, rating_max, year_min, year_max);
+    // Voir opening_explorer : normalise ici, le frontend envoie toujours le
+    // FEN racine de l'onglet affiche, standard ou non.
+    let start_fen = db::normalize_start_fen(start_fen.as_deref());
     let conn_cache = state.reference_conn.lock().unwrap();
     let (base_path, conn) = conn_cache.as_ref().unwrap();
-    let total = db::count_games_at_position(conn, &moves, &filters)?;
-    let games = db::games_at_position(conn, &moves, &filters, sort_by.as_deref().unwrap_or(""), sort_dir.as_deref().unwrap_or(""), limit, offset)?;
+    // Aucune position (coup illegal depuis ce depart, ex. venant de l'editeur
+    // de position -- voir game_tree::plays_and_queries_an_en_passant_capture_from_a_custom_position) :
+    // aucune partie ne peut y correspondre, pas d'appel SQL a faire.
+    let Some(zobrist) = explorer::current_zobrist(&moves, start_fen.as_deref()) else {
+        return Ok(ExplorerGamesPage { games: Vec::new(), total: 0, base_path: base_path.clone() });
+    };
+    let (total, games) = explorer::with_time_limit(conn, EXPLORER_QUERY_LIMIT, || {
+        let total = db::count_at_zobrist(conn, zobrist, &filters)?;
+        let games = db::games_at_zobrist(
+            conn,
+            zobrist,
+            &filters,
+            sort_by.as_deref().unwrap_or(""),
+            sort_dir.as_deref().unwrap_or(""),
+            limit,
+            offset,
+        )?;
+        Ok((total, games))
+    })?;
     Ok(ExplorerGamesPage { games, total, base_path: base_path.clone() })
 }
 
@@ -1623,6 +1675,15 @@ fn add_existing_base(app: AppHandle, path: String) -> Result<BaseInfo, String> {
     bases::register_base(&dir, &name, &path)?;
     let games = db::count_games(&conn, &db::GamesFilter::default())?;
     Ok(BaseInfo { name, path, games, is_reference: false, missing: false })
+}
+
+/// Performance Elo (methode FIDE) du joueur le plus present dans les parties
+/// selectionnees du panneau Parties ; None s'il n'y a rien d'exploitable.
+#[tauri::command]
+fn games_performance(path: String, ids: Vec<i64>) -> Result<Option<performance::Performance>, String> {
+    let conn = db::open(Path::new(&path))?;
+    let games = db::load_games_for_performance(&conn, &ids)?;
+    Ok(performance::compute(&games))
 }
 
 #[derive(Serialize)]
@@ -2239,6 +2300,7 @@ pub fn run() {
             create_base,
             add_existing_base,
             list_games_in_base,
+            games_performance,
             list_players_in_base,
             open_game,
             save_game_to,

@@ -35,13 +35,23 @@ function formatBulkImportSummary(summary: BulkImportSummary): string {
 // PRECOMPUTED_MAX_DEPTH est passe a 20) -- les additionner en un seul nombre
 // continu (essaye d'abord) donnait un total sans rapport clair avec la
 // taille de la base, rapporte par l'utilisateur comme deroutant.
-type ToolRebuildProgressEvent = { stage: "openings" | "players" } & (
+type ToolRebuildProgressEvent = { stage: "openings" | "players" | "startFen" | "compact" } & (
   | { phase: "reading"; examined: number }
   | { phase: "writing"; written: number; total: number }
 );
 
+const REBUILD_STAGE_KEY: Record<ToolRebuildProgressEvent["stage"], string> = {
+  openings: "tools.stageOpenings",
+  players: "tools.stagePlayers",
+  startFen: "tools.stageStartFen",
+  compact: "tools.stageCompact",
+};
+
 function formatRebuildProgress(event: ToolRebuildProgressEvent): string {
-  const stage = i18n.t(event.stage === "openings" ? "tools.stageOpenings" : "tools.stagePlayers");
+  const stage = i18n.t(REBUILD_STAGE_KEY[event.stage]);
+  // ecriture sans total : etape longue d'un seul bloc (tri de l'index,
+  // compactage du fichier), aucun avancement mesurable a afficher.
+  if (event.phase === "writing" && event.total === 0) return i18n.t("tools.progressRebuildBusy", { stage });
   return event.phase === "reading"
     ? i18n.t("tools.progressRebuildReading", { stage, examined: event.examined })
     : i18n.t("tools.progressRebuildWriting", { stage, written: event.written, total: event.total });
