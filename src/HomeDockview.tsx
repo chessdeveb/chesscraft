@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
-import { ask, open, save } from "@tauri-apps/plugin-dialog";
+import { ask, message, open, save } from "@tauri-apps/plugin-dialog";
 import { DockviewReact, type DockviewApi, type DockviewReadyEvent } from "dockview-react";
 import { useTranslation } from "react-i18next";
 import {
+  EMPTY_FIDE_ADVANCED_FILTER,
   EMPTY_GAMES_ADVANCED_FILTER,
   HomeContext,
+  type FideAdvancedFilter,
   type FideSort,
   type FideSortColumn,
   type GamesAdvancedFilter,
@@ -16,13 +18,17 @@ import {
   type HomeContextValue,
   type PlayersSort,
   type PlayersSortColumn,
+  type TournamentsSort,
+  type TournamentsSortColumn,
 } from "./HomeContext";
 import { persistDockviewLayout, syncPanelCheckedStates, tryRestoreDockviewLayout, useDockviewTheme } from "./dockviewPersistence";
 import { homeDockviewComponents } from "./HomeDockPanels";
+import { ExternalUpdatesReviewDialog } from "./components/ExternalUpdatesReviewDialog";
 import { MoveGameBasePicker } from "./components/MoveGameBasePicker";
 import { useAutoDismissError } from "./useAutoDismissError";
 import type {
   BaseInfo,
+  CatchupRange,
   FidePlayer,
   FidePlayersPage,
   FideStatus,
@@ -31,6 +37,9 @@ import type {
   PlayerSummary,
   PlayersPage,
   SaveResult,
+  TournamentSummary,
+  TournamentsPage,
+  UpdatePreview,
 } from "./types";
 import "dockview-react/dist/styles/dockview.css";
 import "./App.css";
@@ -41,6 +50,7 @@ interface HomeDockviewProps {
   onImportNewFile: () => Promise<void>;
   basesVersion: number;
   onPrepareAgainstPlayer: (name: string, white: boolean) => void;
+  onImportExternalUpdates: (dbPath: string, pgnPath: string) => void;
 }
 
 interface HomePanelPrefs {
@@ -49,20 +59,37 @@ interface HomePanelPrefs {
   parties: boolean;
   players: boolean;
   fide: boolean;
+  tournaments: boolean;
 }
 
 const HOME_PANELS_KEY = "homePanels";
 const HOME_LAYOUT_KEY = "homeDockviewLayout";
-const HOME_PANEL_IDS = ["bases", "pgn", "parties", "players", "fide"];
+const HOME_PANEL_IDS = ["bases", "pgn", "parties", "players", "fide", "tournaments"];
 
 function loadHomePanelPrefs(): HomePanelPrefs {
-  const defaults: HomePanelPrefs = { bases: true, pgn: true, parties: true, players: true, fide: true };
+  const defaults: HomePanelPrefs = { bases: true, pgn: true, parties: true, players: true, fide: true, tournaments: true };
   try {
     const raw = localStorage.getItem(HOME_PANELS_KEY);
     if (!raw) return defaults;
     return { ...defaults, ...JSON.parse(raw) };
   } catch {
     return defaults;
+  }
+}
+
+const EXTERNAL_UPDATES_PREVIEW_KEY = "externalUpdatesPreview";
+
+// Voir le commentaire au point d'utilisation (externalUpdatesPreview) pour la
+// raison d'etre de cette persistance -- try/catch comme loadHomePanelPrefs :
+// un JSON perime (ex. ancien schema UpdatePreview apres une mise a jour de
+// l'appli) ne doit jamais faire planter l'ouverture de l'accueil, juste
+// repartir sans revue a restaurer.
+function loadPersistedExternalUpdatesPreview(): UpdatePreview | null {
+  try {
+    const raw = localStorage.getItem(EXTERNAL_UPDATES_PREVIEW_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
   }
 }
 
@@ -74,6 +101,7 @@ function baseNameFromPath(path: string): string {
 const GAMES_PAGE_SIZE = 200;
 const PLAYERS_PAGE_SIZE = 200;
 const FIDE_PAGE_SIZE = 200;
+const TOURNAMENTS_PAGE_SIZE = 200;
 
 // La FIDE publie une nouvelle liste de classement le 1er de chaque mois :
 // last_updated (epoch secondes, voir get_fide_status) date donc du mois en
@@ -89,12 +117,19 @@ function isCurrentMonthFideUpdate(epochSecondsStr: string | null): boolean {
   return updated.getFullYear() === now.getFullYear() && updated.getMonth() === now.getMonth();
 }
 
+// Au-dela de ce retard (~4 mois, choix explicite de l'utilisateur -- voir
+// LICHESS_LOOKBACK_WEEKS cote Rust, meme valeur), on demande confirmation
+// avant de lancer le rattrapage complet (potentiellement plusieurs dizaines
+// d'editions TWIC + recoupement Lichess par tournoi).
+const LARGE_CATCHUP_WARNING_WEEKS = 17;
+
 export function HomeDockview({
   onOpenGame,
   onOpenPgnGame,
   onImportNewFile,
   basesVersion,
   onPrepareAgainstPlayer,
+  onImportExternalUpdates,
 }: HomeDockviewProps) {
   const { t } = useTranslation();
   const theme = useDockviewTheme();
@@ -110,6 +145,7 @@ export function HomeDockview({
     dockviewApi.getPanel("parties")?.api.setTitle(t("home.panel.games"));
     dockviewApi.getPanel("players")?.api.setTitle(t("home.panel.players"));
     dockviewApi.getPanel("fide")?.api.setTitle(t("home.panel.fide"));
+    dockviewApi.getPanel("tournaments")?.api.setTitle(t("home.panel.tournaments"));
   }, [dockviewApi, t]);
 
   const [bases, setBases] = useState<BaseInfo[]>([]);
@@ -143,6 +179,20 @@ export function HomeDockview({
     setPlayersPage(0);
   }, []);
 
+  const [tournaments, setTournaments] = useState<TournamentSummary[]>([]);
+  const [tournamentsTotal, setTournamentsTotal] = useState(0);
+  const [tournamentsLoading, setTournamentsLoading] = useState(false);
+  const [tournamentsPage, setTournamentsPage] = useState(0);
+  const [tournamentsSearchInput, setTournamentsSearchInput] = useState("");
+  const [tournamentsSearch, setTournamentsSearch] = useState("");
+  const [tournamentsSort, setTournamentsSort] = useState<TournamentsSort | null>(null);
+  const [tournamentsVersion, setTournamentsVersion] = useState(0);
+
+  const onTournamentsSortChange = useCallback((column: TournamentsSortColumn) => {
+    setTournamentsSort((prev) => (prev?.column === column ? { column, dir: prev.dir === "asc" ? "desc" : "asc" } : { column, dir: "asc" }));
+    setTournamentsPage(0);
+  }, []);
+
   // Base FIDE (reference globale, independante de la base de parties
   // selectionnee -- voir fide.rs) : pas de activeBasePath dans les deps de
   // son effet de chargement, contrairement a `players` ci-dessus.
@@ -152,6 +202,9 @@ export function HomeDockview({
   const [fidePage, setFidePage] = useState(0);
   const [fideSearchInput, setFideSearchInput] = useState("");
   const [fideSearch, setFideSearch] = useState("");
+  const [fideAdvancedOpen, setFideAdvancedOpen] = useState(false);
+  const [fideAdvancedInput, setFideAdvancedInput] = useState<FideAdvancedFilter>(EMPTY_FIDE_ADVANCED_FILTER);
+  const [fideAdvancedFilter, setFideAdvancedFilter] = useState<FideAdvancedFilter>(EMPTY_FIDE_ADVANCED_FILTER);
   const [fideSort, setFideSort] = useState<FideSort | null>(null);
   const [fideLastUpdated, setFideLastUpdated] = useState<string | null>(null);
   const [fideRefreshing, setFideRefreshing] = useState(false);
@@ -165,10 +218,169 @@ export function HomeDockview({
 
   const commitFideFilter = useCallback(() => {
     setFideSearch(fideSearchInput);
+    setFideAdvancedFilter(fideAdvancedInput);
     setFidePage(0);
-  }, [fideSearchInput]);
+  }, [fideSearchInput, fideAdvancedInput]);
+
+  // meme principe que onToggleGamesAdvanced : recherche rapide par nom et
+  // filtres avances (pays/titre/sexe/annee de naissance) sont mutuellement
+  // exclusifs cote UI, basculer de l'un a l'autre vide le precedent.
+  const onToggleFideAdvanced = useCallback(() => {
+    setFideAdvancedOpen((prev) => {
+      if (prev) {
+        setFideAdvancedInput(EMPTY_FIDE_ADVANCED_FILTER);
+        setFideAdvancedFilter(EMPTY_FIDE_ADVANCED_FILTER);
+      } else {
+        setFideSearchInput("");
+        setFideSearch("");
+      }
+      setFidePage(0);
+      return !prev;
+    });
+  }, []);
+
+  const onFideAdvancedFilterChange = useCallback((patch: Partial<FideAdvancedFilter>) => {
+    setFideAdvancedInput((prev) => ({ ...prev, ...patch }));
+  }, []);
 
   const [error, setError] = useAutoDismissError();
+
+  // Mises a jour externes (TWIC/Lichess, voir external_updates.rs) : toujours
+  // operation sur la base actuellement marquee "reference" (pas de
+  // base-picker dedie), pour que l'utilisateur alternant entre plusieurs
+  // bases de reference obtienne toujours un rattrapage calcule depuis la
+  // partie la plus recente de celle en cours (voir infer_start_issue, meme
+  // raisonnement que ensure_reference_conn). externalUpdatesEstimate vient
+  // d'un sondage passif et bon marche (voir runExternalUpdatesEstimate,
+  // declenche au montage) ; la verification/le telechargement complets
+  // (couteux) ne se declenchent eux qu'au clic explicite sur le bouton --
+  // jamais automatiquement, voir la discussion qui a mene a cette
+  // fonctionnalite ("aucune maj ne se fait sans l'accord de l'utilisateur").
+  const [externalUpdatesEstimate, setExternalUpdatesEstimate] = useState<CatchupRange | null>(null);
+  const [externalUpdatesBusy, setExternalUpdatesBusy] = useState<"estimating" | "checking" | null>(null);
+  const [externalUpdatesProgress, setExternalUpdatesProgress] = useState<string | null>(null);
+  // Persiste dans localStorage (en plus de l'etat React) : rapporte par
+  // l'utilisateur, l'ordinateur passe en veille pendant qu'il regarde la
+  // revue (deja longue a obtenir -- plusieurs editions TWIC + recoupement
+  // Lichess) a fait disparaitre la fenetre au reveil sans qu'il ait pu
+  // annuler ni importer. Le PGN consolide sur disque (pgn_path) survit lui
+  // sans probleme (chemin fixe, voir check_external_updates) ; seul le
+  // resume affiche ici etait perdu. Restaure donc la revue au remontage du
+  // composant plutot que de forcer l'utilisateur a tout retelecharger.
+  const [externalUpdatesPreview, setExternalUpdatesPreview] = useState<UpdatePreview | null>(loadPersistedExternalUpdatesPreview);
+  // Distingue le sondage passif (silencieux, juste pour le badge) du sondage
+  // declenche par le clic utilisateur (qui doit, lui, enchainer sur la
+  // confirmation puis la verification complete) -- les deux passent par le
+  // meme evenement "external-updates-estimate-done".
+  const externalUpdatesManualRef = useRef(false);
+  const referenceBasePath = bases.find((b) => b.isReference && !b.missing)?.path ?? null;
+
+  const startExternalUpdatesCheck = useCallback(() => {
+    if (!referenceBasePath) return;
+    setExternalUpdatesBusy("checking");
+    setExternalUpdatesProgress(null);
+    invoke("check_external_updates", { referenceDbPath: referenceBasePath }).catch((e) => {
+      setExternalUpdatesBusy(null);
+      setError(String(e));
+    });
+  }, [referenceBasePath]);
+
+  const runExternalUpdatesEstimate = useCallback(
+    (manual: boolean) => {
+      if (!referenceBasePath) {
+        if (manual) setError(t("home.externalUpdates.noReferenceBase"));
+        return;
+      }
+      externalUpdatesManualRef.current = manual;
+      if (manual) {
+        setError(null);
+        setExternalUpdatesBusy("estimating");
+      }
+      invoke("estimate_external_updates", { referenceDbPath: referenceBasePath }).catch((e) => {
+        if (!manual) return;
+        setExternalUpdatesBusy(null);
+        setError(String(e));
+      });
+    },
+    [referenceBasePath, t]
+  );
+
+  // Sondage silencieux au demarrage (et chaque fois que la base de reference
+  // change) -- seulement de quoi afficher un badge, voir plus haut.
+  useEffect(() => {
+    runExternalUpdatesEstimate(false);
+  }, [referenceBasePath]);
+
+  useEffect(() => {
+    const unlistenPromises = [
+      listen<CatchupRange | null>("external-updates-estimate-done", async (event) => {
+        setExternalUpdatesEstimate(event.payload);
+        const manual = externalUpdatesManualRef.current;
+        externalUpdatesManualRef.current = false;
+        if (!manual) return;
+        const range = event.payload;
+        if (!range) {
+          setExternalUpdatesBusy(null);
+          await message(t("home.externalUpdates.upToDate"), { title: t("home.externalUpdates.title") });
+          return;
+        }
+        if (range.weeksBehind >= LARGE_CATCHUP_WARNING_WEEKS) {
+          setExternalUpdatesBusy(null);
+          const confirmed = await ask(t("home.externalUpdates.largeCatchupConfirm", { weeks: range.weeksBehind }), {
+            title: t("home.externalUpdates.title"),
+            kind: "warning",
+          });
+          if (!confirmed) return;
+        }
+        startExternalUpdatesCheck();
+      }),
+      listen<string>("external-updates-estimate-error", (event) => {
+        const manual = externalUpdatesManualRef.current;
+        externalUpdatesManualRef.current = false;
+        if (!manual) return;
+        setExternalUpdatesBusy(null);
+        setError(event.payload);
+      }),
+      listen<{ message: string }>("external-updates-progress", (event) => setExternalUpdatesProgress(event.payload.message)),
+      listen<UpdatePreview | null>("external-updates-done", async (event) => {
+        setExternalUpdatesBusy(null);
+        setExternalUpdatesProgress(null);
+        if (!event.payload) {
+          await message(t("home.externalUpdates.upToDate"), { title: t("home.externalUpdates.title") });
+          return;
+        }
+        localStorage.setItem(EXTERNAL_UPDATES_PREVIEW_KEY, JSON.stringify(event.payload));
+        setExternalUpdatesPreview(event.payload);
+      }),
+      listen<string>("external-updates-error", (event) => {
+        setExternalUpdatesBusy(null);
+        setExternalUpdatesProgress(null);
+        setError(event.payload);
+      }),
+      listen("menu-check-external-updates", () => runExternalUpdatesEstimate(true)),
+    ];
+    return () => {
+      unlistenPromises.forEach((p) => p.then((unlisten) => unlisten()));
+    };
+  }, [t, startExternalUpdatesCheck, runExternalUpdatesEstimate]);
+
+  const handleCheckExternalUpdates = useCallback(() => {
+    runExternalUpdatesEstimate(true);
+  }, [runExternalUpdatesEstimate]);
+
+  const dismissExternalUpdatesPreview = useCallback(() => {
+    localStorage.removeItem(EXTERNAL_UPDATES_PREVIEW_KEY);
+    setExternalUpdatesPreview(null);
+  }, []);
+
+  const handleConfirmExternalUpdatesImport = useCallback(
+    (pgnPath: string) => {
+      if (!referenceBasePath) return;
+      dismissExternalUpdatesPreview();
+      onImportExternalUpdates(referenceBasePath, pgnPath);
+    },
+    [referenceBasePath, dismissExternalUpdatesPreview, onImportExternalUpdates]
+  );
 
   const refreshBases = useCallback(async () => {
     try {
@@ -226,12 +438,21 @@ export function HomeDockview({
     setPlayersSearchInput("");
     setPlayersSearch("");
     setPlayersSort(null);
+    setTournamentsPage(0);
+    setTournamentsSearchInput("");
+    setTournamentsSearch("");
+    setTournamentsSort(null);
   }, [activeBasePath]);
 
   const commitPlayersFilter = useCallback(() => {
     setPlayersSearch(playersSearchInput);
     setPlayersPage(0);
   }, [playersSearchInput]);
+
+  const commitTournamentsFilter = useCallback(() => {
+    setTournamentsSearch(tournamentsSearchInput);
+    setTournamentsPage(0);
+  }, [tournamentsSearchInput]);
 
   const onGamesSortChange = useCallback((column: GamesSortColumn) => {
     setGamesSort((prev) => (prev?.column === column ? { column, dir: prev.dir === "asc" ? "desc" : "asc" } : { column, dir: "asc" }));
@@ -284,7 +505,7 @@ export function HomeDockview({
             result: gamesAdvancedFilter.result,
             dateFrom: gamesAdvancedFilter.dateFrom,
             dateTo: gamesAdvancedFilter.dateTo,
-            timeControl: gamesAdvancedFilter.timeControl,
+            tournament: gamesAdvancedFilter.tournament,
           }
         : { search: gamesSearch },
       sortBy: gamesSort?.column ?? "",
@@ -353,6 +574,48 @@ export function HomeDockview({
       });
   }, [activeBasePath, activeBaseMissing, playersSearch, playersPage, playersSort]);
 
+  const tournamentsRequestIdRef = useRef(0);
+  useEffect(() => {
+    if (!activeBasePath || activeBaseMissing) {
+      setTournaments([]);
+      setTournamentsTotal(0);
+      setTournamentsLoading(false);
+      return;
+    }
+    const requestId = ++tournamentsRequestIdRef.current;
+    setTournamentsLoading(true);
+    invoke<TournamentsPage>("list_tournaments_in_base", {
+      path: activeBasePath,
+      search: tournamentsSearch,
+      sortBy: tournamentsSort?.column ?? "",
+      sortDir: tournamentsSort?.dir ?? "",
+      offset: tournamentsPage * TOURNAMENTS_PAGE_SIZE,
+      limit: TOURNAMENTS_PAGE_SIZE,
+    })
+      .then((res) => {
+        if (tournamentsRequestIdRef.current !== requestId) return;
+        setTournaments(res.tournaments);
+        setTournamentsTotal(res.total);
+      })
+      .catch((e) => {
+        if (tournamentsRequestIdRef.current !== requestId) return;
+        setError(String(e));
+      })
+      .finally(() => {
+        if (tournamentsRequestIdRef.current === requestId) setTournamentsLoading(false);
+      });
+  }, [activeBasePath, activeBaseMissing, tournamentsSearch, tournamentsPage, tournamentsSort, tournamentsVersion]);
+
+  // Modifier la cadence rejoue immediatement la liste (le nombre de parties
+  // mises a jour figure dans la reponse, mais seule la cadence affichee doit
+  // changer ici -- voir aussi tournamentsVersion dans les deps ci-dessus).
+  const handleSetTournamentCadence = useCallback((tournamentId: number, timeControl: string) => {
+    if (!activeBasePath) return;
+    invoke("set_tournament_cadence", { path: activeBasePath, tournamentId, timeControl })
+      .then(() => setTournamentsVersion((v) => v + 1))
+      .catch((e) => setError(String(e)));
+  }, [activeBasePath]);
+
   const handleFideRefresh = useCallback(async () => {
     setFideRefreshError(null);
     setFideRefreshProgress(0);
@@ -392,12 +655,19 @@ export function HomeDockview({
   useEffect(() => {
     const requestId = ++fideRequestIdRef.current;
     setFideLoading(true);
+    const yearInt = (s: string) => (s.trim() === "" ? undefined : parseInt(s, 10));
     invoke<FidePlayersPage>("list_fide_players", {
       search: fideSearch,
       sortBy: fideSort?.column ?? "",
       sortDir: fideSort?.dir ?? "",
       offset: fidePage * FIDE_PAGE_SIZE,
       limit: FIDE_PAGE_SIZE,
+      fed: fideAdvancedFilter.fed.trim() === "" ? undefined : fideAdvancedFilter.fed.trim(),
+      title: fideAdvancedFilter.title.trim() === "" ? undefined : fideAdvancedFilter.title.trim(),
+      sex: fideAdvancedFilter.sex.trim() === "" ? undefined : fideAdvancedFilter.sex.trim(),
+      status: fideAdvancedFilter.status === "" ? undefined : fideAdvancedFilter.status,
+      birthYearMin: yearInt(fideAdvancedFilter.birthYearMin),
+      birthYearMax: yearInt(fideAdvancedFilter.birthYearMax),
     })
       .then((res) => {
         if (fideRequestIdRef.current !== requestId) return;
@@ -411,7 +681,7 @@ export function HomeDockview({
       .finally(() => {
         if (fideRequestIdRef.current === requestId) setFideLoading(false);
       });
-  }, [fideSearch, fidePage, fideSort]);
+  }, [fideSearch, fideAdvancedFilter, fidePage, fideSort]);
 
   useEffect(() => {
     const unlistenPromises = [
@@ -439,6 +709,26 @@ export function HomeDockview({
       setGamesAdvancedFilter(EMPTY_GAMES_ADVANCED_FILTER);
       setGamesSearchInput(name);
       setGamesSearch(name);
+      setGamesPage(0);
+      api?.getPanel("parties")?.api.setActive();
+    },
+    [dockviewApi]
+  );
+
+  // Clic sur un tournoi (onglet Tournois) : filtre le panneau Parties sur ce
+  // tournoi exact -- passe par les filtres avances (recherche rapide et
+  // filtres avances sont mutuellement exclusifs, voir onToggleGamesAdvanced)
+  // plutot que la recherche rapide (reservee a Blancs/Noirs, voir
+  // handleSelectPlayer) puisque le tournoi est un filtre avance a part entiere.
+  const handleFilterGamesByTournament = useCallback(
+    (name: string) => {
+      const api = dockviewApi;
+      setGamesSearchInput("");
+      setGamesSearch("");
+      const filter = { ...EMPTY_GAMES_ADVANCED_FILTER, tournament: name };
+      setGamesAdvancedInput(filter);
+      setGamesAdvancedFilter(filter);
+      setGamesAdvancedOpen(true);
       setGamesPage(0);
       api?.getPanel("parties")?.api.setActive();
     },
@@ -638,7 +928,7 @@ export function HomeDockview({
 
   // --- panneaux : visibilite persistee, pilotee par le menu natif Affichage ---
   const setPanelVisible = useCallback(
-    (id: "bases" | "pgn" | "parties" | "players" | "fide", visible: boolean) => {
+    (id: "bases" | "pgn" | "parties" | "players" | "fide" | "tournaments", visible: boolean) => {
       const api = dockviewApi;
       if (!api) return;
       const existing = api.getPanel(id);
@@ -673,13 +963,21 @@ export function HomeDockview({
             title: t("home.panel.players"),
             position: parties ? { direction: "within", referencePanel: "parties" } : undefined,
           });
-        } else {
+        } else if (id === "fide") {
           const players = api.getPanel("players");
           api.addPanel({
             id: "fide",
             component: "fide",
             title: t("home.panel.fide"),
             position: players ? { direction: "within", referencePanel: "players" } : undefined,
+          });
+        } else {
+          const fide = api.getPanel("fide");
+          api.addPanel({
+            id: "tournaments",
+            component: "tournaments",
+            title: t("home.panel.tournaments"),
+            position: fide ? { direction: "within", referencePanel: "fide" } : undefined,
           });
         }
       } else {
@@ -690,7 +988,7 @@ export function HomeDockview({
   );
 
   useEffect(() => {
-    const unlistenPromises = (["bases", "pgn", "parties", "players", "fide"] as const).map((id) =>
+    const unlistenPromises = (["bases", "pgn", "parties", "players", "fide", "tournaments"] as const).map((id) =>
       listen(`menu-toggle-panel-${id}`, () => {
         const isVisible = !!dockviewApi?.getPanel(id);
         setPanelVisible(id, !isVisible);
@@ -725,6 +1023,15 @@ export function HomeDockview({
           component: "fide",
           title: t("home.panel.fide"),
           position: playersPanel ? { direction: "within", referencePanel: "players" } : undefined,
+        });
+      }
+      if (!api.getPanel("tournaments")) {
+        const fidePanel = api.getPanel("fide");
+        api.addPanel({
+          id: "tournaments",
+          component: "tournaments",
+          title: t("home.panel.tournaments"),
+          position: fidePanel ? { direction: "within", referencePanel: "fide" } : undefined,
         });
       }
       syncPanelCheckedStates(api, HOME_PANEL_IDS);
@@ -766,6 +1073,15 @@ export function HomeDockview({
         component: "fide",
         title: t("home.panel.fide"),
         position: playersPanel ? { direction: "within", referencePanel: "players" } : undefined,
+      });
+    }
+    if (prefs.tournaments) {
+      const fidePanel = api.getPanel("fide");
+      api.addPanel({
+        id: "tournaments",
+        component: "tournaments",
+        title: t("home.panel.tournaments"),
+        position: fidePanel ? { direction: "within", referencePanel: "fide" } : undefined,
       });
     }
     api.getPanel("bases")?.api.setActive();
@@ -828,6 +1144,10 @@ export function HomeDockview({
     onFideSearchChange: setFideSearchInput,
     onFidePageChange: setFidePage,
     onFideFilterCommit: commitFideFilter,
+    fideAdvancedOpen,
+    onToggleFideAdvanced,
+    fideAdvancedFilter: fideAdvancedInput,
+    onFideAdvancedFilterChange,
     fideSort,
     onFideSortChange,
     fideLastUpdated,
@@ -835,6 +1155,21 @@ export function HomeDockview({
     fideRefreshProgress,
     fideRefreshError,
     onFideRefresh: handleFideRefresh,
+    tournaments,
+    tournamentsTotal,
+    tournamentsLoading,
+    tournamentsPage,
+    tournamentsSearchInput,
+    onTournamentsSearchChange: setTournamentsSearchInput,
+    onTournamentsPageChange: setTournamentsPage,
+    onTournamentsFilterCommit: commitTournamentsFilter,
+    tournamentsSort,
+    onTournamentsSortChange,
+    onSetTournamentCadence: handleSetTournamentCadence,
+    onFilterGamesByTournament: handleFilterGamesByTournament,
+    externalUpdatesEstimate,
+    externalUpdatesBusy,
+    onCheckExternalUpdates: handleCheckExternalUpdates,
   };
 
   return (
@@ -881,6 +1216,21 @@ export function HomeDockview({
             </div>
           </div>
         </div>
+      )}
+      {externalUpdatesBusy === "checking" && (
+        <div className="modal-overlay">
+          <div className="modal">
+            <h2>{t("home.externalUpdates.title")}</h2>
+            <p className="status-message">{externalUpdatesProgress ?? t("tools.working")}</p>
+          </div>
+        </div>
+      )}
+      {externalUpdatesPreview && (
+        <ExternalUpdatesReviewDialog
+          preview={externalUpdatesPreview}
+          onConfirm={handleConfirmExternalUpdatesImport}
+          onCancel={dismissExternalUpdatesPreview}
+        />
       )}
     </HomeContext.Provider>
   );

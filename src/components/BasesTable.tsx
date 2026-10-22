@@ -2,6 +2,13 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { GAME_DRAG_MIME, type GameDragPayload } from "../dnd";
 import type { BaseInfo } from "../types";
+import { ColumnResizeHandle, useColumnWidths } from "../useColumnWidths";
+
+const BASES_TABLE_COLUMNS = [
+  { key: "name", default: 160 },
+  { key: "games", default: 70 },
+  { key: "location", default: 320 },
+];
 
 interface BasesTableProps {
   bases: BaseInfo[];
@@ -24,18 +31,29 @@ interface BasesTableProps {
 export function BasesTable({ bases, loading, selectedPath, onSelect, onDropGames }: BasesTableProps) {
   const { t } = useTranslation();
   const [dragOverPath, setDragOverPath] = useState<string | null>(null);
+  const { widths, startResize, totalWidth } = useColumnWidths("basesTable", BASES_TABLE_COLUMNS);
 
   if (bases.length === 0) {
     return loading ? <p className="status-message">{t("common.loading")}</p> : <p className="notation-empty">{t("basesTable.empty")}</p>;
   }
 
   return (
-    <table className="explorer-table">
+    <div className="resizable-table-wrap">
+    <table className="explorer-table resizable-table" style={{ width: totalWidth }}>
       <thead>
         <tr>
-          <th>{t("basesTable.name")}</th>
-          <th>{t("basesTable.games")}</th>
-          <th>{t("basesTable.location")}</th>
+          <th style={{ width: widths.name }}>
+            {t("basesTable.name")}
+            <ColumnResizeHandle onMouseDown={startResize("name")} />
+          </th>
+          <th style={{ width: widths.games }}>
+            {t("basesTable.games")}
+            <ColumnResizeHandle onMouseDown={startResize("games")} />
+          </th>
+          <th style={{ width: widths.location }}>
+            {t("basesTable.location")}
+            <ColumnResizeHandle onMouseDown={startResize("location")} />
+          </th>
         </tr>
       </thead>
       <tbody>
@@ -79,5 +97,6 @@ export function BasesTable({ bases, loading, selectedPath, onSelect, onDropGames
         ))}
       </tbody>
     </table>
+    </div>
   );
 }

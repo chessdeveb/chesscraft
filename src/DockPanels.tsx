@@ -11,6 +11,7 @@ import { ExplorerPreview } from "./components/ExplorerPreview";
 import { GameTypeButton } from "./components/GameTypeButton";
 import { Notation } from "./components/Notation";
 import { OpeningExplorer } from "./components/OpeningExplorer";
+import { TrainingPanel } from "./components/TrainingPanel";
 import type { TreeDto } from "./types";
 
 const EXPLORER_GAMES_PAGE_SIZE = 20;
@@ -312,6 +313,7 @@ export function EnginePanelView(props: IDockviewPanelProps) {
     handleStopEngine,
     handlePauseEngine,
     handleResumeEngine,
+    handlePlayPvLine,
     currentNode,
     boardTheme,
     boardFlipped,
@@ -337,6 +339,7 @@ export function EnginePanelView(props: IDockviewPanelProps) {
         analyzedFen={currentNode?.fen ?? null}
         boardTheme={boardTheme}
         orientation={boardFlipped ? "black" : "white"}
+        onPlayPvLine={handlePlayPvLine}
         onStart={handleStartEngine}
         onStop={handleStopEngine}
         onPause={handlePauseEngine}
@@ -350,9 +353,60 @@ export function EnginePanelView(props: IDockviewPanelProps) {
   );
 }
 
+export function TrainingPanelView() {
+  const {
+    currentNodeId,
+    trainingFen,
+    trainingSide,
+    trainingDests,
+    trainingFeedback,
+    trainingBusy,
+    trainingError,
+    trainingAtEnd,
+    trainingAccuracy,
+    trainingSummary,
+    trainingDepth,
+    setTrainingDepth,
+    trainingThreadsSetting,
+    setTrainingThreadsSetting,
+    maxThreads,
+    boardTheme,
+    handleStartTraining,
+    handleStopTraining,
+    handleTrainingMove,
+    handleTrainingContinue,
+  } = useAppContext();
+
+  return (
+    <TrainingPanel
+      fen={trainingFen}
+      side={trainingSide}
+      dests={trainingDests}
+      feedback={trainingFeedback}
+      busy={trainingBusy}
+      error={trainingError}
+      atEnd={trainingAtEnd}
+      accuracy={trainingAccuracy}
+      summary={trainingSummary}
+      depth={trainingDepth}
+      onDepthChange={setTrainingDepth}
+      threads={trainingThreadsSetting}
+      onThreadsChange={setTrainingThreadsSetting}
+      maxThreads={maxThreads}
+      boardTheme={boardTheme}
+      currentNodeId={currentNodeId}
+      onStart={handleStartTraining}
+      onStop={handleStopTraining}
+      onMove={handleTrainingMove}
+      onContinue={handleTrainingContinue}
+    />
+  );
+}
+
 export const dockviewComponents = {
   board: BoardPanel,
   notation: NotationPanelView,
   explorer: ExplorerPanelView,
   engine: EnginePanelView,
+  training: TrainingPanelView,
 };

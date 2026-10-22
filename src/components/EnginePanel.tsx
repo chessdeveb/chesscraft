@@ -29,6 +29,7 @@ interface EnginePanelProps {
       l'apercu au survol d'une ligne doit s'afficher dans le meme sens, pas
       systematiquement Blancs en bas. */
   orientation: Color;
+  onPlayPvLine: (moves: PvMove[], uptoIndex: number) => void;
   onStart: () => void;
   onStop: () => void;
   onPause: () => void;
@@ -73,7 +74,12 @@ function fenMoveContext(fen: string | null): { whiteToMove: boolean; moveNumber:
 // aller-retour disparition/reapparition de l'apercu a chaque changement de
 // coup survole. Un seul onMouseLeave sur tout le conteneur de la ligne (voir
 // l'appelant) : ne se declenche qu'en quittant reellement toute la variante.
-function renderPv(pv: PvMove[], analyzedFen: string | null, onHover: (move: PvMove, e: React.MouseEvent) => void) {
+function renderPv(
+  pv: PvMove[],
+  analyzedFen: string | null,
+  onHover: (move: PvMove, e: React.MouseEvent) => void,
+  onPlayPvLine: (moves: PvMove[], uptoIndex: number) => void
+) {
   const { whiteToMove, moveNumber } = fenMoveContext(analyzedFen);
   let number = moveNumber;
   let isWhite = whiteToMove;
@@ -93,7 +99,10 @@ function renderPv(pv: PvMove[], analyzedFen: string | null, onHover: (move: PvMo
       );
     }
     out.push(
-      <span className="engine-pv-move" key={i} onMouseEnter={(e) => onHover(move, e)}>
+      // Rejoue toute la ligne jusqu'a ce coup (voir handlePlayPvLine,
+      // GameTab.tsx) : un clic plus loin dans la variante avance donc
+      // directement jusque-la, pas seulement d'un coup.
+      <span className="engine-pv-move" key={i} onMouseEnter={(e) => onHover(move, e)} onClick={() => onPlayPvLine(pv, i)}>
         {move.san}
       </span>,
       " "
@@ -122,6 +131,7 @@ export function EnginePanel({
   analyzedFen,
   boardTheme,
   orientation,
+  onPlayPvLine,
   onStart,
   onStop,
   onPause,
@@ -253,7 +263,7 @@ export function EnginePanel({
             <div key={info.multipv} className="engine-result">
               <span className="engine-score">{formatScore(info)}</span>
               <span className="engine-line" onMouseLeave={() => setHover(null)}>
-                {renderPv(info.pv, analyzedFen, handleMoveHover)}
+                {renderPv(info.pv, analyzedFen, handleMoveHover, onPlayPvLine)}
               </span>
             </div>
           ))}

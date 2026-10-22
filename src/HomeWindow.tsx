@@ -35,7 +35,7 @@ function formatBulkImportSummary(summary: BulkImportSummary): string {
 // PRECOMPUTED_MAX_DEPTH est passe a 20) -- les additionner en un seul nombre
 // continu (essaye d'abord) donnait un total sans rapport clair avec la
 // taille de la base, rapporte par l'utilisateur comme deroutant.
-type ToolRebuildProgressEvent = { stage: "openings" | "players" | "startFen" | "compact" } & (
+type ToolRebuildProgressEvent = { stage: "openings" | "players" | "startFen" | "compact" | "tournaments" } & (
   | { phase: "reading"; examined: number }
   | { phase: "writing"; written: number; total: number }
 );
@@ -45,6 +45,7 @@ const REBUILD_STAGE_KEY: Record<ToolRebuildProgressEvent["stage"], string> = {
   players: "tools.stagePlayers",
   startFen: "tools.stageStartFen",
   compact: "tools.stageCompact",
+  tournaments: "tools.stageTournaments",
 };
 
 function formatRebuildProgress(event: ToolRebuildProgressEvent): string {
@@ -115,7 +116,7 @@ export function HomeWindow() {
   // toute la duree du flux (choix de la base, execution, et pour Dedoublonner
   // le compte intermediaire avant confirmation), remise a null seulement une
   // fois le flux termine ou annule.
-  const [toolAction, setToolAction] = useState<"rebuild-stats" | "deduplicate" | "backfill-fide" | null>(null);
+  const [toolAction, setToolAction] = useState<"rebuild-stats" | "deduplicate" | "backfill-fide" | "group-tournaments" | null>(null);
   // Affichage du choix de base : separe de toolAction, qui doit rester pose
   // pendant l'execution (voir toolJobRunning) sans que ToolBasePicker se
   // rouvre entre-temps.
@@ -285,6 +286,19 @@ export function HomeWindow() {
     [bulkImportPgnPath]
   );
 
+  // Import final d'une revue de mises a jour externes deja confirmee (voir
+  // HomeDockview/ExternalUpdatesReviewDialog) : le PGN est deja consolide/
+  // dedoublonne cote Rust (external_updates::compute_update_preview), on
+  // reutilise donc directement bulk_import_pgn et ses etats de progression
+  // existants plutot que d'introduire un deuxieme chemin d'import.
+  const handleImportExternalUpdates = useCallback((dbPath: string, pgnPath: string) => {
+    setBulkImportProgress({ total: 0, imported: 0, skippedDuplicates: 0, skippedInvalid: 0, failed: 0 });
+    invoke("bulk_import_pgn", { dbPath, pgnPath }).catch((e) => {
+      setBulkImportProgress(null);
+      setBulkImportResult({ kind: "error", message: String(e) });
+    });
+  }, []);
+
   const handleLichessImportClick = useCallback(() => {
     setAccountImportSite("lichess");
   }, []);
@@ -318,7 +332,9 @@ export function HomeWindow() {
       ? t("menu.tools.rebuildExplorerStats")
       : toolAction === "deduplicate"
         ? t("menu.tools.deduplicateBase")
-        : t("menu.tools.backfillFideIds");
+        : toolAction === "group-tournaments"
+          ? t("menu.tools.rebuildTournaments")
+          : t("menu.tools.backfillFideIds");
 
   // Ne fait que declencher la commande correspondante : le resultat arrive
   // de facon asynchrone via un evenement "tool-*-done"/"tool-*-error" (voir
@@ -333,7 +349,13 @@ export function HomeWindow() {
       setToolJobRunning(true);
       setToolProgress(null);
       const command =
-        action === "rebuild-stats" ? "rebuild_explorer_stats" : action === "deduplicate" ? "count_duplicate_games" : "backfill_fide_ids";
+        action === "rebuild-stats"
+          ? "rebuild_explorer_stats"
+          : action === "deduplicate"
+            ? "count_duplicate_games"
+            : action === "group-tournaments"
+              ? "rebuild_tournaments"
+              : "backfill_fide_ids";
       invoke(command, { path }).catch((e) => {
         setToolJobRunning(false);
         setToolAction(null);
@@ -426,6 +448,17 @@ export function HomeWindow() {
         setToolAction(null);
         setError(event.payload);
       }),
+      listen<ToolRebuildProgressEvent>("tool-rebuild-tournaments-progress", (event) => setToolProgress(formatRebuildProgress(event.payload))),
+      listen("tool-rebuild-tournaments-done", async () => {
+        setToolJobRunning(false);
+        setToolAction(null);
+        await message(t("tools.rebuildTournamentsDone"), { title: t("menu.tools.rebuildTournaments") });
+      }),
+      listen<string>("tool-rebuild-tournaments-error", (event) => {
+        setToolJobRunning(false);
+        setToolAction(null);
+        setError(event.payload);
+      }),
     ];
     return () => {
       unlistenPromises.forEach((p) => p.then((unlisten) => unlisten()));
@@ -501,6 +534,10 @@ export function HomeWindow() {
         setToolAction("backfill-fide");
         setToolPickerOpen(true);
       }),
+      listen("menu-rebuild-tournaments", () => {
+        setToolAction("group-tournaments");
+        setToolPickerOpen(true);
+      }),
       listen("menu-show-about", () => handleShowAbout()),
     ];
     return () => {
@@ -561,6 +598,7 @@ export function HomeWindow() {
         onImportNewFile={handleImport}
         basesVersion={basesVersion}
         onPrepareAgainstPlayer={handlePrepareAgainstPlayer}
+        onImportExternalUpdates={handleImportExternalUpdates}
       />
       {bulkImportPgnPath && (
         <ImportBasePicker

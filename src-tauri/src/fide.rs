@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, ToSql};
 use serde::Serialize;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
@@ -269,18 +269,76 @@ fn prefix_bounds(value: &str) -> (String, String) {
     (value.to_string(), format!("{value}\u{ffff}"))
 }
 
-pub fn count_fide_players(conn: &Connection, search: &str) -> Result<u32, String> {
-    let count: i64 = if search.is_empty() {
-        conn.query_row("SELECT COUNT(*) FROM fide_players", [], |row| row.get(0))
-    } else {
+/// Filtres combinables du panneau "Joueurs FIDE" (voir list_fide_players,
+/// lib.rs). Tous optionnels/combinables par ET, comme ExplorerFilters
+/// (explorer.rs) ; `birth_year_min`/`birth_year_max` plutot qu'une vraie date
+/// de naissance : le fichier FIDE publie ne donne que l'annee (B-day, voir
+/// parse_line), pas le jour/mois.
+#[derive(Default, Clone)]
+pub struct FideFilters {
+    pub fed: Option<String>,
+    pub title: Option<String>,
+    pub sex: Option<String>,
+    /// "active" ou "inactive" ; toute autre valeur ne filtre pas.
+    pub status: Option<String>,
+    pub birth_year_min: Option<i32>,
+    pub birth_year_max: Option<i32>,
+}
+
+fn non_empty(value: &Option<String>) -> Option<&str> {
+    value.as_deref().map(str::trim).filter(|s| !s.is_empty())
+}
+
+/// Construit la clause WHERE (recherche par nom + FideFilters) et ses
+/// parametres positionnels, partagee par count_fide_players et
+/// list_fide_players_page pour ne pas dupliquer cette logique de combinaison.
+fn build_where(search: &str, filters: &FideFilters) -> (String, Vec<Box<dyn ToSql>>) {
+    let mut conditions: Vec<String> = Vec::new();
+    let mut params: Vec<Box<dyn ToSql>> = Vec::new();
+
+    if !search.is_empty() {
         let (lo, hi) = prefix_bounds(search);
-        conn.query_row(
-            "SELECT COUNT(*) FROM fide_players WHERE name >= ?1 AND name < ?2",
-            params![lo, hi],
-            |row| row.get(0),
-        )
+        params.push(Box::new(lo));
+        params.push(Box::new(hi));
+        conditions.push(format!("name >= ?{} AND name < ?{}", params.len() - 1, params.len()));
     }
-    .map_err(|e| e.to_string())?;
+    if let Some(fed) = non_empty(&filters.fed) {
+        params.push(Box::new(fed.to_string()));
+        conditions.push(format!("fed = ?{} COLLATE NOCASE", params.len()));
+    }
+    if let Some(title) = non_empty(&filters.title) {
+        params.push(Box::new(title.to_string()));
+        conditions.push(format!("title = ?{} COLLATE NOCASE", params.len()));
+    }
+    if let Some(sex) = non_empty(&filters.sex) {
+        params.push(Box::new(sex.to_string()));
+        conditions.push(format!("sex = ?{} COLLATE NOCASE", params.len()));
+    }
+    // "i" = joueur inactif, "wi" = joueuse inactive (codes du champ Flag FIDE) ;
+    // tout le reste (vide, "w", "l"...) compte comme actif.
+    match non_empty(&filters.status) {
+        Some("active") => conditions.push("flag COLLATE NOCASE NOT IN ('i', 'wi')".to_string()),
+        Some("inactive") => conditions.push("flag COLLATE NOCASE IN ('i', 'wi')".to_string()),
+        _ => {}
+    }
+    if let Some(min) = filters.birth_year_min {
+        params.push(Box::new(min));
+        conditions.push(format!("birth_year >= ?{}", params.len()));
+    }
+    if let Some(max) = filters.birth_year_max {
+        params.push(Box::new(max));
+        conditions.push(format!("birth_year <= ?{}", params.len()));
+    }
+
+    let where_sql = if conditions.is_empty() { String::new() } else { format!("WHERE {}", conditions.join(" AND ")) };
+    (where_sql, params)
+}
+
+pub fn count_fide_players(conn: &Connection, search: &str, filters: &FideFilters) -> Result<u32, String> {
+    let (where_sql, params) = build_where(search, filters);
+    let sql = format!("SELECT COUNT(*) FROM fide_players {where_sql}");
+    let param_refs: Vec<&dyn ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    let count: i64 = conn.query_row(&sql, param_refs.as_slice(), |row| row.get(0)).map_err(|e| e.to_string())?;
     Ok(count as u32)
 }
 
@@ -326,24 +384,23 @@ const SELECT_COLUMNS: &str =
 pub fn list_fide_players_page(
     conn: &Connection,
     search: &str,
+    filters: &FideFilters,
     sort_by: &str,
     sort_dir: &str,
     limit: u32,
     offset: u32,
 ) -> Result<Vec<FidePlayer>, String> {
     let order_by = order_by_clause(sort_by, sort_dir);
-    if search.is_empty() {
-        let sql = format!("SELECT {SELECT_COLUMNS} FROM fide_players {order_by} LIMIT ?1 OFFSET ?2");
-        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-        let rows = stmt.query_map(params![limit, offset], map_fide_player_row).map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
-    } else {
-        let (lo, hi) = prefix_bounds(search);
-        let sql = format!("SELECT {SELECT_COLUMNS} FROM fide_players WHERE name >= ?1 AND name < ?2 {order_by} LIMIT ?3 OFFSET ?4");
-        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-        let rows = stmt.query_map(params![lo, hi, limit, offset], map_fide_player_row).map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
-    }
+    let (where_sql, mut params) = build_where(search, filters);
+    let limit_idx = params.len() + 1;
+    let offset_idx = params.len() + 2;
+    params.push(Box::new(limit));
+    params.push(Box::new(offset));
+    let sql = format!("SELECT {SELECT_COLUMNS} FROM fide_players {where_sql} {order_by} LIMIT ?{limit_idx} OFFSET ?{offset_idx}");
+    let param_refs: Vec<&dyn ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map(param_refs.as_slice(), map_fide_player_row).map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
 }
 
 /// Telecharge la liste FIDE (combinee Standard+Rapide+Blitz), la decompresse
@@ -497,18 +554,69 @@ mod tests {
         insert("2", "Bob", Some(2600));
         insert("3", "Carol", None);
 
-        assert_eq!(count_fide_players(&conn, "").unwrap(), 3);
-        let by_rating = list_fide_players_page(&conn, "", "std", "desc", 10, 0).unwrap();
+        let no_filters = FideFilters::default();
+        assert_eq!(count_fide_players(&conn, "", &no_filters).unwrap(), 3);
+        let by_rating = list_fide_players_page(&conn, "", &no_filters, "std", "desc", 10, 0).unwrap();
         assert_eq!(by_rating[0].name, "Bob");
 
-        let filtered = list_fide_players_page(&conn, "Ali", "", "", 10, 0).unwrap();
+        let filtered = list_fide_players_page(&conn, "Ali", &no_filters, "", "", 10, 0).unwrap();
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].name, "Alice");
 
-        let page1 = list_fide_players_page(&conn, "", "name", "asc", 2, 0).unwrap();
+        let page1 = list_fide_players_page(&conn, "", &no_filters, "name", "asc", 2, 0).unwrap();
         assert_eq!(page1.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), vec!["Alice", "Bob"]);
-        let page2 = list_fide_players_page(&conn, "", "name", "asc", 2, 2).unwrap();
+        let page2 = list_fide_players_page(&conn, "", &no_filters, "name", "asc", 2, 2).unwrap();
         assert_eq!(page2.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), vec!["Carol"]);
+    }
+
+    #[test]
+    fn list_fide_players_page_combines_fed_title_sex_and_birth_year_filters() {
+        let conn = open_at(Path::new(":memory:")).unwrap();
+        let insert = |id: &str, name: &str, fed: &str, sex: &str, title: &str, birth_year: Option<i32>| {
+            conn.execute(
+                "INSERT INTO fide_players (fide_id, name, fed, sex, title, w_title, o_title, std_rating, rapid_rating, blitz_rating, birth_year, flag)
+                 VALUES (?1, ?2, ?3, ?4, ?5, '', '', NULL, NULL, NULL, ?6, '')",
+                params![id, name, fed, sex, title, birth_year],
+            )
+            .unwrap();
+        };
+        insert("1", "Carlsen, Magnus", "NOR", "M", "GM", Some(1990));
+        insert("2", "Giri, Anish", "NED", "M", "GM", Some(1994));
+        insert("3", "Muzychuk, Mariya", "UKR", "F", "GM", Some(1992));
+        insert("4", "Nepomniachtchi, Ian", "RUS", "M", "GM", Some(1990));
+
+        let by_fed = FideFilters { fed: Some("ned".to_string()), ..Default::default() };
+        assert_eq!(count_fide_players(&conn, "", &by_fed).unwrap(), 1);
+        assert_eq!(list_fide_players_page(&conn, "", &by_fed, "", "", 10, 0).unwrap()[0].name, "Giri, Anish");
+
+        let by_sex = FideFilters { sex: Some("F".to_string()), ..Default::default() };
+        assert_eq!(list_fide_players_page(&conn, "", &by_sex, "", "", 10, 0).unwrap()[0].name, "Muzychuk, Mariya");
+
+        let by_birth_year_range = FideFilters { birth_year_min: Some(1990), birth_year_max: Some(1991), ..Default::default() };
+        let in_range = list_fide_players_page(&conn, "", &by_birth_year_range, "name", "asc", 10, 0).unwrap();
+        assert_eq!(in_range.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), vec!["Carlsen, Magnus", "Nepomniachtchi, Ian"]);
+
+        let inactive_conn = open_at(Path::new(":memory:")).unwrap();
+        for (id, name, flag) in [("1", "Actif, Un", ""), ("2", "Inactif, Deux", "i"), ("3", "Inactive, Trois", "wi"), ("4", "Femme, Quatre", "w")] {
+            inactive_conn
+                .execute(
+                    "INSERT INTO fide_players (fide_id, name, fed, sex, title, w_title, o_title, std_rating, rapid_rating, blitz_rating, birth_year, flag)
+                     VALUES (?1, ?2, 'FRA', 'F', '', '', '', NULL, NULL, NULL, NULL, ?3)",
+                    params![id, name, flag],
+                )
+                .unwrap();
+        }
+        let active = FideFilters { status: Some("active".to_string()), ..Default::default() };
+        let inactive = FideFilters { status: Some("inactive".to_string()), ..Default::default() };
+        assert_eq!(count_fide_players(&inactive_conn, "", &active).unwrap(), 2);
+        assert_eq!(count_fide_players(&inactive_conn, "", &inactive).unwrap(), 2);
+        let inactive_names: Vec<String> =
+            list_fide_players_page(&inactive_conn, "", &inactive, "name", "asc", 10, 0).unwrap().into_iter().map(|p| p.name).collect();
+        assert_eq!(inactive_names, vec!["Inactif, Deux", "Inactive, Trois"]);
+
+        // combine : federation ET titre ET sexe ne laisse plus personne ici
+        let combined = FideFilters { fed: Some("NOR".to_string()), title: Some("GM".to_string()), sex: Some("F".to_string()), ..Default::default() };
+        assert_eq!(count_fide_players(&conn, "", &combined).unwrap(), 0);
     }
 
     fn conn_with_players(names: &[&str]) -> Connection {

@@ -725,6 +725,41 @@ textarea {
   justify-content: center;
 }
 
+.board-surface {
+  position: relative;
+}
+
+.promotion-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+}
+
+.promotion-picker {
+  position: absolute;
+  z-index: 2;
+  display: flex;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  border-radius: var(--r-md);
+  overflow: hidden;
+}
+
+.promotion-picker-choice {
+  cursor: pointer;
+  border: none;
+  background-color: var(--panel);
+  font-size: 2em;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.promotion-picker-choice:hover {
+  background-color: var(--accent-weak);
+}
+
 .board-panel {
   height: 100%;
   display: flex;
@@ -779,6 +814,110 @@ textarea {
 
 .transport button:hover {
   background-color: var(--accent-weak);
+}
+
+/* Mise en page en colonnes (echiquier a gauche, retour a droite) plutot
+   qu'empilee verticalement : une carte de retour plus ou moins haute (texte
+   court vs. variante de refutation + bouton) ne doit jamais faire varier la
+   hauteur disponible pour l'echiquier -- avec un empilement vertical,
+   l'echiquier (flex:1) se redimensionnait a chaque retour affiche/efface,
+   un effet de clignotement desagreable rapporte par l'utilisateur. */
+.training-panel {
+  height: 100%;
+  display: flex;
+  flex-direction: row;
+  min-height: 0;
+  gap: 12px;
+}
+
+.training-panel--start {
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+  gap: 14px;
+  padding: 20px;
+}
+
+.training-panel--start p {
+  max-width: 36em;
+  color: var(--ink-2);
+}
+
+.training-panel-board {
+  flex: 1 1 55%;
+  min-width: 0;
+}
+
+.training-panel-side {
+  flex: 1 1 45%;
+  min-width: 220px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+}
+
+/* Score cumule de la session : TOUJOURS visible une fois le premier coup
+   juge (pas seulement le temps d'un retour ponctuel, voir
+   .training-feedback-card) -- demande explicite de l'utilisateur. */
+.training-accuracy {
+  font-weight: 600;
+  color: var(--ink-1);
+  flex-shrink: 0;
+}
+
+.training-panel-feedback {
+  flex: 1;
+  min-height: 0;
+}
+
+.training-feedback-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: var(--r-md);
+  background: var(--raised);
+  border: 1px solid var(--line);
+}
+
+.training-feedback-ok {
+  color: #2e9e4f;
+  font-weight: 600;
+}
+
+.training-feedback-bad {
+  color: #d64545;
+  font-weight: 600;
+}
+
+.training-feedback-better {
+  color: #2e9e4f;
+  font-weight: 600;
+}
+
+.training-feedback-neutral {
+  color: var(--ink-2);
+}
+
+.training-refutation {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.92em;
+  color: var(--ink-2);
+}
+
+.training-feedback-card button {
+  align-self: flex-start;
+}
+
+.training-stop {
+  align-self: center;
+  flex-shrink: 0;
+}
+
+.training-summary-note {
+  color: var(--ink-2);
 }
 
 .game-type-popover {
@@ -849,46 +988,85 @@ textarea {
      (frequent sur les bases de parties d'ordinateur, ex. "Millennium
      Chess - the King") s'enroule sur plusieurs lignes et la ligne du
      tableau parait se chevaucher avec les colonnes voisines. max-width:0
-     force l'ellipsis a respecter la largeur de colonne sous table-layout:
-     fixed plutot que de laisser le contenu l'imposer. */
+     force l'ellipsis a respecter la largeur de colonne SOUS table-layout:
+     auto (la valeur par defaut, pas de width explicite ici) : le navigateur
+     calcule d'abord la largeur de chaque colonne a partir du contenu, puis
+     max-width:0 n'intervient qu'ensuite pour declencher l'ellipsis dans la
+     largeur ainsi obtenue, sans la retrecir. */
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 0;
 }
 
-/* Table FIDE : beaucoup de colonnes etroites (Sexe, Titre...), pas deux
-   comme la liste de parties de l'explorateur -- la troncature ci-dessus
-   la rendrait illisible. .fide-table-wrap fait defiler horizontalement a
-   la place, chaque colonne gardant sa largeur naturelle. */
-.fide-table-wrap .explorer-table th,
-.fide-table-wrap .explorer-table td {
-  white-space: nowrap;
-  overflow: visible;
-  text-overflow: clip;
+/* Colonnes redimensionnables a la souris (voir useColumnWidths.tsx) : chaque
+   en-tete porte sa largeur en pixels via un style inline plutot qu'un
+   pourcentage CSS -- table-layout:fixed s'appuie alors sur cette largeur
+   (pas sur le texte, trop court pour "Elo B."/"Date", qui faussait
+   l'auto-layout et pouvait reduire Blancs/Noirs a quelques caracteres
+   malgre une colonne visuellement large).
+   max-width:none est INDISPENSABLE ici : max-width:0 (ci-dessus, pensee pour
+   table-layout:auto, voir ce commentaire) prend le pas sur `width` des que
+   table-layout passe a fixed -- verifie en pratique, la colonne retombe
+   alors a sa largeur minimale (le padding) quelle que soit la largeur
+   demandee, D'OU le signale "impossible de redimensionner, les premieres
+   colonnes sont au minimum" : ce n'etait pas un probleme de repartition
+   d'espace mais ce max-width:0 qui annulait silencieusement toute largeur
+   explicite, posee au chargement ou en glissant une poignee.
+   width:auto (pas 100%) : la largeur totale de la table est TOUJOURS la
+   somme exacte des colonnes (toutes explicitement chiffrees, voir chaque
+   *_COLUMNS), jamais etiree/redistribuee pour "rentrer" dans le panneau --
+   .resizable-table-wrap fait defiler horizontalement si la somme depasse le
+   panneau, plutot que de fausser une largeur que l'utilisateur vient de
+   choisir a la souris. */
+.resizable-table {
+  table-layout: fixed;
+  width: auto;
+}
+.resizable-table th,
+.resizable-table td {
   max-width: none;
 }
+.resizable-table-wrap {
+  overflow-x: auto;
+  width: 100%;
+}
+/* Ancre le positionnement absolu de la poignee (voir ColumnResizeHandle) sur
+   l'en-tete lui-meme, pas sur un ancetre plus eloigne. */
+.resizable-table th {
+  position: relative;
+}
+.col-resize-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  /* right:0 (pas une valeur negative) : l'en-tete a overflow:hidden (voir
+     .explorer-table th, pour l'ellipsis) -- une poignee qui depasse, meme
+     partiellement, le bord de son propre conteneur positionne se retrouve
+     elle-meme coupee par ce overflow:hidden et devient (en partie) injoignable
+     a la souris. Rester strictement a l'interieur de la boite du th. */
+  right: 0;
+  width: 6px;
+  cursor: col-resize;
+  z-index: 2;
+  /* invisible par defaut (une poignee visible en permanence sur chaque
+     colonne serait un bruit visuel constant) ; le survol suffit a la
+     reveler, comme un bord de colonne de tableur. */
+  background: transparent;
+}
+.col-resize-handle:hover,
+.col-resize-handle:active {
+  background: var(--accent, #6b8afd88);
+}
 
-/* White, WhiteElo, Black, BlackElo, Date, Result (voir ExplorerGamesList.tsx) */
-.explorer-games-table th:nth-child(1),
-.explorer-games-table td:nth-child(1),
-.explorer-games-table th:nth-child(3),
-.explorer-games-table td:nth-child(3) {
-  width: 26%;
-}
-.explorer-games-table th:nth-child(2),
-.explorer-games-table td:nth-child(2),
-.explorer-games-table th:nth-child(4),
-.explorer-games-table td:nth-child(4) {
-  width: 10%;
-}
-.explorer-games-table th:nth-child(5),
-.explorer-games-table td:nth-child(5) {
-  width: 18%;
-}
-.explorer-games-table th:nth-child(6),
-.explorer-games-table td:nth-child(6) {
-  width: 10%;
+/* Largeurs posees en style inline par useColumnWidths (voir
+   ExplorerGamesList.tsx) : l'ancrage de la poignee, comme .resizable-table
+   th, et max-width:none pour la meme raison (table-layout:fixed deja actif
+   sur ce tableau, voir plus haut -- sans ca, max-width:0 ecraserait toute
+   largeur explicite, voir le commentaire au-dessus de .resizable-table). */
+.explorer-games-table th {
+  position: relative;
+  max-width: none;
 }
 
 .explorer-table tbody tr {
@@ -1003,8 +1181,12 @@ textarea {
 }
 
 .explorer-stats-table {
+  /* la largeur est maintenant posee en style inline (totalWidth, voir
+     OpeningExplorer.tsx/useColumnWidths) -- min-width:100% forcerait sinon
+     la table plus large que cette somme exacte, et sans colonne non suivie
+     pour absorber l'ecart (toutes les trois sont redimensionnables), les
+     largeurs glissees a la souris ne "collent" plus exactement. */
   width: auto;
-  min-width: 100%;
 }
 
 .explorer-stats-table th,
@@ -1717,7 +1899,7 @@ textarea {
 }
 
 .engine-pv-move {
-  cursor: default;
+  cursor: pointer;
   padding: 1px 2px;
   border-radius: var(--r-sm);
 }
@@ -1952,4 +2134,50 @@ textarea {
   padding: 6px 8px;
   font-size: 0.9em;
   border-top: 1px solid var(--border, #8884);
+}
+
+.tournament-cadence-input {
+  width: 100%;
+  box-sizing: border-box;
+  background: transparent;
+  border: 1px solid transparent;
+  padding: 2px 4px;
+}
+
+.tournament-cadence-input:hover,
+.tournament-cadence-input:focus {
+  border-color: var(--border, #8884);
+}
+
+.tournament-row {
+  cursor: pointer;
+}
+
+.external-updates-badge {
+  color: var(--ink-2);
+  font-size: 0.85em;
+}
+
+.external-updates-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.external-updates-table th,
+.external-updates-table td {
+  text-align: left;
+  padding: 4px 10px 4px 0;
+  border-bottom: 1px solid var(--border, #8884);
+}
+
+.external-updates-source-badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: var(--r-md);
+  font-size: 0.85em;
+  background-color: var(--accent-weak);
+}
+
+.external-updates-source-badge--both {
+  background-color: var(--accent-strong);
 }

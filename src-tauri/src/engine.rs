@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use shakmaty::fen::Fen;
 use shakmaty::san::San;
 use shakmaty::uci::UciMove;
@@ -25,6 +25,11 @@ pub struct PvMove {
     pub fen: String,
     pub from: String,
     pub to: String,
+    /// "q"/"r"/"b"/"n", ou absent pour un coup qui n'est pas une promotion --
+    /// meme format que le `promotion` attendu par la commande play_move,
+    /// pour pouvoir rejouer un coup de la ligne principale tel quel (voir
+    /// GameTab.tsx::handlePvMoveClick).
+    pub promotion: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -123,6 +128,10 @@ fn resolve_line(fen: &str, info: &ParsedInfo) -> Option<EngineInfoPayload> {
         let san = San::from_move(&position, mv.clone()).to_string();
         let from = uci.from().map(|s| s.to_string()).unwrap_or_default();
         let to = uci.to().map(|s| s.to_string()).unwrap_or_default();
+        let promotion = match &uci {
+            UciMove::Normal { promotion, .. } => promotion.map(crate::game_tree::role_to_str),
+            _ => None,
+        };
         let Ok(next) = position.play(mv) else {
             break;
         };
@@ -132,6 +141,7 @@ fn resolve_line(fen: &str, info: &ParsedInfo) -> Option<EngineInfoPayload> {
             fen: Fen::from_position(&position, EnPassantMode::Legal).to_string(),
             from,
             to,
+            promotion,
         });
     }
 
@@ -234,7 +244,13 @@ fn wait_for(reader: &mut BufReader<std::process::ChildStdout>, token: &str) -> R
 
 /// Evaluation finale d'une position (score ramene a la perspective des
 /// Blancs, comme EngineInfoPayload) -- voir analyze_positions.
-#[derive(Clone, Copy)]
+/// Serialize/Deserialize (pas seulement Serialize comme le reste de ce
+/// fichier) : le mode entrainement renvoie une evaluation precalculee au
+/// frontend (prefetch_training_judgement, lib.rs) puis la reprend telle
+/// quelle dans l'appel suivant (judge_training_move), pour ne plus avoir a
+/// la recalculer une fois le coup essaye connu.
+#[derive(Serialize, Deserialize, Clone, Copy)]
+#[serde(rename_all = "camelCase")]
 pub struct PositionEval {
     pub score_cp: Option<i32>,
     pub score_mate: Option<i32>,
@@ -317,6 +333,91 @@ pub fn analyze_positions(
     let _ = child.wait();
 
     Ok(results)
+}
+
+/// Process moteur garde VIVANT entre plusieurs analyses (contrairement a
+/// analyze_positions, qui relance un process neuf a chaque appel -- toujours
+/// adapte au rapport de partie, une seule rafale d'evaluations par partie
+/// analysee) -- utilise par le mode entrainement
+/// (prefetch_training_judgement/judge_training_move, lib.rs), ou une
+/// evaluation est demandee a chaque position de l'exercice, pas une seule
+/// fois pour toute une partie. Relancer tout le process (spawn + poignee de
+/// main UCI "uci"/"uciok"/"isready"/"readyok"/"ucinewgame") a chaque appel
+/// s'est avere dominer largement le temps meme a faible profondeur --
+/// rapporte comme "trop lent meme en profondeur 10" -- la ou cette poignee
+/// de main ne coute plus qu'une fois pour toute la session d'entrainement.
+pub struct BatchEngine {
+    child: Child,
+    stdin: ChildStdin,
+    reader: BufReader<std::process::ChildStdout>,
+}
+
+impl BatchEngine {
+    pub fn start(path: &str, threads: u32) -> Result<Self, String> {
+        let mut command = Command::new(path);
+        command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+        hide_console_window(&mut command);
+        let mut child = command.spawn().map_err(|e| format!("impossible de lancer le moteur : {e}"))?;
+        let mut stdin = child.stdin.take().ok_or("stdin indisponible")?;
+        let stdout = child.stdout.take().ok_or("stdout indisponible")?;
+        let mut reader = BufReader::new(stdout);
+
+        write_line(&mut stdin, "uci")?;
+        wait_for(&mut reader, "uciok")?;
+        write_line(&mut stdin, &format!("setoption name Threads value {threads}"))?;
+        write_line(&mut stdin, "isready")?;
+        wait_for(&mut reader, "readyok")?;
+        write_line(&mut stdin, "ucinewgame")?;
+
+        Ok(Self { child, stdin, reader })
+    }
+
+    /// Une analyse de plus sur ce MEME process (pas de nouvelle poignee de
+    /// main) : seul le cout reel de "position fen ... ; go depth ..." est
+    /// paye a chaque appel.
+    pub fn analyze_with_pv(&mut self, fen: &str, depth: u32) -> Result<(PositionEval, Vec<PvMove>), String> {
+        write_line(&mut self.stdin, &format!("position fen {fen}"))?;
+        write_line(&mut self.stdin, &format!("go depth {depth}"))?;
+
+        let white_to_move = fen.split_whitespace().nth(1) != Some("b");
+        let mut last_info: Option<ParsedInfo> = None;
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match self.reader.read_line(&mut line) {
+                Ok(0) => return Err("le moteur s'est arrêté de manière inattendue".to_string()),
+                Ok(_) => {
+                    let trimmed = line.trim_end();
+                    if let Some(info) = parse_info_line(trimmed) {
+                        if info.multipv <= 1 && (info.score_cp.is_some() || info.score_mate.is_some()) {
+                            last_info = Some(info);
+                        }
+                    } else if trimmed.starts_with("bestmove") {
+                        break;
+                    }
+                }
+                Err(e) => return Err(e.to_string()),
+            }
+        }
+
+        let sign = if white_to_move { 1 } else { -1 };
+        match &last_info {
+            Some(info) => {
+                let eval = PositionEval { score_cp: info.score_cp.map(|v| v * sign), score_mate: info.score_mate.map(|v| v * sign) };
+                let pv = resolve_line(fen, info).map(|payload| payload.pv).unwrap_or_default();
+                Ok((eval, pv))
+            }
+            None => Ok((PositionEval { score_cp: None, score_mate: None }, Vec::new())),
+        }
+    }
+}
+
+impl Drop for BatchEngine {
+    fn drop(&mut self) {
+        let _ = write_line(&mut self.stdin, "quit");
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
 }
 
 impl EngineHandle {

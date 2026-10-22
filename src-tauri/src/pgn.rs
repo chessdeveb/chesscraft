@@ -198,6 +198,49 @@ fn parse_game_at_inner(pgn_bytes: &[u8], index: u32) -> Result<GameTree, String>
     Ok(GameTree::from_nodes(visitor.nodes, visitor.tags))
 }
 
+/// Remplace la valeur du tag `key` dans un texte PGN complet (tags + movetext,
+/// meme convention de lecture que db::extract_fen_tag : les tags sont
+/// toujours groupes en tete, une paire par ligne), ou l'ajoute a la fin des
+/// tags s'il est absent. Manipule le texte ligne par ligne plutot que de
+/// reparser/reserialiser toute la partie (arbre + write_game) : preserve le
+/// movetext (variantes, commentaires, NAG, numerotation) exactement tel qu'il
+/// etait stocke -- utilise pour propager la cadence d'un tournoi a ses
+/// parties (voir db::set_tournament_time_control), sans toucher au reste.
+pub fn set_tag_in_pgn(pgn: &str, key: &str, value: &str) -> String {
+    let prefix = format!("[{key} ");
+    let mut tag_lines: Vec<&str> = Vec::new();
+    let mut rest_start = 0usize;
+    let all_lines: Vec<&str> = pgn.lines().collect();
+    for (i, line) in all_lines.iter().enumerate() {
+        if line.trim_start().starts_with('[') {
+            tag_lines.push(line);
+            rest_start = i + 1;
+        } else {
+            break;
+        }
+    }
+    let new_line = format!("[{key} \"{value}\"]");
+    let mut out_lines: Vec<String> = Vec::with_capacity(tag_lines.len() + 1);
+    let mut replaced = false;
+    for line in &tag_lines {
+        if line.trim_start().starts_with(&prefix) {
+            out_lines.push(new_line.clone());
+            replaced = true;
+        } else {
+            out_lines.push(line.to_string());
+        }
+    }
+    if !replaced {
+        out_lines.push(new_line);
+    }
+    let mut out = out_lines.join("\n");
+    for line in &all_lines[rest_start..] {
+        out.push('\n');
+        out.push_str(line);
+    }
+    out
+}
+
 /// Liste legere (tags seulement, sans construire l'arbre) de toutes les
 /// parties d'un fichier PGN, pour proposer un choix a l'import.
 pub fn list_games(pgn_bytes: &[u8]) -> Result<Vec<PgnGameSummary>, String> {
@@ -433,6 +476,20 @@ impl Visitor for GameVisitor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn set_tag_in_pgn_replaces_an_existing_tag_without_touching_the_rest() {
+        let pgn = "[Event \"E\"]\n[TimeControl \"600+5\"]\n[Result \"1-0\"]\n\n1. e4 e5 1-0";
+        let updated = set_tag_in_pgn(pgn, "TimeControl", "40/9000+30");
+        assert_eq!(updated, "[Event \"E\"]\n[TimeControl \"40/9000+30\"]\n[Result \"1-0\"]\n\n1. e4 e5 1-0");
+    }
+
+    #[test]
+    fn set_tag_in_pgn_appends_a_missing_tag_after_the_existing_ones() {
+        let pgn = "[Event \"E\"]\n[Result \"1-0\"]\n\n1. e4 e5 1-0";
+        let updated = set_tag_in_pgn(pgn, "TimeControl", "600+5");
+        assert_eq!(updated, "[Event \"E\"]\n[Result \"1-0\"]\n[TimeControl \"600+5\"]\n\n1. e4 e5 1-0");
+    }
 
     // Un fichier PGN importe n'est pas forcement en UTF-8 (Latin-1/Windows-1252
     // tres courant pour les noms accentues, notamment sur des exports TWIC) --

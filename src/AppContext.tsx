@@ -9,11 +9,45 @@ import type {
   ExplorerGamesSortColumn,
   GameReportProgress,
   GameReportSummary,
+  MoveComparison,
   NodeDto,
   OpeningMoveStat,
+  PvMove,
   ShapeDto,
   TreeDto,
 } from "./types";
+
+export interface TrainingFeedback {
+  matchesGame: boolean;
+  gameSan: string;
+  classification: number | null;
+  gameMoveComparison: MoveComparison;
+  refutation: PvMove[];
+  accuracy: number;
+  // SAN du coup que le moteur juge meilleur que le coup de la partie
+  // lui-meme (independant du coup essaye) -- affiche meme quand matchesGame
+  // est vrai : rejouer le coup de la partie ne garantit pas que c'etait le
+  // meilleur coup.
+  betterGameMoveSan: string | null;
+  gameMoveClassification: number | null;
+  // noeud reel de la partie vers lequel avancer une fois le retour affiche
+  // (voir handleTrainingContinue, GameTab.tsx) ; absent quand matchesGame est
+  // deja vrai (l'avancee est alors automatique, pas de bouton "Continuer").
+  pendingNodeId: number | null;
+}
+
+// Resume d'une session d'entrainement terminee (fin de la ligne atteinte) --
+// memes champs que GameReportSideStats (rapport de partie) pour reutiliser
+// telles quelles les classes CSS .game-report-* (voir TrainingPanel.tsx),
+// mais calcule uniquement a partir des coups REELLEMENT essayes pendant la
+// session, pas d'une analyse complete de la partie.
+export interface TrainingSessionSummary {
+  accuracy: number;
+  blunders: number;
+  mistakes: number;
+  inaccuracies: number;
+  rounds: number;
+}
 
 export interface AppContextValue {
   tree: TreeDto | null;
@@ -24,7 +58,8 @@ export interface AppContextValue {
   setBoardTheme: (theme: string) => void;
   boardFlipped: boolean;
   setBoardFlipped: (flipped: boolean) => void;
-  handleMove: (from: Key, to: Key) => void;
+  handleMove: (from: Key, to: Key, promotion?: string | null) => void;
+  handlePlayPvLine: (moves: PvMove[], uptoIndex: number) => void;
   handleShapesChange: (shapes: ShapeDto[]) => void;
   handleSelect: (id: number) => void;
   onStep: (direction: "start" | "prev" | "next" | "end") => void;
@@ -89,6 +124,31 @@ export interface AppContextValue {
   gameReportError: string | null;
   gameReportSummary: GameReportSummary | null;
   handleStartGameReport: (depth: number, threads: number) => void;
+
+  trainingNodeId: number | null;
+  trainingSide: "white" | "black" | null;
+  trainingFen: string | null;
+  trainingDests: Dests;
+  trainingFeedback: TrainingFeedback | null;
+  trainingBusy: boolean;
+  trainingError: string | null;
+  trainingAtEnd: boolean;
+  // precision cumulee de la session en cours (moyenne des coups deja juges,
+  // voir trainingRounds dans GameTab.tsx) -- null tant qu'aucun coup n'a
+  // encore ete juge, pour distinguer "pas encore de score" de "0%".
+  trainingAccuracy: number | null;
+  trainingSummary: TrainingSessionSummary | null;
+  // Reglage moteur PROPRE a l'entrainement (pas celui du rapport de partie) :
+  // visible/reglable directement dans TrainingPanel, voir son usage dans
+  // GameTab.tsx pour pourquoi un reglage invisible ici ne suffisait pas.
+  trainingDepth: number;
+  setTrainingDepth: (depth: number) => void;
+  trainingThreadsSetting: number;
+  setTrainingThreadsSetting: (threads: number) => void;
+  handleStartTraining: (nodeId: number) => void;
+  handleStopTraining: () => void;
+  handleTrainingMove: (from: Key, to: Key, promotion?: string | null) => void;
+  handleTrainingContinue: () => void;
 }
 
 export const AppContext = createContext<AppContextValue | null>(null);

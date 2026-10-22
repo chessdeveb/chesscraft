@@ -2,6 +2,13 @@ import { useEffect, useState } from "react";
 import type { KeyboardEvent } from "react";
 import { useTranslation } from "react-i18next";
 import type { EcoInfo, OpeningMoveStat } from "../types";
+import { ColumnResizeHandle, useColumnWidths } from "../useColumnWidths";
+
+const EXPLORER_STATS_COLUMNS = [
+  { key: "move", default: 70 },
+  { key: "games", default: 110 },
+  { key: "whiteDrawBlack", default: 160 },
+];
 
 interface OpeningExplorerProps {
   stats: OpeningMoveStat[];
@@ -65,6 +72,7 @@ function ExplorerTable({
   onSelectMove: (san: string) => void;
 }) {
   const { t } = useTranslation();
+  const { widths, startResize, totalWidth } = useColumnWidths("explorerStats", EXPLORER_STATS_COLUMNS);
   const total = stats.reduce((sum, s) => sum + s.games, 0);
   const totalWhite = stats.reduce((sum, s) => sum + s.whiteWins, 0);
   const totalDraws = stats.reduce((sum, s) => sum + s.draws, 0);
@@ -91,12 +99,26 @@ function ExplorerTable({
     // (voir App.css) : .explorer-stats-table ne scope que les styles propres
     // aux stats d'ouverture (barre, coups en tete, ligne total) pour ne
     // jamais affecter ces autres tables.
-    <table className="explorer-table explorer-stats-table" tabIndex={0} onKeyDown={handleKeyDown}>
+    <table
+      className="explorer-table explorer-stats-table resizable-table"
+      style={{ width: totalWidth }}
+      tabIndex={0}
+      onKeyDown={handleKeyDown}
+    >
       <thead>
         <tr>
-          <th>{t("explorer.move")}</th>
-          <th>{t("explorer.games")}</th>
-          <th>{t("explorer.whiteDrawBlack")}</th>
+          <th style={{ width: widths.move }}>
+            {t("explorer.move")}
+            <ColumnResizeHandle onMouseDown={startResize("move")} />
+          </th>
+          <th style={{ width: widths.games }}>
+            {t("explorer.games")}
+            <ColumnResizeHandle onMouseDown={startResize("games")} />
+          </th>
+          <th style={{ width: widths.whiteDrawBlack }}>
+            {t("explorer.whiteDrawBlack")}
+            <ColumnResizeHandle onMouseDown={startResize("whiteDrawBlack")} />
+          </th>
         </tr>
       </thead>
       <tbody>

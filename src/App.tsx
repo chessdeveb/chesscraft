@@ -14,6 +14,11 @@ interface GameTabInfo {
   id: number;
   title: string;
   isPlayerPrep: boolean;
+  // Noeud sur lequel l'onglet doit s'ouvrir (voir TabDto.initialNodeId,
+  // pose par open_game quand la partie vient de l'explorateur) -- undefined
+  // pour le tout premier onglet de la fenetre (charge via get_tree, qui n'a
+  // pas cette information), GameTab retombe alors sur la racine de l'arbre.
+  initialNodeId?: number;
 }
 
 function tabTitle(tree: TreeDto, isPlayerPrep: boolean): string {
@@ -72,13 +77,18 @@ function App() {
 
   // l'accueil signale l'ouverture d'une partie pendant que cette fenetre est deja ouverte
   useEffect(() => {
-    const unlistenPromise = listen<{ tabId: number; tree: TreeDto; isPlayerPrep: boolean }>("game-tab-opened", (event) => {
-      const { tabId, tree, isPlayerPrep } = event.payload;
-      setTabs((prev) =>
-        prev.some((t) => t.id === tabId) ? prev : [...prev, { id: tabId, title: tabTitle(tree, isPlayerPrep), isPlayerPrep }]
-      );
-      setActiveTabId(tabId);
-    });
+    const unlistenPromise = listen<{ tabId: number; tree: TreeDto; isPlayerPrep: boolean; initialNodeId: number | null }>(
+      "game-tab-opened",
+      (event) => {
+        const { tabId, tree, isPlayerPrep, initialNodeId } = event.payload;
+        setTabs((prev) =>
+          prev.some((t) => t.id === tabId)
+            ? prev
+            : [...prev, { id: tabId, title: tabTitle(tree, isPlayerPrep), isPlayerPrep, initialNodeId: initialNodeId ?? undefined }]
+        );
+        setActiveTabId(tabId);
+      }
+    );
     return () => {
       unlistenPromise.then((unlisten) => unlisten());
     };
@@ -185,6 +195,7 @@ function App() {
               tabId={tab.id}
               active={tab.id === activeTabId}
               isPlayerPrep={tab.isPlayerPrep}
+              initialNodeId={tab.initialNodeId}
               onTreeChange={handleTreeChange}
             />
           </div>

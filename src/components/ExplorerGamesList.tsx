@@ -1,5 +1,16 @@
+import type { MouseEvent } from "react";
 import { useTranslation } from "react-i18next";
 import type { ExplorerGameSummary, ExplorerGamesSort, ExplorerGamesSortColumn } from "../types";
+import { ColumnResizeHandle, useColumnWidths } from "../useColumnWidths";
+
+const EXPLORER_GAMES_COLUMNS = [
+  { key: "white", default: 100 },
+  { key: "whiteElo", default: 44 },
+  { key: "black", default: 100 },
+  { key: "blackElo", default: 44 },
+  { key: "date", default: 76 },
+  { key: "result", default: 48 },
+];
 
 interface ExplorerGamesListProps {
   games: ExplorerGameSummary[];
@@ -22,16 +33,21 @@ function SortableHeader({
   column,
   sort,
   onSortChange,
+  width,
+  onResizeStart,
 }: {
   label: string;
   column: ExplorerGamesSortColumn;
   sort: ExplorerGamesSort | null;
   onSortChange: (column: ExplorerGamesSortColumn) => void;
+  width: number;
+  onResizeStart: (e: MouseEvent) => void;
 }) {
   const active = sort?.column === column;
   return (
-    <th className="games-table-sortable" onClick={() => onSortChange(column)}>
+    <th className="games-table-sortable" style={{ width }} onClick={() => onSortChange(column)}>
       {label} {active ? (sort!.dir === "asc" ? "▲" : "▼") : ""}
+      <ColumnResizeHandle onMouseDown={onResizeStart} />
     </th>
   );
 }
@@ -50,6 +66,7 @@ export function ExplorerGamesList({
   onSelectGame,
 }: ExplorerGamesListProps) {
   const { t } = useTranslation();
+  const { widths, startResize, totalWidth } = useColumnWidths("explorerGamesList", EXPLORER_GAMES_COLUMNS);
 
   return (
     <div className="explorer-games">
@@ -58,15 +75,53 @@ export function ExplorerGamesList({
       {games.length === 0 && !loading ? (
         <p className="notation-empty">{t("gamesTable.empty")}</p>
       ) : (
-        <table className="explorer-table explorer-games-table">
+        <table className="explorer-table explorer-games-table" style={{ width: totalWidth }}>
           <thead>
             <tr>
-              <SortableHeader label={t("common.white")} column="white" sort={sort} onSortChange={onSortChange} />
-              <SortableHeader label={t("explorer.elo")} column="whiteElo" sort={sort} onSortChange={onSortChange} />
-              <SortableHeader label={t("common.black")} column="black" sort={sort} onSortChange={onSortChange} />
-              <SortableHeader label={t("explorer.elo")} column="blackElo" sort={sort} onSortChange={onSortChange} />
-              <SortableHeader label={t("common.date")} column="date" sort={sort} onSortChange={onSortChange} />
-              <th>{t("common.result")}</th>
+              <SortableHeader
+                label={t("common.white")}
+                column="white"
+                sort={sort}
+                onSortChange={onSortChange}
+                width={widths.white}
+                onResizeStart={startResize("white")}
+              />
+              <SortableHeader
+                label={t("explorer.elo")}
+                column="whiteElo"
+                sort={sort}
+                onSortChange={onSortChange}
+                width={widths.whiteElo}
+                onResizeStart={startResize("whiteElo")}
+              />
+              <SortableHeader
+                label={t("common.black")}
+                column="black"
+                sort={sort}
+                onSortChange={onSortChange}
+                width={widths.black}
+                onResizeStart={startResize("black")}
+              />
+              <SortableHeader
+                label={t("explorer.elo")}
+                column="blackElo"
+                sort={sort}
+                onSortChange={onSortChange}
+                width={widths.blackElo}
+                onResizeStart={startResize("blackElo")}
+              />
+              <SortableHeader
+                label={t("common.date")}
+                column="date"
+                sort={sort}
+                onSortChange={onSortChange}
+                width={widths.date}
+                onResizeStart={startResize("date")}
+              />
+              <th style={{ width: widths.result }}>
+                {t("common.result")}
+                <ColumnResizeHandle onMouseDown={startResize("result")} />
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -76,12 +131,20 @@ export function ExplorerGamesList({
                 className={g.id === selectedGameId ? "explorer-table-row--selected" : ""}
                 onClick={() => onSelectGame(g.id)}
               >
-                <td title={g.white}>{g.white}</td>
-                <td className="explorer-games-elo">{g.whiteElo ?? "–"}</td>
-                <td title={g.black}>{g.black}</td>
-                <td className="explorer-games-elo">{g.blackElo ?? "–"}</td>
-                <td>{g.date}</td>
-                <td>{g.result}</td>
+                <td style={{ width: widths.white }} title={g.white}>
+                  {g.white}
+                </td>
+                <td style={{ width: widths.whiteElo }} className="explorer-games-elo">
+                  {g.whiteElo ?? "–"}
+                </td>
+                <td style={{ width: widths.black }} title={g.black}>
+                  {g.black}
+                </td>
+                <td style={{ width: widths.blackElo }} className="explorer-games-elo">
+                  {g.blackElo ?? "–"}
+                </td>
+                <td style={{ width: widths.date }}>{g.date}</td>
+                <td style={{ width: widths.result }}>{g.result}</td>
               </tr>
             ))}
           </tbody>

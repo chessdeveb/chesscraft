@@ -1,5 +1,5 @@
 import { createContext, useContext } from "react";
-import type { BaseInfo, FidePlayer, GameSummary, PgnGameSummary, PlayerSummary } from "./types";
+import type { BaseInfo, CatchupRange, FidePlayer, GameSummary, PgnGameSummary, PlayerSummary, TournamentSummary } from "./types";
 
 export type HomeActiveSource = { kind: "base"; base: BaseInfo } | { kind: "pgn"; pgn: BaseInfo } | null;
 
@@ -21,13 +21,19 @@ export interface FideSort {
   dir: "asc" | "desc";
 }
 
+export type TournamentsSortColumn = "name" | "games";
+export interface TournamentsSort {
+  column: TournamentsSortColumn;
+  dir: "asc" | "desc";
+}
+
 export interface GamesAdvancedFilter {
   white: string;
   black: string;
   result: string;
   dateFrom: string;
   dateTo: string;
-  timeControl: string;
+  tournament: string;
 }
 
 export const EMPTY_GAMES_ADVANCED_FILTER: GamesAdvancedFilter = {
@@ -36,7 +42,25 @@ export const EMPTY_GAMES_ADVANCED_FILTER: GamesAdvancedFilter = {
   result: "",
   dateFrom: "",
   dateTo: "",
-  timeControl: "",
+  tournament: "",
+};
+
+export interface FideAdvancedFilter {
+  fed: string;
+  title: string;
+  sex: string;
+  status: string;
+  birthYearMin: string;
+  birthYearMax: string;
+}
+
+export const EMPTY_FIDE_ADVANCED_FILTER: FideAdvancedFilter = {
+  fed: "",
+  title: "",
+  sex: "",
+  status: "",
+  birthYearMin: "",
+  birthYearMax: "",
 };
 
 export interface HomeContextValue {
@@ -54,6 +78,10 @@ export interface HomeContextValue {
   activeSource: HomeActiveSource;
   onToggleReference: () => void;
   onDeleteBase: () => void;
+
+  externalUpdatesEstimate: CatchupRange | null;
+  externalUpdatesBusy: "estimating" | "checking" | null;
+  onCheckExternalUpdates: () => void;
 
   games: GameSummary[];
   gamesTotal: number;
@@ -102,6 +130,10 @@ export interface HomeContextValue {
   onFideSearchChange: (v: string) => void;
   onFidePageChange: (p: number) => void;
   onFideFilterCommit: () => void;
+  fideAdvancedOpen: boolean;
+  onToggleFideAdvanced: () => void;
+  fideAdvancedFilter: FideAdvancedFilter;
+  onFideAdvancedFilterChange: (patch: Partial<FideAdvancedFilter>) => void;
   fideSort: FideSort | null;
   onFideSortChange: (column: FideSortColumn) => void;
   fideLastUpdated: string | null;
@@ -109,6 +141,19 @@ export interface HomeContextValue {
   fideRefreshProgress: number;
   fideRefreshError: string | null;
   onFideRefresh: () => void;
+
+  tournaments: TournamentSummary[];
+  tournamentsTotal: number;
+  tournamentsLoading: boolean;
+  tournamentsPage: number;
+  tournamentsSearchInput: string;
+  onTournamentsSearchChange: (v: string) => void;
+  onTournamentsPageChange: (p: number) => void;
+  onTournamentsFilterCommit: () => void;
+  tournamentsSort: TournamentsSort | null;
+  onTournamentsSortChange: (column: TournamentsSortColumn) => void;
+  onSetTournamentCadence: (tournamentId: number, timeControl: string) => void;
+  onFilterGamesByTournament: (name: string) => void;
 }
 
 export const HomeContext = createContext<HomeContextValue | null>(null);

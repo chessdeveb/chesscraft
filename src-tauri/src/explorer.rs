@@ -519,6 +519,26 @@ pub fn current_zobrist(moves: &[String], start_fen: Option<&str>) -> Option<i64>
     replay_position(moves, start_fen).map(|p| zobrist_of(&p))
 }
 
+/// Premier noeud de la ligne principale (racine -- premier enfant a chaque
+/// noeud, meme convention que game_tree::promote_variation) dont la position
+/// correspond a `zobrist` -- pour ouvrir une partie trouvee par l'explorateur
+/// directement a la position recherchee (transpositions et departs
+/// personnalises compris, voir current_zobrist) plutot qu'a son debut, qui
+/// n'a aucune raison de coincider une fois qu'on compare des POSITIONS et non
+/// plus des prefixes de texte. None si aucune position de la ligne
+/// principale ne correspond (ne devrait pas arriver pour une partie que
+/// l'explorateur vient de trouver via cette meme empreinte).
+pub fn mainline_node_at_zobrist(tree: &crate::game_tree::GameTree, zobrist: i64) -> Option<u32> {
+    let mut id = 0u32;
+    loop {
+        let node = tree.node(id)?;
+        if zobrist_of(&node.position) == zobrist {
+            return Some(id);
+        }
+        id = *node.children.first()?;
+    }
+}
+
 /// Coup suivant + resultat de chaque occurrence de `zobrist` dans
 /// position_index, agreges en SQL (GROUP BY, comme l'ancien systeme) puis
 /// regroupes cote Rust par tally_rows_to_stats (fusionne par ex. "Qxf7" et
@@ -593,6 +613,28 @@ mod tests {
     use std::collections::BTreeMap;
     use std::path::Path;
 
+    // Coeur du correctif "cliquer une partie de l'explorateur ne s'ouvre pas
+    // a la position en cours" : la partie a pu atteindre la position par
+    // transposition (ordre de coups different), il ne suffit donc pas de
+    // compter des demi-coups depuis l'onglet d'origine -- il faut retrouver
+    // le noeud dont la POSITION correspond reellement.
+    #[test]
+    fn mainline_node_at_zobrist_finds_the_matching_node_even_via_transposition() {
+        let tree = crate::pgn::parse_game("[White \"A\"]\n[Black \"B\"]\n[Result \"*\"]\n\n1. c4 Nf6 2. d4 e6 *").unwrap();
+        let target = current_zobrist(&["d4".to_string(), "Nf6".to_string(), "c4".to_string()], None).unwrap();
+        let node_id = mainline_node_at_zobrist(&tree, target).unwrap();
+        let node = tree.node(node_id).unwrap();
+        assert_eq!(zobrist_of(&node.position), target);
+        // ce noeud est bien apres "c4 Nf6", pas la racine (id 0)
+        assert_ne!(node_id, 0);
+    }
+
+    #[test]
+    fn mainline_node_at_zobrist_returns_none_when_the_position_never_occurs() {
+        let tree = crate::pgn::parse_game("[White \"A\"]\n[Black \"B\"]\n[Result \"*\"]\n\n1. e4 e5 *").unwrap();
+        assert_eq!(mainline_node_at_zobrist(&tree, 123_456_789), None);
+    }
+
     fn base_tags_for_explorer(white: &str, black: &str, date: &str, result: &str) -> BTreeMap<String, String> {
         let mut tags = BTreeMap::new();
         tags.insert("White".to_string(), white.to_string());
@@ -610,14 +652,19 @@ mod tests {
                 white TEXT, black TEXT, white_elo INTEGER, black_elo INTEGER,
                 result TEXT, event TEXT, site TEXT, round TEXT, date_played TEXT,
                 eco TEXT, opening_name TEXT, ply_count INTEGER, time_control TEXT,
-                pgn_moves TEXT NOT NULL, extra_tags TEXT, mainline_sans TEXT, start_fen TEXT,
+                pgn_moves TEXT NOT NULL, extra_tags TEXT, mainline_sans TEXT, start_fen TEXT, tournament_id INTEGER,
                 created_at INTEGER NOT NULL, last_modified INTEGER NOT NULL
             );
             CREATE TABLE san_dict (id INTEGER PRIMARY KEY, san TEXT NOT NULL UNIQUE);
             CREATE TABLE positions (
                 zobrist INTEGER NOT NULL, game_id INTEGER NOT NULL, next_id INTEGER, result INTEGER NOT NULL,
                 PRIMARY KEY (zobrist, game_id)
-            ) WITHOUT ROWID;",
+            ) WITHOUT ROWID;
+            CREATE TABLE tournaments (
+                id INTEGER PRIMARY KEY, name TEXT NOT NULL, site TEXT NOT NULL, time_control TEXT,
+                games INTEGER NOT NULL, date_start TEXT, date_end TEXT, created_at INTEGER NOT NULL, last_modified INTEGER NOT NULL
+            );
+            CREATE UNIQUE INDEX idx_tournaments_name_site ON tournaments(name, site);",
         )
         .unwrap();
         for (white, mainline, result) in games {

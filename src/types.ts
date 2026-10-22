@@ -18,6 +18,7 @@ export interface NodeDto {
   san: string | null;
   from: string | null;
   to: string | null;
+  promotion: string | null;
   fen: string;
   turn: "white" | "black";
   commentBefore: string | null;
@@ -37,6 +38,7 @@ export interface PvMove {
   fen: string;
   from: string;
   to: string;
+  promotion: string | null;
 }
 
 export interface EngineInfo {
@@ -45,6 +47,40 @@ export interface EngineInfo {
   scoreCp: number | null;
   scoreMate: number | null;
   pv: PvMove[];
+}
+
+export interface PositionEval {
+  scoreCp: number | null;
+  scoreMate: number | null;
+}
+
+// Comparaison DIRECTE du coup essaye au coup REELLEMENT joue dans la partie
+// (independante de classification, qui compare plutot au meilleur coup
+// trouve par le moteur) -- "similar" couvre une difference negligeable
+// (bruit de recherche) ou une veritable egalite d'evaluation.
+export type MoveComparison = "better" | "worse" | "similar";
+
+export interface TrainingPrefetch {
+  nodeId: number;
+  evalBefore: PositionEval;
+  evalGame: PositionEval;
+  // SAN du coup que le moteur juge meilleur que le coup de la partie
+  // lui-meme (independant du coup essaye) ; null si le coup de la partie
+  // etait deja le meilleur trouve, ou pas clairement pire.
+  betterGameMoveSan: string | null;
+  gameMoveClassification: number | null;
+}
+
+export interface TrainingJudgement {
+  matchesGame: boolean;
+  gameMoveComparison: MoveComparison;
+  // code NAG (2/4/6, voir nag.ts) si le coup essaye est une
+  // imprecision/erreur/gaffe par rapport a la position de depart ; null sinon.
+  classification: number | null;
+  refutation: PvMove[];
+  accuracy: number;
+  betterGameMoveSan: string | null;
+  gameMoveClassification: number | null;
 }
 
 export interface GameReportProgress {
@@ -109,6 +145,16 @@ export interface ExplorerFilterValues {
   yearMax: string;
 }
 
+export interface TournamentSummary {
+  id: number;
+  name: string;
+  site: string;
+  timeControl: string | null;
+  games: number;
+  dateStart: string | null;
+  dateEnd: string | null;
+}
+
 export interface BaseInfo {
   name: string;
   path: string;
@@ -155,6 +201,11 @@ export interface PlayersPage {
   total: number;
 }
 
+export interface TournamentsPage {
+  tournaments: TournamentSummary[];
+  total: number;
+}
+
 export interface FidePlayer {
   fideId: string;
   name: string;
@@ -184,6 +235,7 @@ export interface TabDto {
   tabId: number;
   tree: TreeDto;
   isPlayerPrep: boolean;
+  initialNodeId: number | null;
 }
 
 export interface BulkImportSummary {
@@ -192,4 +244,28 @@ export interface BulkImportSummary {
   skippedDuplicates: number;
   skippedInvalid: number;
   failed: number;
+}
+
+export interface CatchupRange {
+  fromIssue: number;
+  toIssue: number;
+  weeksBehind: number;
+}
+
+export interface UpdatePreviewTournament {
+  event: string;
+  games: number;
+  /** "twic" | "lichess" | "both" */
+  source: string;
+  dateStart: string | null;
+  dateEnd: string | null;
+}
+
+export interface UpdatePreview {
+  tournaments: UpdatePreviewTournament[];
+  totalGames: number;
+  fromIssue: number;
+  toIssue: number;
+  weeksBehind: number;
+  pgnPath: string;
 }

@@ -101,6 +101,24 @@ pub fn open(path: &Path) -> Result<Connection, String> {
             games INTEGER NOT NULL
         );
         CREATE UNIQUE INDEX IF NOT EXISTS idx_player_stats_name ON player_stats(name);
+        -- Un tournoi par (Event, Site) distinct (voir link_tournament) --
+        -- regroupe pour ne pas repeter ces libelles sur chaque partie, et
+        -- pour porter une cadence par defaut (time_control) commune a toutes
+        -- ses parties (voir set_tournament_time_control) : une partie garde
+        -- toujours SA PROPRE colonne time_control pour un depart-egalite a
+        -- une cadence differente (ex. rapide/blitz apres un tournoi classique).
+        CREATE TABLE IF NOT EXISTS tournaments (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            site TEXT NOT NULL,
+            time_control TEXT,
+            games INTEGER NOT NULL,
+            date_start TEXT,
+            date_end TEXT,
+            created_at INTEGER NOT NULL,
+            last_modified INTEGER NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_tournaments_name_site ON tournaments(name, site);
         CREATE TABLE IF NOT EXISTS db_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
     )
     .map_err(|e| e.to_string())?;
@@ -127,18 +145,21 @@ pub fn open(path: &Path) -> Result<Connection, String> {
     // positions (voir explorer::rebuild_position_index) N'EST PAS rempli
     // ici -- pour exactement la meme raison : sur une base de reference de
     // plusieurs millions de parties, le peupler demande un scan complet de
-    // la table, en rejouant chaque partie avec les vraies regles d'echecs. Deja essaye en tache de fond automatique a
-    // l'ouverture (silencieuse, jamais finie avant la fermeture sur une
-    // grosse base, repartant de zero a chaque lancement) : rapporte par
-    // l'utilisateur comme "beaucoup trop long". Regroupes sous "Recalculer
-    // les stats de l'explorateur" (menu Outils, voir
-    // lib.rs::rebuild_explorer_stats) : uniquement declenches a la demande
-    // explicite de l'utilisateur, avec progression. position_index reste
-    // neanmoins a jour au fil de l'eau pour toute NOUVELLE partie
+    // la table, en rejouant chaque partie avec les vraies regles d'echecs.
+    // Deja essaye en tache de fond automatique a l'ouverture (silencieuse,
+    // jamais finie avant la fermeture sur une grosse base, repartant de zero
+    // a chaque lancement) : rapporte par l'utilisateur comme "beaucoup trop
+    // long". Regroupe sous "Recalculer les stats de l'explorateur" (menu
+    // Outils, voir lib.rs::rebuild_explorer_stats) : uniquement declenche a
+    // la demande explicite de l'utilisateur, avec progression. `positions`
+    // reste neanmoins a jour au fil de l'eau pour toute NOUVELLE partie
     // enregistree/importee (voir save_game/update_game/delete_game) --
     // seules les parties deja presentes avant cette mise a jour ont besoin
-    // de ce rattrapage manuel.
+    // de ce rattrapage manuel. Meme mecanique pour `tournaments` (voir
+    // migrate_add_tournament_id_column/rebuild_tournaments plus bas).
     migrate_player_stats(&mut conn)?;
+    migrate_add_tournament_id_column(&conn)?;
+    migrate_add_tournament_dates_columns(&conn)?;
     Ok(conn)
 }
 
@@ -511,6 +532,62 @@ fn migrate_add_fide_id_columns(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
+/// tournament_id (voir link_tournament/tournaments) ajoutee apres coup :
+/// meme mecanique que migrate_add_fide_id_columns. Une base existante n'a au
+/// depart aucune ligne dans `tournaments` ni ce lien renseigne -- voir
+/// rebuild_tournaments (menu Outils) pour le rattrapage sur les parties deja
+/// presentes ; les nouvelles parties, elles, sont liees des leur
+/// enregistrement (voir save_game).
+fn migrate_add_tournament_id_column(conn: &Connection) -> Result<(), String> {
+    let mut stmt = conn.prepare("PRAGMA table_info(games)").map_err(|e| e.to_string())?;
+    let existing: Vec<String> = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    drop(stmt);
+
+    if !existing.iter().any(|c| c == "tournament_id") {
+        conn.execute_batch(
+            "ALTER TABLE games ADD COLUMN tournament_id INTEGER;
+             CREATE INDEX IF NOT EXISTS idx_games_tournament ON games(tournament_id);",
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// date_start/date_end (voir link_tournament/unlink_tournament/tournaments)
+/// ajoutees apres coup : meme mecanique que migrate_add_tournament_id_column.
+/// Une base existante n'a au depart aucune date sur ses tournois deja
+/// presents (NULL) -- voir rebuild_tournaments pour le rattrapage ; les
+/// nouveaux tournois/parties sont eux renseignes des leur enregistrement.
+fn migrate_add_tournament_dates_columns(conn: &Connection) -> Result<(), String> {
+    let mut stmt = conn.prepare("PRAGMA table_info(tournaments)").map_err(|e| e.to_string())?;
+    let existing: Vec<String> = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    drop(stmt);
+
+    if !existing.iter().any(|c| c == "date_start") {
+        conn.execute_batch("ALTER TABLE tournaments ADD COLUMN date_start TEXT; ALTER TABLE tournaments ADD COLUMN date_end TEXT;")
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Vrai pour une date PGN exploitable ("AAAA.MM.JJ" avec une annee reelle),
+/// faux pour un tag Date absent/generique ("????.??.??" ou partiellement
+/// inconnu) -- meme condition que le GLOB '[12][0-9][0-9][0-9].*' utilise cote
+/// SQL (external_updates.rs::most_recent_known_date), reecrite ici pour
+/// l'utiliser directement en Rust sans repasser par une requete.
+pub(crate) fn is_known_date(date: &str) -> bool {
+    let b = date.as_bytes();
+    b.len() >= 5 && matches!(b[0], b'1' | b'2') && b[1].is_ascii_digit() && b[2].is_ascii_digit() && b[3].is_ascii_digit() && b[4] == b'.'
+}
+
 fn or_default(v: Option<String>, default: &str) -> String {
     v.unwrap_or_else(|| default.to_string())
 }
@@ -545,6 +622,72 @@ pub fn normalize_start_fen(fen: Option<&str>) -> Option<String> {
     }
 }
 
+/// Vrai pour une valeur de tag absente/vide/generique ("?", convention PGN
+/// pour "inconnu") : ne doit jamais servir a regrouper des parties en un
+/// faux tournoi -- sinon toutes les parties sans Event se retrouveraient
+/// fusionnees dans un seul groupe geant, sans aucun rapport entre elles.
+fn is_placeholder_tag(s: &str) -> bool {
+    let s = s.trim();
+    s.is_empty() || s == "?"
+}
+
+/// Rattache une partie a son tournoi (Event+Site), en le creant si besoin --
+/// None si Event est absent/generique (voir is_placeholder_tag), la partie
+/// reste alors hors tournoi. Site, lui, peut rester generique (beaucoup de
+/// parties reelles n'en indiquent pas) : seul Event doit etre significatif.
+/// `date` (tag Date de CETTE partie) elargit au besoin date_start/date_end du
+/// tournoi -- ignore silencieusement si ce n'est pas une date exploitable
+/// (voir is_known_date) : une date generique ne doit jamais ecraser une date
+/// reelle deja connue.
+fn link_tournament(conn: &Connection, event: &str, site: &str, date: &str) -> Result<Option<i64>, String> {
+    if is_placeholder_tag(event) {
+        return Ok(None);
+    }
+    let timestamp = now();
+    conn.execute(
+        "INSERT INTO tournaments (name, site, games, created_at, last_modified) VALUES (?1, ?2, 1, ?3, ?3)
+         ON CONFLICT(name, site) DO UPDATE SET games = games + 1, last_modified = ?3",
+        params![event, site, timestamp],
+    )
+    .map_err(|e| e.to_string())?;
+    let id: i64 = conn
+        .query_row("SELECT id FROM tournaments WHERE name = ?1 AND site = ?2", params![event, site], |row| row.get(0))
+        .map_err(|e| e.to_string())?;
+    if is_known_date(date) {
+        conn.execute(
+            "UPDATE tournaments SET
+                date_start = CASE WHEN date_start IS NULL OR ?1 < date_start THEN ?1 ELSE date_start END,
+                date_end = CASE WHEN date_end IS NULL OR ?1 > date_end THEN ?1 ELSE date_end END
+             WHERE id = ?2",
+            params![date, id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(Some(id))
+}
+
+/// Symetrique de link_tournament, a appeler avant une suppression/un
+/// remplacement de partie -- supprime le tournoi lui-meme s'il ne contient
+/// plus aucune partie (pas d'entree fantome une fois toutes ses parties
+/// deplacees/supprimees). Recalcule aussi date_start/date_end a partir des
+/// parties restantes s'il en reste : contrairement a `games` (simple
+/// decrement), impossible de savoir par arithmetique si la partie retiree
+/// determinait justement la date min ou max.
+fn unlink_tournament(conn: &Connection, tournament_id: Option<i64>) -> Result<(), String> {
+    let Some(id) = tournament_id else { return Ok(()) };
+    conn.execute("UPDATE tournaments SET games = games - 1 WHERE id = ?1 AND games > 0", params![id]).map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM tournaments WHERE id = ?1 AND games <= 0", params![id]).map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE tournaments SET
+            date_start = (SELECT MIN(date_played) FROM games WHERE tournament_id = ?1 AND date_played GLOB '[12][0-9][0-9][0-9].*'),
+            date_end = (SELECT MAX(date_played) FROM games WHERE tournament_id = ?1 AND date_played GLOB '[12][0-9][0-9][0-9].*')
+         WHERE id = ?1",
+        params![id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 pub fn save_game(
     conn: &Connection,
     pgn: &str,
@@ -554,24 +697,29 @@ pub fn save_game(
     let get = |key: &str| tags.get(key).cloned();
     let get_elo = |key: &str| tags.get(key).and_then(|v| v.parse::<i64>().ok());
     let start_fen = normalize_start_fen(tags.get("FEN").map(|s| s.as_str()));
+    let event = get("Event");
+    let site = get("Site");
+    let date = get("Date");
+    let tournament_id = link_tournament(conn, event.as_deref().unwrap_or(""), site.as_deref().unwrap_or(""), date.as_deref().unwrap_or(""))?;
     let timestamp = now();
     conn.execute(
-        "INSERT INTO games (white, black, white_elo, black_elo, result, event, site, round, date_played, time_control, pgn_moves, mainline_sans, start_fen, created_at, last_modified)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14)",
+        "INSERT INTO games (white, black, white_elo, black_elo, result, event, site, round, date_played, time_control, pgn_moves, mainline_sans, start_fen, tournament_id, created_at, last_modified)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?15)",
         params![
             get("White"),
             get("Black"),
             get_elo("WhiteElo"),
             get_elo("BlackElo"),
             get("Result"),
-            get("Event"),
-            get("Site"),
+            event,
+            site,
             get("Round"),
-            get("Date"),
+            date,
             get("TimeControl"),
             pgn,
             mainline_sans,
             start_fen,
+            tournament_id,
             timestamp,
         ],
     )
@@ -614,14 +762,17 @@ pub fn update_game(
 ) -> Result<(), String> {
     // Ancien contenu : Blancs/Noirs pour decrementer player_stats, coups et
     // position de depart pour retirer les anciennes lignes de `positions`
-    // (voir explorer::deindex_game) avant d'indexer le nouveau contenu.
+    // (voir explorer::deindex_game), tournoi pour le delier (voir
+    // unlink_tournament) avant de relier au nouveau (Event/Site peuvent avoir
+    // change) -- tout avant d'indexer/lier le nouveau contenu.
     let old = conn
-        .query_row("SELECT white, black, mainline_sans, start_fen FROM games WHERE id = ?1", params![id], |row| {
+        .query_row("SELECT white, black, mainline_sans, start_fen, tournament_id FROM games WHERE id = ?1", params![id], |row| {
             Ok((
                 row.get::<_, Option<String>>(0)?,
                 row.get::<_, Option<String>>(1)?,
                 row.get::<_, Option<String>>(2)?,
                 row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<i64>>(4)?,
             ))
         })
         .optional()
@@ -630,32 +781,38 @@ pub fn update_game(
     let get = |key: &str| tags.get(key).cloned();
     let get_elo = |key: &str| tags.get(key).and_then(|v| v.parse::<i64>().ok());
     let start_fen = normalize_start_fen(tags.get("FEN").map(|s| s.as_str()));
+    let event = get("Event");
+    let site = get("Site");
+    let date = get("Date");
+    let tournament_id = link_tournament(conn, event.as_deref().unwrap_or(""), site.as_deref().unwrap_or(""), date.as_deref().unwrap_or(""))?;
     let timestamp = now();
     conn.execute(
         "UPDATE games SET white = ?1, black = ?2, white_elo = ?3, black_elo = ?4, result = ?5, event = ?6,
-         site = ?7, round = ?8, date_played = ?9, time_control = ?10, pgn_moves = ?11, mainline_sans = ?12, start_fen = ?13, last_modified = ?14 WHERE id = ?15",
+         site = ?7, round = ?8, date_played = ?9, time_control = ?10, pgn_moves = ?11, mainline_sans = ?12, start_fen = ?13, tournament_id = ?14, last_modified = ?15 WHERE id = ?16",
         params![
             get("White"),
             get("Black"),
             get_elo("WhiteElo"),
             get_elo("BlackElo"),
             get("Result"),
-            get("Event"),
-            get("Site"),
+            event,
+            site,
             get("Round"),
-            get("Date"),
+            date,
             get("TimeControl"),
             pgn,
             mainline_sans,
             start_fen,
+            tournament_id,
             timestamp,
             id,
         ],
     )
     .map_err(|e| e.to_string())?;
 
-    if let Some((old_white, old_black, old_mainline, old_start_fen)) = &old {
+    if let Some((old_white, old_black, old_mainline, old_start_fen, old_tournament_id)) = &old {
         crate::explorer::deindex_game(conn, id, old_mainline.as_deref().unwrap_or_default(), old_start_fen.as_deref())?;
+        unlink_tournament(conn, *old_tournament_id)?;
         let _ = decrement_player_stats(conn, old_white.as_deref().unwrap_or_default(), old_black.as_deref().unwrap_or_default());
     }
     crate::explorer::index_game(conn, id, mainline_sans, start_fen.as_deref(), tags.get("Result").map(|s| s.as_str()))?;
@@ -665,12 +822,13 @@ pub fn update_game(
 
 pub fn delete_game(conn: &Connection, id: i64) -> Result<(), String> {
     let old = conn
-        .query_row("SELECT white, black, mainline_sans, start_fen FROM games WHERE id = ?1", params![id], |row| {
+        .query_row("SELECT white, black, mainline_sans, start_fen, tournament_id FROM games WHERE id = ?1", params![id], |row| {
             Ok((
                 row.get::<_, Option<String>>(0)?,
                 row.get::<_, Option<String>>(1)?,
                 row.get::<_, Option<String>>(2)?,
                 row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<i64>>(4)?,
             ))
         })
         .optional()
@@ -679,8 +837,9 @@ pub fn delete_game(conn: &Connection, id: i64) -> Result<(), String> {
     conn.execute("DELETE FROM games WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;
 
-    if let Some((old_white, old_black, old_mainline, old_start_fen)) = old {
+    if let Some((old_white, old_black, old_mainline, old_start_fen, old_tournament_id)) = old {
         crate::explorer::deindex_game(conn, id, old_mainline.as_deref().unwrap_or_default(), old_start_fen.as_deref())?;
+        unlink_tournament(conn, old_tournament_id)?;
         let _ = decrement_player_stats(conn, old_white.as_deref().unwrap_or_default(), old_black.as_deref().unwrap_or_default());
     }
     Ok(())
@@ -712,7 +871,15 @@ pub struct GamesFilter {
     pub result: String,
     pub date_from: String,
     pub date_to: String,
-    pub time_control: String,
+    /// Nom de tournoi (prefixe, insensible a la casse -- voir
+    /// TournamentsPanelView cote frontend, qui y met le nom exact d'un
+    /// tournoi sur lequel on clique). Resolu via `tournaments` (indexee sur
+    /// name, 10 000 fois plus petite que `games`) plutot qu'un filtre direct
+    /// sur `games.event` : cette derniere colonne n'a pas d'index dedie, et
+    /// lui en ajouter un demanderait de trier des dizaines de millions de
+    /// lignes existantes a la prochaine ouverture de la base -- exactement
+    /// le probleme deja rencontre avec idx_games_start_fen.
+    pub tournament: String,
 }
 
 /// Bornes d'un intervalle "commence par" insensible a la casse.
@@ -788,22 +955,30 @@ fn build_from_and_where(filter: &GamesFilter) -> (String, String, Vec<Box<dyn ru
         ps.push(Box::new(filter.date_to.clone()));
         clauses.push(format!("date_played <= ?{}", ps.len()));
     }
-    if !filter.time_control.is_empty() {
-        let (lo, hi) = prefix_bounds(&filter.time_control);
+    if !filter.tournament.is_empty() {
+        let (lo, hi) = prefix_bounds(&filter.tournament);
         ps.push(Box::new(lo));
         ps.push(Box::new(hi));
-        clauses.push(format!("(time_control >= ?{} AND time_control < ?{})", ps.len() - 1, ps.len()));
+        clauses.push(format!(
+            "tournament_id IN (SELECT id FROM tournaments WHERE name COLLATE NOCASE >= ?{} AND name COLLATE NOCASE < ?{})",
+            ps.len() - 1,
+            ps.len()
+        ));
     }
 
     // Un seul filtre sur un nom (sans l'autre) : force son index dedie pour
-    // le meme motif que ci-dessus. Combiner white ET black (AND), ou ne
-    // filtrer que par resultat/date, reste sur le choix du planificateur.
+    // le meme motif que ci-dessus. Pas de INDEXED BY equivalent pour
+    // tournament : idx_games_tournament peut manquer sur une base ou sa
+    // construction a ete interrompue (voir migrate_add_tournament_id_column/
+    // rebuild_tournaments) -- INDEXED BY echoue alors avec "no such index"
+    // au lieu de simplement se rabattre sur un scan complet (plus lent, mais
+    // correct), contrairement a l'absence d'index sans le forcer. Combiner
+    // white ET black (AND), ou ne filtrer que par resultat/date/tournoi,
+    // reste sur le choix du planificateur.
     let from = if !filter.white.is_empty() && filter.black.is_empty() {
         "games INDEXED BY idx_games_white".to_string()
     } else if filter.white.is_empty() && !filter.black.is_empty() {
         "games INDEXED BY idx_games_black".to_string()
-    } else if filter.white.is_empty() && filter.black.is_empty() && !filter.time_control.is_empty() {
-        "games INDEXED BY idx_games_time_control".to_string()
     } else {
         "games".to_string()
     };
@@ -1184,13 +1359,13 @@ fn scan_duplicates(conn: &mut Connection, delete: bool, mut on_progress: impl Fn
     let mut last_id = 0i64;
 
     loop {
-        let page: Vec<(i64, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>)> = {
+        let page: Vec<(i64, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<i64>)> = {
             let mut stmt = conn
-                .prepare("SELECT id, white, black, date_played, result, mainline_sans, start_fen FROM games WHERE id > ?1 ORDER BY id LIMIT ?2")
+                .prepare("SELECT id, white, black, date_played, result, mainline_sans, start_fen, tournament_id FROM games WHERE id > ?1 ORDER BY id LIMIT ?2")
                 .map_err(|e| e.to_string())?;
             let rows = stmt
                 .query_map(params![last_id, PAGE_SIZE], |row| {
-                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?))
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?))
                 })
                 .map_err(|e| e.to_string())?;
             rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
@@ -1200,14 +1375,14 @@ fn scan_duplicates(conn: &mut Connection, delete: bool, mut on_progress: impl Fn
         }
         last_id = page.last().expect("page non vide").0;
 
-        let mut to_delete: Vec<(i64, String, Option<String>)> = Vec::new();
-        for (id, white, black, date, result, mainline, start_fen) in &page {
+        let mut to_delete: Vec<(i64, String, Option<String>, Option<i64>)> = Vec::new();
+        for (id, white, black, date, result, mainline, start_fen, tournament_id) in &page {
             examined += 1;
             let key = dedup_key(white, black, date, result, mainline);
             if !seen.insert(key) {
                 duplicates += 1;
                 if delete {
-                    to_delete.push((*id, mainline.clone().unwrap_or_default(), start_fen.clone()));
+                    to_delete.push((*id, mainline.clone().unwrap_or_default(), start_fen.clone(), *tournament_id));
                 }
             }
         }
@@ -1216,9 +1391,10 @@ fn scan_duplicates(conn: &mut Connection, delete: bool, mut on_progress: impl Fn
             let tx = conn.transaction().map_err(|e| e.to_string())?;
             {
                 let mut del = tx.prepare("DELETE FROM games WHERE id = ?1").map_err(|e| e.to_string())?;
-                for (id, mainline, start_fen) in &to_delete {
+                for (id, mainline, start_fen, tournament_id) in &to_delete {
                     del.execute(params![id]).map_err(|e| e.to_string())?;
                     crate::explorer::deindex_game(&tx, *id, mainline, start_fen.as_deref())?;
+                    unlink_tournament(&tx, *tournament_id)?;
                 }
             }
             tx.commit().map_err(|e| e.to_string())?;
@@ -1419,6 +1595,232 @@ pub fn list_players_page(
     }
 }
 
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TournamentSummary {
+    pub id: i64,
+    pub name: String,
+    pub site: String,
+    pub time_control: Option<String>,
+    pub games: u32,
+    pub date_start: Option<String>,
+    pub date_end: Option<String>,
+}
+
+fn map_tournament_row(row: &rusqlite::Row) -> rusqlite::Result<TournamentSummary> {
+    Ok(TournamentSummary {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        site: row.get(2)?,
+        time_control: row.get(3)?,
+        games: row.get::<_, i64>(4)? as u32,
+        date_start: row.get(5)?,
+        date_end: row.get(6)?,
+    })
+}
+
+pub fn count_tournaments(conn: &Connection, search: &str) -> Result<u32, String> {
+    let count: i64 = if search.is_empty() {
+        conn.query_row("SELECT COUNT(*) FROM tournaments", [], |row| row.get(0))
+    } else {
+        let (lo, hi) = prefix_bounds(search);
+        conn.query_row("SELECT COUNT(*) FROM tournaments WHERE name >= ?1 AND name < ?2", params![lo, hi], |row| row.get(0))
+    }
+    .map_err(|e| e.to_string())?;
+    Ok(count as u32)
+}
+
+/// tournaments reste petit (une ligne par tournoi distinct, pas par partie) :
+/// meme raison que players_order_by_clause, trier sans index dedie reste
+/// largement assez rapide ici.
+fn tournaments_order_by_clause(sort_by: &str, sort_dir: &str) -> &'static str {
+    let desc = sort_dir != "asc";
+    match (sort_by, desc) {
+        ("name", false) => "ORDER BY name COLLATE NOCASE ASC",
+        ("name", true) => "ORDER BY name COLLATE NOCASE DESC",
+        ("games", false) => "ORDER BY games ASC, name COLLATE NOCASE ASC",
+        _ => "ORDER BY games DESC, name COLLATE NOCASE ASC",
+    }
+}
+
+/// Page de tournois (nom+lieu, cadence par defaut, nombre de parties), triee
+/// selon `sort_by`/`sort_dir` (par defaut : les plus importants d'abord).
+pub fn list_tournaments_page(
+    conn: &Connection,
+    search: &str,
+    sort_by: &str,
+    sort_dir: &str,
+    limit: u32,
+    offset: u32,
+) -> Result<Vec<TournamentSummary>, String> {
+    let order_by = tournaments_order_by_clause(sort_by, sort_dir);
+    if search.is_empty() {
+        let sql = format!("SELECT id, name, site, time_control, games, date_start, date_end FROM tournaments {order_by} LIMIT ?1 OFFSET ?2");
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(params![limit, offset], map_tournament_row).map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    } else {
+        let (lo, hi) = prefix_bounds(search);
+        let sql = format!(
+            "SELECT id, name, site, time_control, games, date_start, date_end FROM tournaments WHERE name >= ?1 AND name < ?2 {order_by} LIMIT ?3 OFFSET ?4"
+        );
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(params![lo, hi, limit, offset], map_tournament_row).map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    }
+}
+
+/// Modifie la cadence par defaut d'un tournoi et la propage a ses parties qui
+/// n'en ont pas encore de la leur (games.time_control vide/absent) -- une
+/// partie qui porte deja sa propre cadence (ex. departage en rapide/blitz
+/// dans un tournoi classique) n'est JAMAIS touchee, meme si elle appartient a
+/// ce tournoi : c'est le signe qu'elle a ete distinguee expres. Reecrit le
+/// tag TimeControl dans le PGN stocke de chaque partie mise a jour (voir
+/// pgn::set_tag_in_pgn) : pgn_moves, pas la colonne games.time_control, est
+/// la source de verite relue a la reouverture d'une partie -- se contenter de
+/// la colonne laisserait la partie rouverte afficher a nouveau "aucune
+/// cadence". Renvoie le nombre de parties mises a jour.
+pub fn set_tournament_time_control(conn: &mut Connection, tournament_id: i64, time_control: &str) -> Result<u32, String> {
+    let value = time_control.trim();
+    let stored = if value.is_empty() { None } else { Some(value) };
+    let timestamp = now();
+    conn.execute(
+        "UPDATE tournaments SET time_control = ?1, last_modified = ?2 WHERE id = ?3",
+        params![stored, timestamp, tournament_id],
+    )
+    .map_err(|e| e.to_string())?;
+    let Some(value) = stored else { return Ok(0) };
+
+    let games: Vec<(i64, String)> = {
+        let mut stmt = conn
+            .prepare("SELECT id, pgn_moves FROM games WHERE tournament_id = ?1 AND (time_control IS NULL OR time_control = '')")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(params![tournament_id], |row| Ok((row.get(0)?, row.get(1)?))).map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
+    };
+
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    {
+        let mut update = tx.prepare("UPDATE games SET pgn_moves = ?1, time_control = ?2 WHERE id = ?3").map_err(|e| e.to_string())?;
+        for (id, pgn) in &games {
+            let rewritten = crate::pgn::set_tag_in_pgn(pgn, "TimeControl", value);
+            update.execute(params![rewritten, value, id]).map_err(|e| e.to_string())?;
+        }
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(games.len() as u32)
+}
+
+/// Regroupe par tournoi (Event+Site, voir link_tournament/is_placeholder_tag)
+/// les parties d'une base existante -- necessaire pour toute base ouverte
+/// pour la premiere fois apres l'ajout de cette fonctionnalite (menu Outils >
+/// Regrouper les parties par tournoi), les nouvelles parties etant deja
+/// liees au fil de l'eau (voir save_game). Vide `tournaments` et repart de
+/// zero (idempotent, comme rebuild_position_index/rebuild_player_stats) :
+/// simple a raisonner, sans avoir a determiner quelles parties auraient
+/// change de tournoi depuis le dernier passage.
+///
+/// Un seul passage sur (id, event, site), agrege en Rust (HashMap) plutot que
+/// par un GROUP BY SQL -- meme raison que rebuild_player_stats : un GROUP BY
+/// sur ces colonnes non couvertes par un index dedie resterait bloque
+/// plusieurs minutes sur la base de reference de l'utilisateur (~10M
+/// parties).
+pub fn rebuild_tournaments(conn: &mut Connection, mut on_progress: impl FnMut(crate::explorer::RebuildProgress)) -> Result<(), String> {
+    use crate::explorer::RebuildProgress;
+    const PROGRESS_EVERY: u64 = 100_000;
+    // (ids, date_start, date_end) -- comparaison en chaines, valide tant que
+    // seules des dates exploitables (is_known_date, meme format "AAAA.MM.JJ")
+    // y entrent, comme pour link_tournament.
+    let mut groups: HashMap<(String, String), (Vec<i64>, Option<String>, Option<String>)> = HashMap::new();
+    {
+        let mut stmt = conn.prepare("SELECT id, event, site, date_played FROM games").map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                    row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                    row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        let mut examined = 0u64;
+        for row in rows {
+            let (id, event, site, date) = row.map_err(|e| e.to_string())?;
+            examined += 1;
+            if examined % PROGRESS_EVERY == 0 {
+                on_progress(RebuildProgress::Reading { examined });
+            }
+            if is_placeholder_tag(&event) {
+                continue;
+            }
+            let entry = groups.entry((event, site)).or_default();
+            entry.0.push(id);
+            if is_known_date(&date) {
+                if entry.1.as_deref().is_none_or(|start| date.as_str() < start) {
+                    entry.1 = Some(date.clone());
+                }
+                if entry.2.as_deref().is_none_or(|end| date.as_str() > end) {
+                    entry.2 = Some(date);
+                }
+            }
+        }
+        on_progress(RebuildProgress::Reading { examined });
+    }
+
+    conn.execute("DELETE FROM tournaments", []).map_err(|e| e.to_string())?;
+    conn.execute("UPDATE games SET tournament_id = NULL", []).map_err(|e| e.to_string())?;
+    // Retire l'index avant les ecritures dispersees ci-dessous (des dizaines
+    // de milliers d'UPDATE individuels, en id de partie, jamais trie) : le
+    // reconstruire en bloc a la fin (un seul tri) est plus rapide que de le
+    // maintenir a chaque ecriture, et corrige au passage une base dont la
+    // construction precedente de cet index aurait ete interrompue (voir
+    // migrate_add_tournament_id_column) -- IF EXISTS pour rester sans effet
+    // s'il n'existe pas encore.
+    conn.execute("DROP INDEX IF EXISTS idx_games_tournament", []).map_err(|e| e.to_string())?;
+
+    let total_to_write = groups.len() as u64;
+    on_progress(RebuildProgress::Writing { written: 0, total: total_to_write });
+    let timestamp = now();
+    let mut written = 0u64;
+    const COMMIT_BATCH_SIZE: u64 = 2_000;
+    let mut iter = groups.into_iter();
+    loop {
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let mut in_batch = 0u64;
+        {
+            let mut insert_t = tx
+                .prepare(
+                    "INSERT INTO tournaments (name, site, games, date_start, date_end, created_at, last_modified) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+                )
+                .map_err(|e| e.to_string())?;
+            let mut update_g = tx.prepare("UPDATE games SET tournament_id = ?1 WHERE id = ?2").map_err(|e| e.to_string())?;
+            for ((event, site), (ids, date_start, date_end)) in iter.by_ref() {
+                insert_t.execute(params![event, site, ids.len() as i64, date_start, date_end, timestamp]).map_err(|e| e.to_string())?;
+                let tournament_id = tx.last_insert_rowid();
+                for game_id in &ids {
+                    update_g.execute(params![tournament_id, game_id]).map_err(|e| e.to_string())?;
+                }
+                written += 1;
+                if written % 200 == 0 {
+                    on_progress(RebuildProgress::Writing { written, total: total_to_write });
+                }
+                in_batch += 1;
+                if in_batch >= COMMIT_BATCH_SIZE {
+                    break;
+                }
+            }
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        if written >= total_to_write {
+            break;
+        }
+    }
+    on_progress(RebuildProgress::Writing { written: total_to_write, total: total_to_write });
+    conn.execute("CREATE INDEX idx_games_tournament ON games(tournament_id)", []).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Cherche une partie deja presente dans la base avec les memes Blancs/Noirs/Date/Resultat
 /// et la meme suite de coups (SAN) que celle donnee. Utilise pour alerter l'utilisateur
 /// sans jamais bloquer la sauvegarde (voir save_game_to cote lib.rs).
@@ -1520,7 +1922,7 @@ mod tests {
                 white TEXT, black TEXT, white_elo INTEGER, black_elo INTEGER,
                 result TEXT, event TEXT, site TEXT, round TEXT, date_played TEXT,
                 eco TEXT, opening_name TEXT, ply_count INTEGER, time_control TEXT,
-                pgn_moves TEXT NOT NULL, extra_tags TEXT, mainline_sans TEXT, start_fen TEXT,
+                pgn_moves TEXT NOT NULL, extra_tags TEXT, mainline_sans TEXT, start_fen TEXT, tournament_id INTEGER,
                 created_at INTEGER NOT NULL, last_modified INTEGER NOT NULL
             );
             CREATE TABLE san_dict (id INTEGER PRIMARY KEY, san TEXT NOT NULL UNIQUE);
@@ -1528,6 +1930,11 @@ mod tests {
                 zobrist INTEGER NOT NULL, game_id INTEGER NOT NULL, next_id INTEGER, result INTEGER NOT NULL,
                 PRIMARY KEY (zobrist, game_id)
             ) WITHOUT ROWID;
+            CREATE TABLE tournaments (
+                id INTEGER PRIMARY KEY, name TEXT NOT NULL, site TEXT NOT NULL, time_control TEXT,
+                games INTEGER NOT NULL, date_start TEXT, date_end TEXT, created_at INTEGER NOT NULL, last_modified INTEGER NOT NULL
+            );
+            CREATE UNIQUE INDEX idx_tournaments_name_site ON tournaments(name, site);
             CREATE TABLE db_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
         )
         .unwrap();
@@ -1695,11 +2102,18 @@ mod tests {
             CREATE TABLE positions (
                 zobrist INTEGER NOT NULL, game_id INTEGER NOT NULL, next_id INTEGER, result INTEGER NOT NULL,
                 PRIMARY KEY (zobrist, game_id)
-            ) WITHOUT ROWID;",
+            ) WITHOUT ROWID;
+            CREATE TABLE tournaments (
+                id INTEGER PRIMARY KEY, name TEXT NOT NULL, site TEXT NOT NULL, time_control TEXT,
+                games INTEGER NOT NULL, created_at INTEGER NOT NULL, last_modified INTEGER NOT NULL
+            );
+            CREATE UNIQUE INDEX idx_tournaments_name_site ON tournaments(name, site);",
         )
         .unwrap();
 
         migrate_add_columns(&conn).unwrap();
+        migrate_add_tournament_id_column(&conn).unwrap();
+        migrate_add_tournament_dates_columns(&conn).unwrap();
 
         let mut tags = BTreeMap::new();
         tags.insert("White".to_string(), "Alice".to_string());
@@ -1730,14 +2144,19 @@ mod tests {
                 white TEXT, black TEXT, white_elo INTEGER, black_elo INTEGER,
                 result TEXT, event TEXT, site TEXT, round TEXT, date_played TEXT,
                 eco TEXT, opening_name TEXT, ply_count INTEGER, time_control TEXT,
-                pgn_moves TEXT NOT NULL, extra_tags TEXT, mainline_sans TEXT, start_fen TEXT,
+                pgn_moves TEXT NOT NULL, extra_tags TEXT, mainline_sans TEXT, start_fen TEXT, tournament_id INTEGER,
                 created_at INTEGER NOT NULL, last_modified INTEGER NOT NULL
             );
             CREATE TABLE san_dict (id INTEGER PRIMARY KEY, san TEXT NOT NULL UNIQUE);
             CREATE TABLE positions (
                 zobrist INTEGER NOT NULL, game_id INTEGER NOT NULL, next_id INTEGER, result INTEGER NOT NULL,
                 PRIMARY KEY (zobrist, game_id)
-            ) WITHOUT ROWID;",
+            ) WITHOUT ROWID;
+            CREATE TABLE tournaments (
+                id INTEGER PRIMARY KEY, name TEXT NOT NULL, site TEXT NOT NULL, time_control TEXT,
+                games INTEGER NOT NULL, date_start TEXT, date_end TEXT, created_at INTEGER NOT NULL, last_modified INTEGER NOT NULL
+            );
+            CREATE UNIQUE INDEX idx_tournaments_name_site ON tournaments(name, site);",
         )
         .unwrap();
 
@@ -1984,6 +2403,141 @@ mod tests {
         // "Kasparov,G" et "kasparov,g" fusionnent (COLLATE NOCASE) en un seul joueur, 2 parties
         let kasparov = players.iter().find(|p| p.name.eq_ignore_ascii_case("kasparov,g")).unwrap();
         assert_eq!(kasparov.games, 2);
+    }
+
+    fn tags_with_event(white: &str, black: &str, event: &str, site: &str) -> BTreeMap<String, String> {
+        let mut tags = base_tags(white, black, "2024.01.01", "1-0");
+        tags.insert("Event".to_string(), event.to_string());
+        tags.insert("Site".to_string(), site.to_string());
+        tags
+    }
+
+    #[test]
+    fn tournaments_follow_save_update_delete() {
+        let conn = open(Path::new(":memory:")).unwrap();
+        let id = save_game(&conn, "1. e4 *", &tags_with_event("Alice", "Bob", "Open de Paris", "FRA"), "e4").unwrap();
+
+        assert_eq!(count_tournaments(&conn, "").unwrap(), 1);
+        let tournaments = list_tournaments_page(&conn, "", "", "", 10, 0).unwrap();
+        assert_eq!(tournaments.len(), 1);
+        assert_eq!(tournaments[0].name, "Open de Paris");
+        assert_eq!(tournaments[0].games, 1);
+        let tournament_id: i64 = conn.query_row("SELECT tournament_id FROM games WHERE id = ?1", params![id], |r| r.get(0)).unwrap();
+        assert_eq!(tournament_id, tournaments[0].id);
+
+        // meme (Event, Site) qu'une AUTRE partie : rejoint le meme tournoi, pas un doublon
+        save_game(&conn, "1. d4 *", &tags_with_event("Carol", "Dave", "Open de Paris", "FRA"), "d4").unwrap();
+        assert_eq!(count_tournaments(&conn, "").unwrap(), 1);
+        assert_eq!(list_tournaments_page(&conn, "", "", "", 10, 0).unwrap()[0].games, 2);
+
+        // changer l'Event d'une partie deplace son decompte vers un nouveau tournoi
+        update_game(&conn, id, "1. e4 *", &tags_with_event("Alice", "Bob", "Open de Lyon", "FRA"), "e4").unwrap();
+        assert_eq!(count_tournaments(&conn, "").unwrap(), 2);
+        let paris = list_tournaments_page(&conn, "Open de Paris", "", "", 10, 0).unwrap();
+        assert_eq!(paris[0].games, 1);
+
+        // supprimer la derniere partie d'un tournoi le fait disparaitre
+        let lyon_id: i64 = conn.query_row("SELECT tournament_id FROM games WHERE id = ?1", params![id], |r| r.get(0)).unwrap();
+        delete_game(&conn, id).unwrap();
+        let remaining: i64 = conn.query_row("SELECT COUNT(*) FROM tournaments WHERE id = ?1", params![lyon_id], |r| r.get(0)).unwrap();
+        assert_eq!(remaining, 0);
+        assert_eq!(count_tournaments(&conn, "").unwrap(), 1);
+    }
+
+    // Cas reel a eviter : une grande partie de la base n'a pas de tag Event
+    // (ou porte le "?" generique) -- les regrouper quand meme en un seul
+    // "tournoi" fusionnerait des milliers de parties sans aucun rapport entre
+    // elles (voir is_placeholder_tag).
+    #[test]
+    fn games_without_a_real_event_never_form_a_tournament() {
+        let conn = open(Path::new(":memory:")).unwrap();
+        save_game(&conn, "1. e4 *", &base_tags("Alice", "Bob", "2024.01.01", "1-0"), "e4").unwrap();
+        let mut placeholder = base_tags("Carol", "Dave", "2024.01.02", "1-0");
+        placeholder.insert("Event".to_string(), "?".to_string());
+        save_game(&conn, "1. d4 *", &placeholder, "d4").unwrap();
+
+        assert_eq!(count_tournaments(&conn, "").unwrap(), 0);
+        let none: (Option<i64>, Option<i64>) = conn
+            .query_row("SELECT (SELECT tournament_id FROM games WHERE white='Alice'), (SELECT tournament_id FROM games WHERE white='Carol')", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(none, (None, None));
+    }
+
+    // Le coeur du besoin : changer la cadence d'un tournoi doit se
+    // repercuter sur ses parties -- mais SEULEMENT celles qui n'ont pas deja
+    // la leur (ex. un departage joue a une cadence differente du tournoi
+    // classique principal, cas reel signale par l'utilisateur) ; celle-ci ne
+    // doit jamais etre ecrasee.
+    #[test]
+    fn set_tournament_time_control_propagates_but_respects_per_game_overrides() {
+        let mut conn = open(Path::new(":memory:")).unwrap();
+        let classical_id = save_game(&conn, "1. e4 *", &tags_with_event("Alice", "Bob", "Championnat", "FRA"), "e4").unwrap();
+        let mut tiebreak_tags = tags_with_event("Alice", "Bob", "Championnat", "FRA");
+        tiebreak_tags.insert("TimeControl".to_string(), "180+2".to_string());
+        let tiebreak_id = save_game(&conn, "1. d4 *", &tiebreak_tags, "d4").unwrap();
+
+        let tournament_id: i64 =
+            conn.query_row("SELECT tournament_id FROM games WHERE id = ?1", params![classical_id], |r| r.get(0)).unwrap();
+        let updated = set_tournament_time_control(&mut conn, tournament_id, "40/9000+30").unwrap();
+        assert_eq!(updated, 1, "seule la partie sans cadence propre doit etre mise a jour");
+
+        let classical_tc: Option<String> =
+            conn.query_row("SELECT time_control FROM games WHERE id = ?1", params![classical_id], |r| r.get(0)).unwrap();
+        assert_eq!(classical_tc.as_deref(), Some("40/9000+30"));
+        let classical_pgn: String = conn.query_row("SELECT pgn_moves FROM games WHERE id = ?1", params![classical_id], |r| r.get(0)).unwrap();
+        assert!(classical_pgn.contains("[TimeControl \"40/9000+30\"]"), "{classical_pgn}");
+
+        // le departage garde sa propre cadence, intacte
+        let tiebreak_tc: Option<String> =
+            conn.query_row("SELECT time_control FROM games WHERE id = ?1", params![tiebreak_id], |r| r.get(0)).unwrap();
+        assert_eq!(tiebreak_tc.as_deref(), Some("180+2"));
+
+        let tournaments = list_tournaments_page(&conn, "Championnat", "", "", 10, 0).unwrap();
+        assert_eq!(tournaments[0].time_control.as_deref(), Some("40/9000+30"));
+    }
+
+    #[test]
+    fn games_filter_by_tournament_matches_only_that_tournament() {
+        let conn = open(Path::new(":memory:")).unwrap();
+        save_game(&conn, "1. e4 *", &tags_with_event("Alice", "Bob", "Open de Paris", "FRA"), "e4").unwrap();
+        save_game(&conn, "1. d4 *", &tags_with_event("Carol", "Dave", "Open de Lyon", "FRA"), "d4").unwrap();
+        save_game(&conn, "1. c4 *", &base_tags("Erin", "Frank", "2024.01.01", "1-0"), "c4").unwrap();
+
+        let filter = GamesFilter { tournament: "Open de Paris".to_string(), ..Default::default() };
+        assert_eq!(count_games(&conn, &filter).unwrap(), 1);
+        let games = list_games_page(&conn, &filter, "", "", 10, 0).unwrap();
+        assert_eq!(games.len(), 1);
+        assert_eq!(games[0].white, "Alice");
+
+        // prefixe partiel : matche toujours "Open de Paris", pas "Open de Lyon"
+        let prefix_filter = GamesFilter { tournament: "Open de P".to_string(), ..Default::default() };
+        assert_eq!(count_games(&conn, &prefix_filter).unwrap(), 1);
+    }
+
+    #[test]
+    fn rebuild_tournaments_groups_pre_existing_games_by_event_and_site() {
+        let mut conn = open(Path::new(":memory:")).unwrap();
+        // insertion SQL directe (pas save_game) : simule une base existante
+        // ouverte pour la premiere fois apres l'ajout de cette fonctionnalite.
+        conn.execute_batch(
+            "INSERT INTO games (white, black, event, site, pgn_moves, mainline_sans, created_at, last_modified)
+             VALUES ('Alice', 'Bob', 'Open de Paris', 'FRA', '1. e4 *', 'e4', 0, 0),
+                    ('Carol', 'Dave', 'Open de Paris', 'FRA', '1. d4 *', 'd4', 0, 0),
+                    ('Erin', 'Frank', '?', '?', '1. c4 *', 'c4', 0, 0);",
+        )
+        .unwrap();
+
+        rebuild_tournaments(&mut conn, |_| {}).unwrap();
+
+        assert_eq!(count_tournaments(&conn, "").unwrap(), 1);
+        let tournaments = list_tournaments_page(&conn, "", "", "", 10, 0).unwrap();
+        assert_eq!(tournaments[0].name, "Open de Paris");
+        assert_eq!(tournaments[0].games, 2);
+        let erin_tournament: Option<i64> =
+            conn.query_row("SELECT tournament_id FROM games WHERE white = 'Erin'", [], |r| r.get(0)).unwrap();
+        assert_eq!(erin_tournament, None);
     }
 
     fn position_index_count(conn: &Connection, zobrist: i64) -> i64 {

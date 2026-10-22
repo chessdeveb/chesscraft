@@ -1,11 +1,11 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { ask, save } from "@tauri-apps/plugin-dialog";
 import { DockviewReact, type DockviewApi, type DockviewReadyEvent } from "dockview-react";
 import type { Dests, Key } from "@lichess-org/chessground/types";
 import { useTranslation } from "react-i18next";
-import { AppContext, type AppContextValue } from "./AppContext";
+import { AppContext, type AppContextValue, type TrainingFeedback, type TrainingSessionSummary } from "./AppContext";
 import { dockviewComponents } from "./DockPanels";
 import { persistDockviewLayout, syncPanelCheckedStates, tryRestoreDockviewLayout, useDockviewTheme } from "./dockviewPersistence";
 import { nagExclusivityGroup } from "./nag";
@@ -25,9 +25,12 @@ import type {
   MoveDto,
   NodeDto,
   OpeningMoveStat,
+  PvMove,
   SaveResult,
   ShapeDto,
   TabDto,
+  TrainingJudgement,
+  TrainingPrefetch,
   TreeDto,
 } from "./types";
 import "@lichess-org/chessground/assets/chessground.base.css";
@@ -41,6 +44,9 @@ interface GameTabProps {
   tabId: number;
   active: boolean;
   isPlayerPrep?: boolean;
+  // Noeud sur lequel demarrer cet onglet (voir App.tsx/TabDto.initialNodeId) --
+  // absent : demarre a la racine de l'arbre, comme avant.
+  initialNodeId?: number;
   onTreeChange?: (tabId: number, tree: TreeDto) => void;
 }
 
@@ -62,20 +68,6 @@ function buildDests(moves: MoveDto[]): Dests {
     dests.set(from, list);
   }
   return dests;
-}
-
-// Retrouve dans l'arbre d'une partie de l'explorateur le noeud a la
-// profondeur donnee en suivant la ligne principale (premier enfant a chaque
-// noeud) : c'est cette meme ligne qui est comparee cote base (mainline_sans)
-// pour selectionner les parties passant par la position courante, donc les
-// `depth` premiers coups y correspondent forcement.
-function mainlineNodeAt(tree: TreeDto, depth: number): number {
-  const byId = new Map(tree.nodes.map((n) => [n.id, n]));
-  let node = byId.get(tree.root);
-  for (let i = 0; i < depth && node && node.children.length > 0; i++) {
-    node = byId.get(node.children[0]);
-  }
-  return node ? node.id : tree.root;
 }
 
 function pathSans(tree: TreeDto, nodeId: number): string[] {
@@ -102,15 +94,16 @@ interface GamePanelPrefs {
   notation: boolean;
   explorer: boolean;
   engine: boolean;
+  training: boolean;
 }
 
 const GAME_PANELS_KEY = "gamePanels";
 const GAME_LAYOUT_KEY = "gameDockviewLayout";
 const GAME_LAYOUT_KEY_PREP = "gameDockviewLayoutPrep";
-const GAME_PANEL_IDS = ["board", "notation", "explorer", "engine"];
+const GAME_PANEL_IDS = ["board", "notation", "explorer", "engine", "training"];
 
 function loadGamePanelPrefs(): GamePanelPrefs {
-  const defaults: GamePanelPrefs = { notation: true, explorer: false, engine: false };
+  const defaults: GamePanelPrefs = { notation: true, explorer: false, engine: false, training: false };
   try {
     const raw = localStorage.getItem(GAME_PANELS_KEY);
     if (!raw) return defaults;
@@ -120,7 +113,10 @@ function loadGamePanelPrefs(): GamePanelPrefs {
   }
 }
 
-export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab({ tabId, active, isPlayerPrep = false, onTreeChange }, ref) {
+export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
+  { tabId, active, isPlayerPrep = false, initialNodeId, onTreeChange },
+  ref
+) {
   const { t } = useTranslation();
   const [activeBasePath, setActiveBasePath] = useState<string | null>(null);
   const [showSaveBasePicker, setShowSaveBasePicker] = useState(false);
@@ -169,7 +165,9 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
   useEffect(() => {
     invoke<TreeDto>("get_tree", { tabId }).then((t) => {
       setTree(t);
-      setCurrentNodeId(t.root);
+      // initialNodeId (voir App.tsx) : partie ouverte depuis l'explorateur,
+      // demarre directement a la position recherchee plutot qu'a la racine.
+      setCurrentNodeId(initialNodeId ?? t.root);
     });
     // si la partie vient d'une base (open_game), la sauvegarde doit
     // proposer cette meme base par defaut plutot que de repartir a vide
@@ -180,7 +178,7 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
     // reouverture, au lieu de disparaitre tant qu'on ne relance pas
     // l'analyse. Repart de null si la ligne principale n'a pas ete analysee.
     invoke<GameReportSummary | null>("get_game_report", { tabId }).then(setGameReportSummary);
-  }, [tabId]);
+  }, [tabId, initialNodeId]);
 
   useEffect(() => {
     if (!tree) return;
@@ -198,18 +196,53 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
   const currentNode: NodeDto | undefined = tree?.nodes.find((n) => n.id === currentNodeId);
 
   const handleMove = useCallback(
-    async (from: Key, to: Key) => {
+    async (from: Key, to: Key, promotion: string | null = null) => {
       try {
         const newId = await invoke<number>("play_move", {
           tabId,
           nodeId: currentNodeId,
           from,
           to,
-          promotion: null,
+          promotion,
         });
         const newTree = await invoke<TreeDto>("get_tree", { tabId });
         setTree(newTree);
         setCurrentNodeId(newId);
+        setVariationChoice(null);
+        setError(null);
+        setIsDirty(true);
+      } catch (e) {
+        setError(String(e));
+      }
+    },
+    [tabId, currentNodeId]
+  );
+
+  // Clic sur un coup d'une variante du moteur (EnginePanel) : rejoue tous les
+  // coups de la ligne jusqu'a celui clique (inclus) depuis la position
+  // actuellement analysee (currentNodeId -- toujours celle de analyzedFen,
+  // voir DockPanels.tsx::EnginePanelView, l'analyse redemarre a chaque
+  // changement de position). play_move reutilise un enfant existant si le
+  // coup y figure deja (meme logique qu'un coup joue normalement sur
+  // l'echiquier), donc rejouer une ligne deja presente dans l'arbre se
+  // contente de s'y deplacer plutot que de dupliquer la variation.
+  const handlePlayPvLine = useCallback(
+    async (moves: PvMove[], uptoIndex: number) => {
+      try {
+        let nodeId = currentNodeId;
+        for (let i = 0; i <= uptoIndex; i++) {
+          const move = moves[i];
+          nodeId = await invoke<number>("play_move", {
+            tabId,
+            nodeId,
+            from: move.from,
+            to: move.to,
+            promotion: move.promotion,
+          });
+        }
+        const newTree = await invoke<TreeDto>("get_tree", { tabId });
+        setTree(newTree);
+        setCurrentNodeId(nodeId);
         setVariationChoice(null);
         setError(null);
         setIsDirty(true);
@@ -567,7 +600,317 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
     [tabId, enginePath, t]
   );
 
-  const setPanelVisible = useCallback((id: "board" | "notation" | "explorer" | "engine", visible: boolean) => {
+  // --- Mode entrainement ---
+  // Position courante de l'exercice, independante de currentNodeId (la
+  // navigation normale de l'echiquier/notation) : l'utilisateur doit pouvoir
+  // continuer a parcourir la partie normalement pendant qu'un entrainement
+  // est en pause sur une autre position, voir ExplorerPreview pour le meme
+  // principe (previewNodeId separe de currentNodeId).
+  const [trainingNodeId, setTrainingNodeId] = useState<number | null>(null);
+  // camp pour lequel l'exercice a demarre (voir handleStartTraining) : fixe
+  // pour toute la duree de l'exercice, les coups de l'autre camp sont
+  // rejoues automatiquement depuis la partie sans etre juges (l'utilisateur
+  // ne les choisit pas).
+  const [trainingSide, setTrainingSide] = useState<"white" | "black" | null>(null);
+  const [trainingFeedback, setTrainingFeedback] = useState<TrainingFeedback | null>(null);
+  const [trainingBusy, setTrainingBusy] = useState(false);
+  const [trainingError, setTrainingError] = useAutoDismissError();
+  const [trainingDests, setTrainingDests] = useState<Dests>(new Map());
+  // Un coup juge (correct ou non) par round, dans l'ordre -- pour le score de
+  // precision cumule (affiche en continu, voir TrainingPanel) et le resume de
+  // fin de session (voir trainingSummary plus bas). "classification" null
+  // couvre a la fois un coup correct (accuracy 100) et un coup different mais
+  // pas clairement pire (voir judge_training_move cote backend).
+  const [trainingRounds, setTrainingRounds] = useState<{ classification: number | null; accuracy: number }[]>([]);
+  const [trainingSummary, setTrainingSummary] = useState<TrainingSessionSummary | null>(null);
+  // Evaluation de la position actuelle + de celle du coup reel, lancee des
+  // que c'est au tour du trainee de jouer (donc PENDANT qu'il reflechit, pas
+  // apres qu'il ait joue) -- voir l'effet de pre-chargement plus bas et son
+  // utilisation dans handleTrainingMove.
+  const [trainingPrefetch, setTrainingPrefetch] = useState<TrainingPrefetch | null>(null);
+  // Reglage PROPRE a l'entrainement (pas celui, invisible ici, du dialogue
+  // "Rapport de partie" repris silencieusement au depart) : l'utilisateur
+  // n'a aucun moyen de voir/changer ce dernier depuis l'onglet Entrainement,
+  // "changer la profondeur" n'avait donc aucun effet observable -- rapporte
+  // comme "le moteur reste trop lent meme en profondeur 10". Visible et
+  // reglable directement dans TrainingPanel, persiste sous ses propres cles.
+  const [trainingDepth, setTrainingDepthState] = useState(() => Number(localStorage.getItem("trainingDepth")) || 14);
+  const [trainingThreadsSetting, setTrainingThreadsSettingState] = useState(
+    () => Number(localStorage.getItem("trainingThreads")) || 1
+  );
+  const setTrainingDepth = useCallback((depth: number) => {
+    setTrainingDepthState(depth);
+    localStorage.setItem("trainingDepth", String(depth));
+  }, []);
+  const setTrainingThreadsSetting = useCallback((threads: number) => {
+    setTrainingThreadsSettingState(threads);
+    localStorage.setItem("trainingThreads", String(threads));
+  }, []);
+
+  const trainingNode = tree?.nodes.find((n) => n.id === trainingNodeId) ?? null;
+  const trainingFen = trainingNode?.fen ?? null;
+  const trainingAtEnd = trainingNode !== null && trainingNode.children.length === 0;
+  const trainingAccuracy = useMemo(
+    () => (trainingRounds.length === 0 ? null : trainingRounds.reduce((sum, r) => sum + r.accuracy, 0) / trainingRounds.length),
+    [trainingRounds]
+  );
+
+  // nodeId du dernier pre-chauffage LANCE (pas forcement termine) : evite de
+  // relancer invoke() a chaque re-render tant que l'evenement de reponse
+  // n'est pas arrive, voir l'effet de pre-chargement plus bas.
+  const trainingPrefetchRequestedRef = useRef<number | null>(null);
+  // Contexte (SAN du coup reel, noeud vers lequel avancer) du jugement en
+  // cours, pose juste avant l'appel a judge_training_move et consomme par
+  // l'ecouteur "training-judge-done" -- le backend ne renvoie que le
+  // verdict, pas ces informations propres a l'arbre cote frontend.
+  const trainingPendingJudgeRef = useRef<{ nodeId: number; gameSan: string; pendingNodeId: number } | null>(null);
+  // Derniere position d'entrainement connue, lue par les ecouteurs
+  // d'evenements (effet stable, abonne une seule fois par tabId, voir plus
+  // bas) pour ignorer une reponse perimee sans avoir a se reabonner a
+  // chaque coup.
+  const trainingNodeIdRef = useRef<number | null>(null);
+  trainingNodeIdRef.current = trainingNodeId;
+
+  const handleStartTraining = useCallback(
+    (nodeId: number) => {
+      const node = tree?.nodes.find((n) => n.id === nodeId);
+      if (!node) return;
+      setTrainingNodeId(nodeId);
+      setTrainingSide(node.turn);
+      setTrainingFeedback(null);
+      setTrainingError(null);
+      setTrainingRounds([]);
+      setTrainingSummary(null);
+      setTrainingPrefetch(null);
+      trainingPrefetchRequestedRef.current = null;
+      trainingPendingJudgeRef.current = null;
+    },
+    [tree]
+  );
+
+  const handleStopTraining = useCallback(() => {
+    setTrainingNodeId(null);
+    setTrainingSide(null);
+    setTrainingFeedback(null);
+    setTrainingRounds([]);
+    setTrainingSummary(null);
+    setTrainingPrefetch(null);
+    trainingPrefetchRequestedRef.current = null;
+    trainingPendingJudgeRef.current = null;
+  }, []);
+
+  // coups legaux de l'exercice : uniquement quand c'est au trainee de jouer
+  // (sinon le coup suivant est rejoue automatiquement, voir l'effet
+  // ci-dessous), qu'aucun retour n'est affiche (il faut d'abord "Continuer"
+  // avant de pouvoir rejouer, voir handleTrainingContinue) ET qu'aucun
+  // jugement n'est en cours (trainingBusy) -- sans ce dernier garde-fou,
+  // l'echiquier redevenait jouable des que play_move avait insere la
+  // variation (tout de suite, voir handleTrainingMove), AVANT meme que le
+  // moteur ait fini d'analyser le coup : l'utilisateur pouvait alors rejouer
+  // par-dessus une analyse encore en cours. Le coup ne doit redevenir
+  // reprenable qu'une fois la reflexion (l'analyse) terminee.
+  useEffect(() => {
+    if (!trainingNode || trainingNode.turn !== trainingSide || trainingFeedback || trainingBusy) {
+      setTrainingDests(new Map());
+      return;
+    }
+    invoke<MoveDto[]>("legal_moves", { tabId, nodeId: trainingNode.id })
+      .then((moves) => setTrainingDests(buildDests(moves)))
+      .catch(() => setTrainingDests(new Map()));
+  }, [tabId, trainingNode, trainingSide, trainingFeedback, trainingBusy]);
+
+  // rejoue automatiquement le coup de l'autre camp (celui que l'utilisateur
+  // ne controle pas dans cet exercice) : petit delai pour qu'il reste
+  // visible au lieu de sauter instantanement a la position suivante.
+  useEffect(() => {
+    if (!trainingNode || trainingNode.turn === trainingSide || trainingNode.children.length === 0) return;
+    const nextId = trainingNode.children[0];
+    const timer = setTimeout(() => setTrainingNodeId(nextId), 350);
+    return () => clearTimeout(timer);
+  }, [trainingNode, trainingSide]);
+
+  // Fin de ligne atteinte avec au moins un coup juge pendant la session :
+  // affiche le resume (voir TrainingPanel) au lieu de rester sur "fin de la
+  // ligne". Ne se redeclenche pas (garde trainingSummary) une fois pose.
+  useEffect(() => {
+    if (trainingAtEnd && trainingRounds.length > 0 && !trainingSummary) {
+      const blunders = trainingRounds.filter((r) => r.classification === 4).length;
+      const mistakes = trainingRounds.filter((r) => r.classification === 2).length;
+      const inaccuracies = trainingRounds.filter((r) => r.classification === 6).length;
+      setTrainingSummary({
+        accuracy: trainingRounds.reduce((sum, r) => sum + r.accuracy, 0) / trainingRounds.length,
+        blunders,
+        mistakes,
+        inaccuracies,
+        rounds: trainingRounds.length,
+      });
+    }
+  }, [trainingAtEnd, trainingRounds, trainingSummary]);
+
+  // judge_training_move/prefetch_training_judgement tournent sur un thread
+  // dedie cote Rust et renvoient leur resultat par evenement (voir ces deux
+  // commandes, lib.rs) -- jamais directement comme valeur de retour de
+  // invoke(). Un premier essai synchrone (commande bloquant jusqu'au
+  // resultat, meme a un seul process moteur a la fois) gelait l'appli
+  // entiere pendant toute l'analyse : c'est le fait de bloquer le HANDLER de
+  // la commande qui bloque la fenetre, pas la charge CPU du moteur -- exact
+  // probleme deja rencontre et corrige pour le rapport de partie
+  // (start_game_report), reproduit ici par erreur puis corrige de la meme
+  // facon.
+  useEffect(() => {
+    const unlistenPromises = [
+      listen<TrainingPrefetch>(`training-prefetch-done-${tabId}`, (event) => {
+        if (trainingNodeIdRef.current === event.payload.nodeId) setTrainingPrefetch(event.payload);
+      }),
+      listen<string>(`training-prefetch-error-${tabId}`, () => {
+        // simple pre-chauffage best-effort : judge_training_move retombera
+        // sur son calcul complet (3 positions) sans rien perdre.
+      }),
+      listen<TrainingJudgement>(`training-judge-done-${tabId}`, (event) => {
+        const pending = trainingPendingJudgeRef.current;
+        trainingPendingJudgeRef.current = null;
+        setTrainingBusy(false);
+        if (!pending || trainingNodeIdRef.current !== pending.nodeId) return;
+        setTrainingRounds((prev) => [...prev, { classification: event.payload.classification, accuracy: event.payload.accuracy }]);
+        setTrainingFeedback({ ...event.payload, gameSan: pending.gameSan, pendingNodeId: pending.pendingNodeId });
+      }),
+      listen<string>(`training-judge-error-${tabId}`, (event) => {
+        trainingPendingJudgeRef.current = null;
+        setTrainingBusy(false);
+        setTrainingError(event.payload);
+      }),
+    ];
+    return () => {
+      unlistenPromises.forEach((p) => p.then((unlisten) => unlisten()));
+    };
+  }, [tabId]);
+
+  // Pre-chauffage moteur : des que c'est au trainee de jouer, evalue deja la
+  // position actuelle ET celle du coup reel, AVANT meme de savoir quel coup
+  // sera essaye -- pour que le moteur mette a profit le temps de reflexion de
+  // l'utilisateur plutot que de ne demarrer qu'une fois le coup joue (c'etait
+  // le cas avant, rapporte comme trop lent a l'usage). judge_training_move
+  // n'a plus ensuite qu'UNE position de plus a evaluer (voir handleTrainingMove).
+  useEffect(() => {
+    if (!trainingNode || trainingNode.turn !== trainingSide || trainingFeedback || !enginePath) return;
+    if (trainingPrefetch?.nodeId === trainingNode.id) return;
+    if (trainingPrefetchRequestedRef.current === trainingNode.id) return;
+    const gameChildId = trainingNode.children[0];
+    const gameChild = gameChildId !== undefined ? tree?.nodes.find((n) => n.id === gameChildId) : undefined;
+    if (!gameChild || !gameChild.from || !gameChild.to) return;
+    trainingPrefetchRequestedRef.current = trainingNode.id;
+    invoke("prefetch_training_judgement", {
+      tabId,
+      nodeId: trainingNode.id,
+      enginePath,
+      depth: trainingDepth,
+      threads: trainingThreadsSetting,
+      fenBefore: trainingNode.fen,
+      gameFrom: gameChild.from,
+      gameTo: gameChild.to,
+      gamePromotion: gameChild.promotion,
+    }).catch(() => {
+      // echec immediat (ex. chemin moteur invalide) : permet un nouvel essai
+      // plus tard plutot que de rester bloque sur ce nodeId pour toujours.
+      trainingPrefetchRequestedRef.current = null;
+    });
+  }, [trainingNode, trainingSide, trainingFeedback, enginePath, tree, trainingPrefetch, trainingDepth, trainingThreadsSetting, tabId]);
+
+  const handleTrainingMove = useCallback(
+    async (from: Key, to: Key, promotion: string | null = null) => {
+      if (!trainingNode) return;
+      const gameChildId = trainingNode.children[0];
+      const gameChild = gameChildId !== undefined ? tree?.nodes.find((n) => n.id === gameChildId) : undefined;
+      if (!gameChild || !gameChild.from || !gameChild.to) return;
+
+      if (from === gameChild.from && to === gameChild.to && promotion === gameChild.promotion) {
+        // Rejouer le coup de la partie ne garantit pas que c'etait le
+        // meilleur coup : si le pre-chauffage de cette position a deja
+        // identifie mieux (voir prefetch_training_judgement), on le signale
+        // aussi ici plutot que de se limiter a un "coup de la partie !"
+        // silencieux sur un coup pourtant imparfait.
+        const prefetched = trainingPrefetch?.nodeId === trainingNode.id ? trainingPrefetch : null;
+        const betterGameMoveSan = prefetched?.betterGameMoveSan ?? null;
+        setTrainingRounds((prev) => [...prev, { classification: null, accuracy: 100 }]);
+        setTrainingFeedback({
+          matchesGame: true,
+          gameSan: gameChild.san ?? "",
+          classification: null,
+          gameMoveComparison: "similar",
+          refutation: [],
+          accuracy: 100,
+          betterGameMoveSan,
+          gameMoveClassification: prefetched?.gameMoveClassification ?? null,
+          pendingNodeId: gameChild.id,
+        });
+        if (!betterGameMoveSan) {
+          // coup de la partie deja optimal : avancee automatique, rien de
+          // plus a lire. Sinon on attend "Continuer" (voir handleTrainingContinue).
+          setTimeout(() => {
+            setTrainingFeedback(null);
+            setTrainingNodeId(gameChild.id);
+          }, 500);
+        }
+        return;
+      }
+      if (!enginePath) {
+        setTrainingError(t("gameReport.noEnginePath"));
+        return;
+      }
+      setTrainingBusy(true);
+      setTrainingError(null);
+      try {
+        // Insere le coup essaye comme variation dans la VRAIE partie (comme un
+        // coup normal sur l'echiquier, voir handleMove) : contrairement a
+        // judge_training_move (qui ne fait que l'evaluer, sans toucher a la
+        // session), l'utilisateur doit pouvoir retrouver ses essais ensuite
+        // dans la Notation, pas seulement un verdict ephemere ici.
+        await invoke<number>("play_move", { tabId, nodeId: trainingNode.id, from, to, promotion });
+        const newTree = await invoke<TreeDto>("get_tree", { tabId });
+        setTree(newTree);
+        setIsDirty(true);
+
+        // Reutilise le pre-chauffage de cette position s'il a deja abouti ;
+        // sinon judge_training_move refait le calcul complet (3 positions)
+        // de son cote -- plus de "promesse en vol" a attendre ici, tout
+        // tourne desormais sur un thread separe (voir l'effet d'ecoute
+        // ci-dessus), donc rien a bloquer.
+        const prefetched = trainingPrefetch?.nodeId === trainingNode.id ? trainingPrefetch : null;
+        trainingPendingJudgeRef.current = { nodeId: trainingNode.id, gameSan: gameChild.san ?? "", pendingNodeId: gameChild.id };
+        await invoke("judge_training_move", {
+          tabId,
+          enginePath,
+          depth: trainingDepth,
+          threads: trainingThreadsSetting,
+          fenBefore: trainingNode.fen,
+          userFrom: from,
+          userTo: to,
+          userPromotion: promotion,
+          gameFrom: gameChild.from,
+          gameTo: gameChild.to,
+          gamePromotion: gameChild.promotion,
+          evalBefore: prefetched?.evalBefore ?? null,
+          evalGame: prefetched?.evalGame ?? null,
+        });
+        // le verdict arrive via l'evenement "training-judge-done-{tabId}"
+        // (effet d'ecoute plus haut), qui remet aussi trainingBusy a false.
+      } catch (e) {
+        trainingPendingJudgeRef.current = null;
+        setTrainingError(String(e));
+        setTrainingBusy(false);
+      }
+    },
+    [trainingNode, tree, tabId, enginePath, trainingPrefetch, trainingDepth, trainingThreadsSetting, t]
+  );
+
+  const handleTrainingContinue = useCallback(() => {
+    if (trainingFeedback?.pendingNodeId != null) {
+      setTrainingNodeId(trainingFeedback.pendingNodeId);
+    }
+    setTrainingFeedback(null);
+  }, [trainingFeedback]);
+
+  const setPanelVisible = useCallback((id: "board" | "notation" | "explorer" | "engine" | "training", visible: boolean) => {
     if (id === "explorer") setExplorerVisible(visible);
     const api = dockviewApiRef.current;
     if (!api) return;
@@ -597,13 +940,23 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
           title: t("gameTab.panel.explorer"),
           position: notation ? { direction: "within", referencePanel: "notation" } : undefined,
         });
-      } else {
+      } else if (id === "engine") {
         const notation = api.getPanel("notation");
         api.addPanel({
           id: "engine",
           component: "engine",
           title: t("gameTab.panel.engine"),
           position: notation ? { direction: "below", referencePanel: "notation" } : undefined,
+        });
+      } else {
+        // onglet dedie, regroupe avec Notation/Explorateur (voir la carte
+        // Trello "Mode d'entrainement") plutot qu'un panneau separe.
+        const notation = api.getPanel("notation");
+        api.addPanel({
+          id: "training",
+          component: "training",
+          title: t("gameTab.panel.training"),
+          position: notation ? { direction: "within", referencePanel: "notation" } : undefined,
         });
       }
     } else {
@@ -612,17 +965,19 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
   }, [t]);
 
   const toggleGamePanel = useCallback(
-    (id: "board" | "notation" | "explorer" | "engine") => {
+    (id: "board" | "notation" | "explorer" | "engine" | "training") => {
       const isVisible = !!dockviewApiRef.current?.getPanel(id);
       setPanelVisible(id, !isVisible);
     },
     [setPanelVisible]
   );
 
-  // le moteur s'arrete quand cet onglet se ferme
+  // le moteur s'arrete quand cet onglet se ferme (idem pour le process
+  // moteur persistant du mode entrainement, voir BatchEngine/engine.rs)
   useEffect(() => {
     return () => {
       invoke("stop_engine", { tabId }).catch(() => {});
+      invoke("stop_training_engine", { tabId }).catch(() => {});
     };
   }, [tabId]);
 
@@ -870,13 +1225,19 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
       setPreviewNodeId(null);
       setPreviewError(null);
       try {
-        const previewedTree = await invoke<TreeDto>("opening_explorer_preview_game", { id });
+        const moves = tree ? pathSans(tree, currentNodeId) : [];
+        const { tree: previewedTree, matchNodeId } = await invoke<{ tree: TreeDto; matchNodeId: number | null }>(
+          "opening_explorer_preview_game",
+          { id, moves, startFen: tree ? rootFen(tree) : undefined }
+        );
         setPreviewTree(previewedTree);
-        // demarre l'apercu a la meme position que le grand echiquier plutot
-        // qu'au tout debut de la partie : c'est justement cette position qui
-        // a amene cette partie dans la liste.
-        const depth = tree ? pathSans(tree, currentNodeId).length : 0;
-        setPreviewNodeId(mainlineNodeAt(previewedTree, depth));
+        // demarre l'apercu a la position recherchee (celle qui a amene cette
+        // partie dans la liste), retrouvee cote backend par sa position
+        // (transpositions et departs personnalises compris, voir
+        // explorer::mainline_node_at_zobrist) -- pas en comptant des demi-coups
+        // depuis l'onglet d'origine, qui ne correspondent a rien si cette
+        // partie a atteint la position par un ordre de coups different.
+        setPreviewNodeId(matchNodeId ?? previewedTree.root);
       } catch (e) {
         setPreviewError(String(e));
       }
@@ -918,12 +1279,18 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
   const handleOpenPreviewGame = useCallback(async () => {
     if (previewGameId === null || !explorerGamesBasePath) return;
     try {
-      const tab = await invoke<TabDto>("open_game", { path: explorerGamesBasePath, id: previewGameId });
+      const moves = tree ? pathSans(tree, currentNodeId) : [];
+      const tab = await invoke<TabDto>("open_game", {
+        path: explorerGamesBasePath,
+        id: previewGameId,
+        moves,
+        startFen: tree ? rootFen(tree) : undefined,
+      });
       await emit("game-tab-opened", tab);
     } catch (e) {
       setPreviewError(String(e));
     }
-  }, [previewGameId, explorerGamesBasePath]);
+  }, [previewGameId, explorerGamesBasePath, tree, currentNodeId]);
 
   // --- Menus natifs : n'agissent que sur l'onglet actif ---
   useEffect(() => {
@@ -936,6 +1303,7 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
       listen("menu-toggle-panel-notation", () => toggleGamePanel("notation")),
       listen("menu-toggle-panel-explorer", () => toggleGamePanel("explorer")),
       listen("menu-toggle-panel-engine", () => toggleGamePanel("engine")),
+      listen("menu-toggle-panel-training", () => toggleGamePanel("training")),
     ];
     return () => {
       unlistenPromises.forEach((p) => p.then((unlisten) => unlisten()));
@@ -1044,6 +1412,7 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
       if (prefs.notation) setPanelVisible("notation", true);
       if (prefs.explorer) setPanelVisible("explorer", true);
       if (prefs.engine) setPanelVisible("engine", true);
+      if (prefs.training) setPanelVisible("training", true);
       api.getPanel("notation")?.api.setActive();
       setExplorerVisible(api.activePanel?.id === "explorer");
       syncPanelCheckedStates(api, GAME_PANEL_IDS);
@@ -1073,6 +1442,7 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
     api.getPanel("notation")?.api.setTitle(t("gameTab.panel.notation"));
     api.getPanel("explorer")?.api.setTitle(t("gameTab.panel.explorer"));
     api.getPanel("engine")?.api.setTitle(t("gameTab.panel.engine"));
+    api.getPanel("training")?.api.setTitle(t("gameTab.panel.training"));
   }, [t]);
 
   const contextValue: AppContextValue = {
@@ -1085,6 +1455,7 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
     boardFlipped,
     setBoardFlipped,
     handleMove,
+    handlePlayPvLine,
     handleShapesChange,
     handleSelect,
     onStep: handleStep,
@@ -1145,6 +1516,24 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
     gameReportError,
     gameReportSummary,
     handleStartGameReport,
+    trainingNodeId,
+    trainingSide,
+    trainingFen,
+    trainingDests,
+    trainingFeedback,
+    trainingBusy,
+    trainingError,
+    trainingAtEnd,
+    trainingAccuracy,
+    trainingSummary,
+    trainingDepth,
+    setTrainingDepth,
+    trainingThreadsSetting,
+    setTrainingThreadsSetting,
+    handleStartTraining,
+    handleStopTraining,
+    handleTrainingMove,
+    handleTrainingContinue,
   };
 
   return (

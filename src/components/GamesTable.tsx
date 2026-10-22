@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { GAME_DRAG_MIME } from "../dnd";
 import type { GamesSort, GamesSortColumn } from "../HomeContext";
+import { ColumnResizeHandle, useColumnWidths } from "../useColumnWidths";
 
 export interface GameRow {
   key: number;
@@ -36,20 +37,49 @@ function SortableHeader({
   column,
   sort,
   onSortChange,
+  width,
+  onResizeStart,
 }: {
   label: string;
   column: GamesSortColumn;
   sort?: GamesSort | null;
   onSortChange?: (column: GamesSortColumn) => void;
+  width: number;
+  onResizeStart: (e: MouseEvent) => void;
 }) {
-  if (!onSortChange) return <th>{label}</th>;
   const active = sort?.column === column;
   return (
-    <th className="games-table-sortable" onClick={() => onSortChange(column)}>
-      {label} {active ? (sort!.dir === "asc" ? "▲" : "▼") : ""}
+    <th
+      className={onSortChange ? "games-table-sortable" : undefined}
+      style={{ width }}
+      onClick={onSortChange ? () => onSortChange(column) : undefined}
+    >
+      {label} {onSortChange && active ? (sort!.dir === "asc" ? "▲" : "▼") : ""}
+      <ColumnResizeHandle onMouseDown={onResizeStart} />
     </th>
   );
 }
+
+// Colonnes redimensionnables (voir useColumnWidths) ; toutes chiffrees
+// explicitement, y compris Evenement -- une colonne sans largeur declaree
+// faussait la repartition de table-layout:fixed (voir l'historique de
+// .resizable-table, App.css). La colonne d'actions (boutons
+// deplacer/supprimer, presente seulement si onDelete/onMove) garde sa
+// largeur naturelle, minime, pas la peine de la rendre redimensionnable.
+const GAMES_TABLE_COLUMNS = [
+  { key: "white", default: 140 },
+  { key: "whiteElo", default: 60 },
+  { key: "black", default: 140 },
+  { key: "blackElo", default: 60 },
+  { key: "date", default: 90 },
+  { key: "result", default: 64 },
+  { key: "event", default: 180 },
+];
+// Colonne d'actions (boutons deplacer/supprimer) : largeur fixe, non
+// redimensionnable, mais doit quand meme etre comptee dans la largeur totale
+// de la table (voir totalWidth, useColumnWidths) -- sans ca, cette colonne
+// non suivie par le hook se retrouverait ecrasee a 0.
+const GAMES_TABLE_ACTIONS_WIDTH = 56;
 
 export function GamesTable({
   games,
@@ -66,6 +96,7 @@ export function GamesTable({
   const { t } = useTranslation();
   const lastIndexRef = useRef<number | null>(null);
   const [menu, setMenu] = useState<{ x: number; y: number; ids: number[] } | null>(null);
+  const { widths, startResize, totalWidth } = useColumnWidths("gamesTable", GAMES_TABLE_COLUMNS);
 
   if (games.length === 0) {
     return <p className="notation-empty">{t("gamesTable.empty")}</p>;
@@ -111,16 +142,53 @@ export function GamesTable({
 
   return (
     <Fragment>
-      <table className="explorer-table">
+      <div className="resizable-table-wrap">
+      <table
+        className="explorer-table resizable-table"
+        style={{ width: totalWidth + (onDelete || onMove ? GAMES_TABLE_ACTIONS_WIDTH : 0) }}
+      >
       <thead>
         <tr>
-          <SortableHeader label={t("common.white")} column="white" sort={sort} onSortChange={onSortChange} />
-          <th>{t("gamesTable.whiteElo")}</th>
-          <SortableHeader label={t("common.black")} column="black" sort={sort} onSortChange={onSortChange} />
-          <th>{t("gamesTable.blackElo")}</th>
-          <SortableHeader label={t("common.date")} column="date" sort={sort} onSortChange={onSortChange} />
-          <th>{t("common.result")}</th>
-          <th>{t("common.event")}</th>
+          <SortableHeader
+            label={t("common.white")}
+            column="white"
+            sort={sort}
+            onSortChange={onSortChange}
+            width={widths.white}
+            onResizeStart={startResize("white")}
+          />
+          <th style={{ width: widths.whiteElo }}>
+            {t("gamesTable.whiteElo")}
+            <ColumnResizeHandle onMouseDown={startResize("whiteElo")} />
+          </th>
+          <SortableHeader
+            label={t("common.black")}
+            column="black"
+            sort={sort}
+            onSortChange={onSortChange}
+            width={widths.black}
+            onResizeStart={startResize("black")}
+          />
+          <th style={{ width: widths.blackElo }}>
+            {t("gamesTable.blackElo")}
+            <ColumnResizeHandle onMouseDown={startResize("blackElo")} />
+          </th>
+          <SortableHeader
+            label={t("common.date")}
+            column="date"
+            sort={sort}
+            onSortChange={onSortChange}
+            width={widths.date}
+            onResizeStart={startResize("date")}
+          />
+          <th style={{ width: widths.result }}>
+            {t("common.result")}
+            <ColumnResizeHandle onMouseDown={startResize("result")} />
+          </th>
+          <th style={{ width: widths.event }}>
+            {t("common.event")}
+            <ColumnResizeHandle onMouseDown={startResize("event")} />
+          </th>
           {(onDelete || onMove) && <th></th>}
         </tr>
       </thead>
@@ -177,6 +245,7 @@ export function GamesTable({
         })}
       </tbody>
     </table>
+    </div>
     {menu && buildContextMenuItems && (
       <ContextMenu x={menu.x} y={menu.y} items={buildContextMenuItems(menu.ids)} onClose={() => setMenu(null)} />
     )}

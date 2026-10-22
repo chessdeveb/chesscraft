@@ -72,6 +72,7 @@ pub struct NodeDto {
     pub san: Option<String>,
     pub from: Option<String>,
     pub to: Option<String>,
+    pub promotion: Option<String>,
     pub fen: String,
     pub turn: String,
     pub comment_before: Option<String>,
@@ -303,6 +304,40 @@ impl GameTree {
             .collect())
     }
 
+    /// Comme play_move, mais purement a partir d'un FEN, sans GameTree ni
+    /// mutation : utilise par le mode entrainement (judge_training_move,
+    /// lib.rs) pour essayer un coup de l'utilisateur sans jamais alterer la
+    /// partie reelle (pas question d'inserer chaque essai, bon ou mauvais,
+    /// comme variation dans la partie enregistree). Duplique volontairement
+    /// la resolution du coup de play_move (meme repli promotion en dame par
+    /// defaut) plutot que de refactoriser cette derniere : play_move reste
+    /// une fonction coeur deja eprouvee, pas de raison de la faire dependre
+    /// d'un chemin FEN-texte supplementaire pour un besoin a part.
+    pub fn apply_move_to_fen(fen: &str, from: &str, to: &str, promotion: Option<&str>) -> Result<(String, String), String> {
+        let setup = Fen::from_ascii(fen.as_bytes()).map_err(|_| "FEN invalide".to_string())?;
+        let position: Chess = setup.into_position(CastlingMode::Standard).map_err(|_| "position invalide".to_string())?;
+
+        let from_sq = Square::from_str(from).map_err(|_| "case de départ invalide".to_string())?;
+        let to_sq = Square::from_str(to).map_err(|_| "case d'arrivée invalide".to_string())?;
+        let requested_promotion = match promotion {
+            Some(p) => Some(str_to_role(p).ok_or_else(|| "promotion invalide".to_string())?),
+            None => None,
+        };
+
+        let attempt = UciMove::Normal { from: from_sq, to: to_sq, promotion: requested_promotion }.to_move(&position);
+        let chosen = match attempt {
+            Ok(m) => m,
+            Err(_) if requested_promotion.is_none() => UciMove::Normal { from: from_sq, to: to_sq, promotion: Some(Role::Queen) }
+                .to_move(&position)
+                .map_err(|_| "coup illégal".to_string())?,
+            Err(_) => return Err("coup illégal".to_string()),
+        };
+
+        let san = San::from_move(&position, chosen.clone()).to_string();
+        let new_position = position.play(chosen).map_err(|_| "coup illégal".to_string())?;
+        Ok((position_fen(&new_position), san))
+    }
+
     pub fn play_move(
         &mut self,
         node_id: u32,
@@ -485,6 +520,7 @@ impl GameTree {
                     san: n.san.clone(),
                     from: n.from.clone(),
                     to: n.to.clone(),
+                    promotion: n.promotion.clone(),
                     fen: position_fen(&n.position),
                     turn: if n.position.turn() == shakmaty::Color::White {
                         "white".to_string()
@@ -527,6 +563,70 @@ mod tests {
     #[test]
     fn from_fen_rejects_malformed_syntax() {
         assert!(GameTree::from_fen("pas un fen").is_err());
+    }
+
+    // apply_move_to_fen (mode entrainement, voir judge_training_move dans
+    // lib.rs) duplique volontairement la resolution de coup de play_move :
+    // ces tests verifient qu'elle se comporte de facon identique (meme
+    // repli promotion en dame par defaut, meme gestion du roque) sans passer
+    // par un GameTree.
+    #[test]
+    fn apply_move_to_fen_plays_a_normal_move_and_returns_the_resulting_fen_and_san() {
+        let start = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+        let (fen, san) = GameTree::apply_move_to_fen(start, "e2", "e4", None).unwrap();
+        assert_eq!(san, "e4");
+        // pas de case en passant dans le FEN : EnPassantMode::Legal (voir
+        // position_fen) ne la mentionne que si une capture en passant est
+        // reellement jouable pour l'adversaire, pas juste des qu'un pion a
+        // avance de deux cases -- ici aucun pion noir n'est adjacent a e4.
+        assert_eq!(fen, "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1");
+    }
+
+    #[test]
+    fn apply_move_to_fen_castles_kingside_from_e1g1() {
+        // position de reference pour les droits de roque (chemins degages
+        // des deux cotes) : peu importe qu'elle soit atteignable par une
+        // vraie partie, seule sa legalite compte pour from_fen/apply_move_to_fen.
+        let fen = "r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1";
+        let (new_fen, san) = GameTree::apply_move_to_fen(fen, "e1", "g1", None).unwrap();
+        assert_eq!(san, "O-O");
+        assert!(new_fen.starts_with("r3k2r/8/8/8/8/8/8/R4RK1"));
+    }
+
+    #[test]
+    fn apply_move_to_fen_defaults_to_queen_promotion_when_unspecified() {
+        let fen = "8/4P1k1/8/8/8/8/6K1/8 w - - 0 1";
+        let (_, san) = GameTree::apply_move_to_fen(fen, "e7", "e8", None).unwrap();
+        assert_eq!(san, "e8=Q");
+    }
+
+    #[test]
+    fn apply_move_to_fen_honours_an_explicit_underpromotion() {
+        let fen = "8/4P1k1/8/8/8/8/6K1/8 w - - 0 1";
+        let (_, san) = GameTree::apply_move_to_fen(fen, "e7", "e8", Some("n")).unwrap();
+        assert_eq!(san, "e8=N");
+    }
+
+    #[test]
+    fn apply_move_to_fen_rejects_an_illegal_move() {
+        let start = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+        assert!(GameTree::apply_move_to_fen(start, "e2", "e5", None).is_err());
+    }
+
+    #[test]
+    fn apply_move_to_fen_never_mutates_a_game_tree() {
+        // le point central du mode entrainement : essayer un coup depuis un
+        // FEN n'a besoin d'aucun GameTree et ne peut donc jamais s'inserer
+        // comme variation dans une partie reelle.
+        let start = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+        let mut tree = GameTree::from_fen(start).unwrap();
+        let before = tree.to_dto().nodes.len();
+        let _ = GameTree::apply_move_to_fen(start, "e2", "e4", None).unwrap();
+        assert_eq!(tree.to_dto().nodes.len(), before);
+        // le tree est toujours jouable normalement ensuite (pas de borrow
+        // conserve a tort par apply_move_to_fen).
+        tree.play_move(0, "e2", "e4", None).unwrap();
+        assert_eq!(tree.to_dto().nodes.len(), before + 1);
     }
 
     #[test]

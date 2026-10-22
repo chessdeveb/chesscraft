@@ -9,13 +9,16 @@ pub mod db;
 mod eco;
 mod engine;
 pub mod explorer;
+mod external_updates;
 mod fide;
 mod game_tree;
 mod i18n;
 mod lichess;
+mod lichess_broadcast;
 mod performance;
 mod pgn;
 mod recent_pgns;
+mod twic;
 
 use bases::BaseInfo;
 use db::GameSummary;
@@ -104,6 +107,12 @@ struct AppState {
     // le menu -- necessaire pour que la case reflete l'etat reel d'un
     // panneau ferme via son propre bouton plutot que via le menu.
     panel_menu_items: Mutex<HashMap<String, tauri::menu::CheckMenuItem<tauri::Wry>>>,
+    // Process moteur persistant par onglet, reutilise d'une position
+    // d'entrainement a l'autre (voir engine::BatchEngine et
+    // prefetch_training_judgement/judge_training_move) : (chemin, threads,
+    // process) -- relance le process seulement si le chemin ou le nombre de
+    // threads a change depuis la derniere fois pour cet onglet.
+    training_engines: Mutex<HashMap<u32, (String, u32, engine::BatchEngine)>>,
 }
 
 fn allocate_tab_id(state: &AppState) -> u32 {
@@ -130,13 +139,19 @@ struct TabDto {
     // fermee -- il n'y a pas de coups a lister).
     #[serde(default)]
     is_player_prep: bool,
+    // Noeud sur lequel l'onglet doit s'ouvrir, au lieu de la racine -- utilise
+    // par open_game quand la partie vient de l'explorateur (voir
+    // explorer::mainline_node_at_zobrist), None partout ailleurs (App.tsx
+    // retombe alors sur la racine, comportement inchange).
+    #[serde(default)]
+    initial_node_id: Option<u32>,
 }
 
 #[tauri::command]
 fn new_game(state: State<AppState>) -> TabDto {
     let tab_id = allocate_tab_id(&state);
     let tree = insert_session(&state, tab_id, GameSession::new());
-    TabDto { tab_id, tree, is_player_prep: false }
+    TabDto { tab_id, tree, is_player_prep: false, initial_node_id: None }
 }
 
 /// Nouvel onglet demarrant sur une position choisie dans l'editeur de
@@ -147,7 +162,7 @@ fn new_game_from_fen(state: State<AppState>, fen: String) -> Result<TabDto, Stri
     let mut session = GameSession::new();
     session.tree = GameTree::from_fen(&fen)?;
     let tree = insert_session(&state, tab_id, session);
-    Ok(TabDto { tab_id, tree, is_player_prep: false })
+    Ok(TabDto { tab_id, tree, is_player_prep: false, initial_node_id: None })
 }
 
 /// Remplace la partie de l'onglet `tab_id` par une nouvelle partie Chess960
@@ -179,7 +194,7 @@ fn open_player_prep_tab(state: State<AppState>, name: String, white: bool) -> Ta
     session.tree.tags.insert(if white { "White" } else { "Black" }.to_string(), name.clone());
     session.explorer_player_filter = Some(explorer::PlayerFilter { name, white, exact: true });
     let tree = insert_session(&state, tab_id, session);
-    TabDto { tab_id, tree, is_player_prep: true }
+    TabDto { tab_id, tree, is_player_prep: true, initial_node_id: None }
 }
 
 #[tauri::command]
@@ -297,7 +312,7 @@ fn import_pgn(state: State<AppState>, path: String, index: u32) -> Result<TabDto
     session.tree = parsed;
     let tab_id = allocate_tab_id(&state);
     let tree = insert_session(&state, tab_id, session);
-    Ok(TabDto { tab_id, tree, is_player_prep: false })
+    Ok(TabDto { tab_id, tree, is_player_prep: false, initial_node_id: None })
 }
 
 // Journal durable des imports en masse : ecrit independamment de l'etat de
@@ -689,6 +704,76 @@ fn rebuild_explorer_stats(app: AppHandle, state: State<AppState>, path: String) 
     Ok(())
 }
 
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ExternalUpdatesProgress {
+    message: String,
+}
+
+/// Premiere etape, legere, de "Rechercher des mises a jour" : juste de quoi
+/// savoir s'il y a du nouveau et, si le retard est important, demander
+/// confirmation AVANT de lancer check_external_updates (couteux -- voir son
+/// propre commentaire). Tourne quand meme sur un thread dedie : meme un
+/// sondage leger reste plusieurs requetes HTTP sequentielles, jamais
+/// directement dans le handler (voir rebuild_explorer_stats pour la raison).
+#[tauri::command]
+fn estimate_external_updates(app: AppHandle, state: State<AppState>, reference_db_path: String) -> Result<(), String> {
+    begin_tool_job(&state)?;
+    std::thread::spawn(move || {
+        let result = external_updates::estimate_catchup(&reference_db_path);
+        let _ = match &result {
+            Ok(estimate) => app.emit("external-updates-estimate-done", estimate),
+            Err(e) => app.emit("external-updates-estimate-error", e),
+        };
+        *app.state::<AppState>().tool_job_running.lock().unwrap() = false;
+    });
+    Ok(())
+}
+
+/// Menu Outils > Rechercher des mises a jour (TWIC/Lichess)... : calcule
+/// (sans rien importer) ce qu'il y aurait a rattraper depuis la partie la
+/// plus recente de la base choisie -- voir
+/// external_updates::compute_update_preview pour l'algorithme complet
+/// (rattrapage TWIC, consolidation Lichess, dedoublonnage). En tache de
+/// fond, meme raison que rebuild_explorer_stats : plusieurs telechargements
+/// et analyses sequentiels, potentiellement plusieurs dizaines de secondes
+/// en cas de rattrapage important.
+#[tauri::command]
+fn check_external_updates(app: AppHandle, state: State<AppState>, reference_db_path: String) -> Result<(), String> {
+    begin_tool_job(&state)?;
+    std::thread::spawn(move || {
+        let progress_app = app.clone();
+        let result = (|| -> Result<Option<external_updates::UpdatePreview>, String> {
+            let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+            // Base FIDE absente/jamais telechargee : fide_conn reste None,
+            // compute_update_preview fonctionne quand meme (dedoublonnage
+            // moins precis entre sources, voir son commentaire).
+            let fide_conn = fide::open(&app_data_dir).ok();
+            let temp_path = app_data_dir.join("external_update_preview.pgn");
+            external_updates::compute_update_preview(&reference_db_path, fide_conn.as_ref(), &temp_path, |message| {
+                let _ = progress_app.emit("external-updates-progress", ExternalUpdatesProgress { message });
+            })
+        })();
+        let _ = match &result {
+            Ok(preview) => app.emit("external-updates-done", preview),
+            Err(e) => app.emit("external-updates-error", e),
+        };
+        *app.state::<AppState>().tool_job_running.lock().unwrap() = false;
+    });
+    Ok(())
+}
+
+/// Revue des mises a jour externes (voir ExternalUpdatesReviewDialog.tsx) :
+/// l'utilisateur peut decocher certains tournois avant d'importer -- plutot
+/// que de refaire tout le rattrapage, on reecrit juste le PGN deja produit
+/// par check_external_updates sans les tournois exclus. Local et rapide (pas
+/// de reseau), donc synchrone comme list_pgn_games, pas de thread dedie.
+#[tauri::command]
+fn filter_external_update_pgn(pgn_path: String, excluded_events: Vec<String>) -> Result<String, String> {
+    let excluded: std::collections::BTreeSet<String> = excluded_events.into_iter().collect();
+    external_updates::filter_pgn_by_excluded_events(Path::new(&pgn_path), &excluded)
+}
+
 /// Menu Outils > Dedoublonner la base, etape 1/2 : compte les doublons sans
 /// rien supprimer (voir db::count_duplicate_games), pour confirmer avant
 /// suppression. En tache de fond pour la meme raison que
@@ -781,6 +866,64 @@ fn backfill_fide_ids(app: AppHandle, state: State<AppState>, path: String) -> Re
     Ok(())
 }
 
+/// Menu Outils > Regrouper les parties par tournoi : reconstruit
+/// tournaments/games.tournament_id sur une base choisie manuellement (voir
+/// db::rebuild_tournaments). Necessaire pour toute base deja existante avant
+/// l'ajout de cette fonctionnalite -- les nouvelles parties sont deja liees
+/// des leur enregistrement (voir db::save_game). En tache de fond, meme
+/// raison que rebuild_explorer_stats.
+#[tauri::command]
+fn rebuild_tournaments(app: AppHandle, state: State<AppState>, path: String) -> Result<(), String> {
+    begin_tool_job(&state)?;
+    std::thread::spawn(move || {
+        let progress_app = app.clone();
+        let result = (|| -> Result<(), String> {
+            let mut conn = db::open(Path::new(&path))?;
+            db::rebuild_tournaments(&mut conn, |progress| {
+                let _ = progress_app.emit("tool-rebuild-tournaments-progress", ToolRebuildProgress { stage: "tournaments", progress });
+            })
+        })();
+        let _ = match &result {
+            Ok(()) => app.emit("tool-rebuild-tournaments-done", ()),
+            Err(e) => app.emit("tool-rebuild-tournaments-error", e),
+        };
+        *app.state::<AppState>().tool_job_running.lock().unwrap() = false;
+    });
+    Ok(())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TournamentsPage {
+    tournaments: Vec<db::TournamentSummary>,
+    total: u32,
+}
+
+#[tauri::command]
+fn list_tournaments_in_base(
+    path: String,
+    search: String,
+    sort_by: String,
+    sort_dir: String,
+    offset: u32,
+    limit: u32,
+) -> Result<TournamentsPage, String> {
+    let conn = db::open(Path::new(&path))?;
+    let total = db::count_tournaments(&conn, &search)?;
+    let tournaments = db::list_tournaments_page(&conn, &search, &sort_by, &sort_dir, limit, offset)?;
+    Ok(TournamentsPage { tournaments, total })
+}
+
+/// Modifie la cadence par defaut d'un tournoi depuis l'onglet Tournois ; se
+/// propage aux parties de ce tournoi qui n'ont pas la leur (voir
+/// db::set_tournament_time_control). Renvoie le nombre de parties mises a
+/// jour, pour que l'interface puisse le signaler.
+#[tauri::command]
+fn set_tournament_cadence(path: String, tournament_id: i64, time_control: String) -> Result<u32, String> {
+    let mut conn = db::open(Path::new(&path))?;
+    db::set_tournament_time_control(&mut conn, tournament_id, &time_control)
+}
+
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct FideRefreshDone {
@@ -836,10 +979,11 @@ struct FideStatus {
 fn get_fide_status(app: AppHandle) -> Result<FideStatus, String> {
     let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let conn = fide::open(&app_data_dir)?;
-    Ok(FideStatus { last_updated: fide::last_updated(&conn), total: fide::count_fide_players(&conn, "")? })
+    Ok(FideStatus { last_updated: fide::last_updated(&conn), total: fide::count_fide_players(&conn, "", &fide::FideFilters::default())? })
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 fn list_fide_players(
     app: AppHandle,
     search: String,
@@ -847,11 +991,18 @@ fn list_fide_players(
     sort_dir: String,
     offset: u32,
     limit: u32,
+    fed: Option<String>,
+    title: Option<String>,
+    sex: Option<String>,
+    status: Option<String>,
+    birth_year_min: Option<i32>,
+    birth_year_max: Option<i32>,
 ) -> Result<FidePlayersPage, String> {
     let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let conn = fide::open(&app_data_dir)?;
-    let total = fide::count_fide_players(&conn, &search)?;
-    let players = fide::list_fide_players_page(&conn, &search, &sort_by, &sort_dir, limit, offset)?;
+    let filters = fide::FideFilters { fed, title, sex, status, birth_year_min, birth_year_max };
+    let total = fide::count_fide_players(&conn, &search, &filters)?;
+    let players = fide::list_fide_players_page(&conn, &search, &filters, &sort_by, &sort_dir, limit, offset)?;
     Ok(FidePlayersPage { players, total })
 }
 
@@ -1275,6 +1426,283 @@ fn get_game_report(state: State<AppState>, tab_id: u32) -> Result<Option<GameRep
     Ok(game_report_from_annotations(&session.tree))
 }
 
+/// Comparaison DIRECTE du coup essaye au coup REELLEMENT joue dans la partie
+/// (independante de classification, qui compare plutot au meilleur coup
+/// trouve par le moteur a cette position) -- Similar couvre a la fois une
+/// difference negligeable (bruit de recherche) et une veritable egalite
+/// d'evaluation, voir compare_to_game_move.
+#[derive(Serialize, Clone, Copy, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum MoveComparison {
+    Better,
+    Worse,
+    Similar,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct TrainingJudgement {
+    matches_game: bool,
+    game_move_comparison: MoveComparison,
+    // code NAG (2/4/6, voir classify_drop) si le coup essaye est une
+    // imprecision/erreur/gaffe par rapport a la position de depart ; None
+    // sinon (coup correct, different du coup joue mais pas clairement pire).
+    classification: Option<u8>,
+    // ligne principale du moteur depuis la position APRES le coup essaye,
+    // uniquement quand classification est Some -- la "variante illustrative
+    // de refutation" demandee par le mode entrainement.
+    refutation: Vec<engine::PvMove>,
+    // precision de CE coup (meme formule que le rapport de partie,
+    // move_accuracy) : 100 pour un coup qui correspond a la partie (pas
+    // besoin du moteur pour le savoir), sinon deduite de la perte de Win%.
+    accuracy: f64,
+    // SAN du coup que le moteur juge meilleur QUE LE COUP DE LA PARTIE
+    // elle-meme (independant du coup essaye par l'utilisateur) -- None si le
+    // coup de la partie etait deja le meilleur trouve par le moteur, ou s'il
+    // n'est pas clairement pire (voir classify_drop). Permet d'afficher "Cxd4
+    // etait meilleur" meme quand l'utilisateur a rejoue exactement le coup de
+    // la partie : "coup de la partie" ne voulait pas dire "bon coup".
+    better_game_move_san: Option<String>,
+    game_move_classification: Option<u8>,
+}
+
+/// Marge au-dela du bruit normal d'une recherche moteur (meme profondeur,
+/// positions differentes) : sans elle, deux coups de force quasi identique
+/// se declareraient "meilleur"/"moins bon" l'un que l'autre au moindre
+/// centieme de Win% pres. Partagee par toutes les comparaisons du mode
+/// entrainement pour rester coherente d'un verdict a l'autre.
+const TRAINING_COMPARISON_MARGIN: f64 = 1.0;
+
+/// Compare directement le coup essaye au coup REELLEMENT joue (pas au
+/// meilleur coup possible, voir classify_drop) -- utilise quand le coup
+/// essaye n'est pas deja classe imprecision/erreur/gaffe par rapport a la
+/// position, pour dire explicitement s'il etait tout de meme moins bon,
+/// meilleur, ou equivalent au coup de la partie plutot qu'un vague "coup
+/// correct, different".
+fn compare_to_game_move(win_user: f64, win_game: f64) -> MoveComparison {
+    if win_user > win_game + TRAINING_COMPARISON_MARGIN {
+        MoveComparison::Better
+    } else if win_user < win_game - TRAINING_COMPARISON_MARGIN {
+        MoveComparison::Worse
+    } else {
+        MoveComparison::Similar
+    }
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct TrainingPrefetch {
+    node_id: u32,
+    eval_before: engine::PositionEval,
+    eval_game: engine::PositionEval,
+    // Voir TrainingJudgement::better_game_move_san/game_move_classification --
+    // mêmes champs, calcules ici des le pre-chauffage (fen_before est deja
+    // analyse a ce moment, la ligne principale donne directement le coup
+    // conseille par le moteur a cette position) : repris tels quels par
+    // judge_training_move pour ne jamais recalculer une evaluation deja
+    // connue, et utilises directement cote frontend quand le coup essaye
+    // correspond au coup de la partie (aucun appel moteur necessaire dans ce
+    // cas, voir handleTrainingMove).
+    better_game_move_san: Option<String>,
+    game_move_classification: Option<u8>,
+}
+
+/// Coup conseille par le moteur a `fen_before` (premier coup de sa ligne
+/// principale) quand il differe du coup reellement joue ET que ce dernier
+/// est classe imprecision/erreur/gaffe (voir classify_drop) -- None sinon
+/// (coup de la partie deja optimal, ou pas clairement pire). Partagee par
+/// prefetch_training_judgement et le repli complet de judge_training_move.
+fn better_game_move(
+    pv_before: &[engine::PvMove],
+    game_from: &str,
+    game_to: &str,
+    win_before: f64,
+    win_game: f64,
+) -> (Option<String>, Option<u8>) {
+    let classification = classify_drop(win_before - win_game);
+    let best_san = match (&classification, pv_before.first()) {
+        (Some(_), Some(best)) if best.from != game_from || best.to != game_to => Some(best.san.clone()),
+        _ => None,
+    };
+    (best_san, classification)
+}
+
+/// Recupere le process moteur d'entrainement de cet onglet, ou en relance un
+/// si absent ou si chemin/threads ont change depuis la derniere fois (meme
+/// idee que ensure_reference_conn pour la connexion de reference). C'EST ce
+/// qui fait la difference de vitesse : la poignee de main UCI (spawn du
+/// process, "uci"/"uciok"/"isready"/"readyok"/"ucinewgame") n'est payee
+/// qu'une fois pour toute la session d'entrainement, pas a chaque position.
+fn ensure_training_engine<'a>(
+    engines: &'a mut HashMap<u32, (String, u32, engine::BatchEngine)>,
+    tab_id: u32,
+    engine_path: &str,
+    threads: u32,
+) -> Result<&'a mut engine::BatchEngine, String> {
+    let needs_restart = !matches!(engines.get(&tab_id), Some((path, t, _)) if path == engine_path && *t == threads);
+    if needs_restart {
+        engines.insert(tab_id, (engine_path.to_string(), threads, engine::BatchEngine::start(engine_path, threads)?));
+    }
+    Ok(&mut engines.get_mut(&tab_id).unwrap().2)
+}
+
+/// Lance par avance l'evaluation de la position actuelle ET de celle
+/// qu'aurait donnee le coup reellement joue dans la partie, des que c'est au
+/// tour de l'utilisateur de deviner (donc PENDANT qu'il reflechit, voir
+/// l'effet de pre-chargement dans GameTab.tsx) -- pour que judge_training_move
+/// n'ait plus, une fois le coup essaye connu, qu'UNE position de plus a
+/// evaluer plutot que trois.
+///
+/// Tourne sur un thread dedie, comme start_game_report (meme raison : un
+/// premier essai synchrone, renvoyant directement le resultat depuis le
+/// handler de la commande, gelait la fenetre entiere le temps de l'analyse
+/// -- meme a un seul process moteur a la fois, c'est le fait de bloquer le
+/// handler lui-meme qui gele l'appli, pas la charge CPU. La commande rend la
+/// main immediatement ; le resultat arrive via "training-prefetch-done-{tab_id}"
+/// ou "training-prefetch-error-{tab_id}".
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+fn prefetch_training_judgement(
+    app: AppHandle,
+    tab_id: u32,
+    node_id: u32,
+    engine_path: String,
+    depth: u32,
+    threads: u32,
+    fen_before: String,
+    game_from: String,
+    game_to: String,
+    game_promotion: Option<String>,
+) {
+    std::thread::spawn(move || {
+        let result = (|| -> Result<TrainingPrefetch, String> {
+            let (game_fen, _) = GameTree::apply_move_to_fen(&fen_before, &game_from, &game_to, game_promotion.as_deref())?;
+            let app_state = app.state::<AppState>();
+            let mut engines = app_state.training_engines.lock().unwrap();
+            let eng = ensure_training_engine(&mut engines, tab_id, &engine_path, threads)?;
+            let (eval_before, pv_before) = eng.analyze_with_pv(&fen_before, depth)?;
+            let (eval_game, _) = eng.analyze_with_pv(&game_fen, depth)?;
+
+            let mover_white = fen_white_to_move(&fen_before);
+            let win_before = mover_win_percent(&eval_before, mover_white);
+            let win_game = mover_win_percent(&eval_game, mover_white);
+            let (better_game_move_san, game_move_classification) = better_game_move(&pv_before, &game_from, &game_to, win_before, win_game);
+
+            Ok(TrainingPrefetch { node_id, eval_before, eval_game, better_game_move_san, game_move_classification })
+        })();
+        let _ = match result {
+            Ok(payload) => app.emit(&format!("training-prefetch-done-{tab_id}"), payload),
+            Err(e) => app.emit(&format!("training-prefetch-error-{tab_id}"), e),
+        };
+    });
+}
+
+/// Arrete (et retire) le process moteur d'entrainement de cet onglet --
+/// appele quand l'entrainement s'arrete ou que l'onglet se ferme (voir
+/// GameTab.tsx), meme principe que stop_engine pour le panneau Moteur. Pas
+/// d'effet si aucun n'avait ete demarre (ex. entrainement jamais utilise
+/// dans cet onglet).
+#[tauri::command]
+fn stop_training_engine(state: State<AppState>, tab_id: u32) {
+    state.training_engines.lock().unwrap().remove(&tab_id);
+}
+
+/// Mode entrainement (onglet dedie "Entraînement", voir
+/// TrainingPanelView/DockPanels.tsx) : juge un coup essaye par l'utilisateur
+/// depuis `fen_before` par rapport au coup reellement joue dans la partie, en
+/// reutilisant le moteur/la profondeur et les seuils du rapport de partie
+/// (classify_drop/win_percent/move_accuracy) pour que "imprecision/erreur/
+/// gaffe" veuille dire la meme chose aux deux endroits. `eval_before`/
+/// `eval_game`, quand fournis (voir prefetch_training_judgement), evitent de
+/// les recalculer -- seule la position du coup essaye reste alors a evaluer.
+///
+/// Tourne sur un thread dedie, meme raison/mecanique que prefetch_training_judgement
+/// ci-dessus : resultat via "training-judge-done-{tab_id}"/"training-judge-error-{tab_id}",
+/// jamais retourne directement par la commande.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+fn judge_training_move(
+    app: AppHandle,
+    tab_id: u32,
+    engine_path: String,
+    depth: u32,
+    threads: u32,
+    fen_before: String,
+    user_from: String,
+    user_to: String,
+    user_promotion: Option<String>,
+    game_from: String,
+    game_to: String,
+    game_promotion: Option<String>,
+    eval_before: Option<engine::PositionEval>,
+    eval_game: Option<engine::PositionEval>,
+    // Repris du pre-chauffage quand disponible (voir TrainingPrefetch) :
+    // evite de rejouer l'analyse de fen_before (deja faite) juste pour
+    // retrouver le coup conseille par le moteur a cette position.
+    better_game_move_san: Option<String>,
+    game_move_classification: Option<u8>,
+) {
+    std::thread::spawn(move || {
+        let result = (|| -> Result<TrainingJudgement, String> {
+            if user_from == game_from && user_to == game_to {
+                return Ok(TrainingJudgement {
+                    matches_game: true,
+                    game_move_comparison: MoveComparison::Similar,
+                    classification: None,
+                    refutation: Vec::new(),
+                    accuracy: 100.0,
+                    better_game_move_san,
+                    game_move_classification,
+                });
+            }
+
+            let (user_fen, _) = GameTree::apply_move_to_fen(&fen_before, &user_from, &user_to, user_promotion.as_deref())?;
+            let app_state = app.state::<AppState>();
+            let mut engines = app_state.training_engines.lock().unwrap();
+            let eng = ensure_training_engine(&mut engines, tab_id, &engine_path, threads)?;
+
+            let (eval_before, eval_game, eval_user, pv_user, better_game_move_san, game_move_classification) =
+                if let (Some(before), Some(game)) = (eval_before, eval_game) {
+                    let (eval_user, pv_user) = eng.analyze_with_pv(&user_fen, depth)?;
+                    (before, game, eval_user, pv_user, better_game_move_san, game_move_classification)
+                } else {
+                    let (game_fen, _) = GameTree::apply_move_to_fen(&fen_before, &game_from, &game_to, game_promotion.as_deref())?;
+                    let (eval_before, pv_before) = eng.analyze_with_pv(&fen_before, depth)?;
+                    let (eval_user, pv_user) = eng.analyze_with_pv(&user_fen, depth)?;
+                    let (eval_game, _) = eng.analyze_with_pv(&game_fen, depth)?;
+                    let mover_white = fen_white_to_move(&fen_before);
+                    let win_before = mover_win_percent(&eval_before, mover_white);
+                    let win_game = mover_win_percent(&eval_game, mover_white);
+                    let (best_san, game_class) = better_game_move(&pv_before, &game_from, &game_to, win_before, win_game);
+                    (eval_before, eval_game, eval_user, pv_user, best_san, game_class)
+                };
+
+            let mover_white = fen_white_to_move(&fen_before);
+            let win_before = mover_win_percent(&eval_before, mover_white);
+            let win_user = mover_win_percent(&eval_user, mover_white);
+            let win_game = mover_win_percent(&eval_game, mover_white);
+
+            let drop = win_before - win_user;
+            let classification = classify_drop(drop);
+            let game_move_comparison = compare_to_game_move(win_user, win_game);
+
+            Ok(TrainingJudgement {
+                matches_game: false,
+                game_move_comparison,
+                classification,
+                refutation: if classification.is_some() { pv_user } else { Vec::new() },
+                accuracy: move_accuracy(drop),
+                better_game_move_san,
+                game_move_classification,
+            })
+        })();
+        let _ = match result {
+            Ok(payload) => app.emit(&format!("training-judge-done-{tab_id}"), payload),
+            Err(e) => app.emit(&format!("training-judge-error-{tab_id}"), e),
+        };
+    });
+}
+
 #[cfg(test)]
 mod game_report_tests {
     use super::*;
@@ -1624,13 +2052,32 @@ fn opening_explorer_games(
 /// seule, sans creer de session/onglet -- utilise pour le petit echiquier de
 /// balayage dans le panneau "parties dans cette position".
 #[tauri::command]
-fn opening_explorer_preview_game(app: AppHandle, state: State<AppState>, id: i64) -> Result<TreeDto, String> {
+fn opening_explorer_preview_game(
+    app: AppHandle,
+    state: State<AppState>,
+    id: i64,
+    moves: Vec<String>,
+    start_fen: Option<String>,
+) -> Result<ExplorerPreviewGame, String> {
     ensure_reference_conn(&app, &state)?;
     let conn_cache = state.reference_conn.lock().unwrap();
     let conn = &conn_cache.as_ref().unwrap().1;
     let pgn_text = db::load_game_pgn(conn, id)?.ok_or_else(|| "partie introuvable".to_string())?;
     let tree = pgn::parse_game(&pgn_text)?;
-    Ok(tree.to_dto())
+    // Meme position que celle recherchee (transpositions et departs
+    // personnalises compris, voir explorer::mainline_node_at_zobrist) --
+    // aucun ply "en commun" a compter avec l'onglet d'ou vient la recherche,
+    // ce n'est plus le meme texte de coups qui est compare, mais la position.
+    let match_node_id =
+        explorer::current_zobrist(&moves, start_fen.as_deref()).and_then(|zobrist| explorer::mainline_node_at_zobrist(&tree, zobrist));
+    Ok(ExplorerPreviewGame { tree: tree.to_dto(), match_node_id })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExplorerPreviewGame {
+    tree: TreeDto,
+    match_node_id: Option<u32>,
 }
 
 #[tauri::command]
@@ -1709,7 +2156,7 @@ struct GamesFilterDto {
     #[serde(default)]
     date_to: String,
     #[serde(default)]
-    time_control: String,
+    tournament: String,
 }
 
 impl From<GamesFilterDto> for db::GamesFilter {
@@ -1721,7 +2168,7 @@ impl From<GamesFilterDto> for db::GamesFilter {
             result: dto.result,
             date_from: dto.date_from,
             date_to: dto.date_to,
-            time_control: dto.time_control,
+            tournament: dto.tournament,
         }
     }
 }
@@ -1813,11 +2260,21 @@ fn move_game(
     Ok(db::SaveResult::Saved { id: new_id })
 }
 
+/// Ouvre une partie d'une base comme nouvel onglet. `moves`/`start_fen`
+/// (optionnels) : position recherchee dans l'explorateur qui a mene a cette
+/// partie -- si fournis, l'onglet s'ouvre directement a cette position (voir
+/// explorer::mainline_node_at_zobrist) plutot qu'au debut de la partie.
+/// Absents (ouverture normale depuis le panneau Parties/Bases) : l'onglet
+/// s'ouvre a la racine, comme avant.
 #[tauri::command]
-fn open_game(state: State<AppState>, path: String, id: i64) -> Result<TabDto, String> {
+fn open_game(state: State<AppState>, path: String, id: i64, moves: Option<Vec<String>>, start_fen: Option<String>) -> Result<TabDto, String> {
     let conn = db::open(Path::new(&path))?;
     let pgn_text = db::load_game_pgn(&conn, id)?.ok_or_else(|| "partie introuvable".to_string())?;
     let parsed = pgn::parse_game(&pgn_text)?;
+    let initial_node_id = moves
+        .as_deref()
+        .and_then(|moves| explorer::current_zobrist(moves, start_fen.as_deref()))
+        .and_then(|zobrist| explorer::mainline_node_at_zobrist(&parsed, zobrist));
     let mut session = GameSession::new();
     session.tree = parsed;
     session.db = Some(conn);
@@ -1825,7 +2282,7 @@ fn open_game(state: State<AppState>, path: String, id: i64) -> Result<TabDto, St
     session.active_game_id = Some(id);
     let tab_id = allocate_tab_id(&state);
     let tree = insert_session(&state, tab_id, session);
-    Ok(TabDto { tab_id, tree, is_player_prep: false })
+    Ok(TabDto { tab_id, tree, is_player_prep: false, initial_node_id })
 }
 
 #[tauri::command]
@@ -1918,10 +2375,16 @@ fn build_menu(app: &AppHandle, home_panels: bool, game_panels: bool, lang: &str,
         MenuItemBuilder::with_id("rebuild_explorer_stats", t("menu.tools.rebuildExplorerStats")).build(app)?;
     let deduplicate_base_item = MenuItemBuilder::with_id("deduplicate_base", t("menu.tools.deduplicateBase")).build(app)?;
     let backfill_fide_ids_item = MenuItemBuilder::with_id("backfill_fide_ids", t("menu.tools.backfillFideIds")).build(app)?;
+    let rebuild_tournaments_item =
+        MenuItemBuilder::with_id("rebuild_tournaments", t("menu.tools.rebuildTournaments")).build(app)?;
+    let check_external_updates_item =
+        MenuItemBuilder::with_id("check_external_updates", t("menu.tools.checkExternalUpdates")).build(app)?;
     let tools_menu = SubmenuBuilder::new(app, t("menu.tools"))
         .item(&rebuild_explorer_stats_item)
         .item(&deduplicate_base_item)
         .item(&backfill_fide_ids_item)
+        .item(&rebuild_tournaments_item)
+        .item(&check_external_updates_item)
         .build()?;
 
     let panel_bases = CheckMenuItemBuilder::with_id("panel_bases", t("menu.display.bases"))
@@ -1944,6 +2407,10 @@ fn build_menu(app: &AppHandle, home_panels: bool, game_panels: bool, lang: &str,
         .enabled(home_panels)
         .checked(home_panels)
         .build(app)?;
+    let panel_tournaments = CheckMenuItemBuilder::with_id("panel_tournaments", t("menu.display.tournaments"))
+        .enabled(home_panels)
+        .checked(home_panels)
+        .build(app)?;
     let panel_board = CheckMenuItemBuilder::with_id("panel_board", t("menu.display.board"))
         .enabled(game_panels)
         .checked(game_panels)
@@ -1960,17 +2427,23 @@ fn build_menu(app: &AppHandle, home_panels: bool, game_panels: bool, lang: &str,
         .enabled(game_panels)
         .checked(false)
         .build(app)?;
+    let panel_training = CheckMenuItemBuilder::with_id("panel_training", t("menu.display.training"))
+        .enabled(game_panels)
+        .checked(false)
+        .build(app)?;
     let display_menu = SubmenuBuilder::new(app, t("menu.display"))
         .item(&panel_bases)
         .item(&panel_pgn)
         .item(&panel_parties)
         .item(&panel_players)
         .item(&panel_fide)
+        .item(&panel_tournaments)
         .separator()
         .item(&panel_board)
         .item(&panel_notation)
         .item(&panel_explorer)
         .item(&panel_engine)
+        .item(&panel_training)
         .build()?;
 
     // conserve les poignees des cases a cocher pour pouvoir les mettre a
@@ -1985,10 +2458,12 @@ fn build_menu(app: &AppHandle, home_panels: bool, game_panels: bool, lang: &str,
             ("panel_parties", panel_parties),
             ("panel_players", panel_players),
             ("panel_fide", panel_fide),
+            ("panel_tournaments", panel_tournaments),
             ("panel_board", panel_board),
             ("panel_notation", panel_notation),
             ("panel_explorer", panel_explorer),
             ("panel_engine", panel_engine),
+            ("panel_training", panel_training),
         ] {
             items.insert(format!("{window_label}:{id}"), item);
         }
@@ -2198,6 +2673,7 @@ pub fn run() {
                 explorer_cache: Mutex::new(HashMap::new()),
                 language: Mutex::new(initial_lang.clone()),
                 panel_menu_items: Mutex::new(HashMap::new()),
+                training_engines: Mutex::new(HashMap::new()),
             });
 
             // menu unique partage par toutes les fenetres (voir open_game_window) :
@@ -2230,6 +2706,8 @@ pub fn run() {
                     "rebuild_explorer_stats" => "menu-rebuild-explorer-stats",
                     "deduplicate_base" => "menu-deduplicate-base",
                     "backfill_fide_ids" => "menu-backfill-fide-ids",
+                    "rebuild_tournaments" => "menu-rebuild-tournaments",
+                    "check_external_updates" => "menu-check-external-updates",
                     "export_pgn" => "menu-export-pgn",
                     "save_game" => "menu-save-game",
                     "about" => "menu-show-about",
@@ -2238,10 +2716,12 @@ pub fn run() {
                     "panel_parties" => "menu-toggle-panel-parties",
                     "panel_players" => "menu-toggle-panel-players",
                     "panel_fide" => "menu-toggle-panel-fide",
+                    "panel_tournaments" => "menu-toggle-panel-tournaments",
                     "panel_board" => "menu-toggle-panel-board",
                     "panel_notation" => "menu-toggle-panel-notation",
                     "panel_explorer" => "menu-toggle-panel-explorer",
                     "panel_engine" => "menu-toggle-panel-engine",
+                    "panel_training" => "menu-toggle-panel-training",
                     _ => return,
                 };
                 let _ = app_handle.emit(event_name, ());
@@ -2281,15 +2761,24 @@ pub fn run() {
             get_lichess_perf_types,
             cancel_bulk_import,
             rebuild_explorer_stats,
+            estimate_external_updates,
+            check_external_updates,
+            filter_external_update_pgn,
             count_duplicate_games,
             deduplicate_base,
             backfill_fide_ids,
+            rebuild_tournaments,
+            list_tournaments_in_base,
+            set_tournament_cadence,
             export_pgn,
             start_engine,
             stop_engine,
             analyze_position,
             start_game_report,
             get_game_report,
+            judge_training_move,
+            prefetch_training_judgement,
+            stop_training_engine,
             pause_engine,
             classify_opening,
             opening_explorer,

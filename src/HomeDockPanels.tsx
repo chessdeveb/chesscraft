@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useHomeContext } from "./HomeContext";
 import { BasesTable } from "./components/BasesTable";
@@ -6,10 +6,50 @@ import { ContextMenu, type ContextMenuItem } from "./components/ContextMenu";
 import { GamesTable, type GameRow } from "./components/GamesTable";
 import { PageNav } from "./components/PageNav";
 import { SelectionPerformance } from "./components/SelectionPerformance";
+import type { TournamentSummary } from "./types";
+import { ColumnResizeHandle, useColumnWidths } from "./useColumnWidths";
+
+const PLAYERS_TABLE_COLUMNS = [
+  { key: "name", default: 220 },
+  { key: "games", default: 80 },
+];
+
+const TOURNAMENTS_TABLE_COLUMNS = [
+  { key: "name", default: 220 },
+  { key: "site", default: 100 },
+  { key: "timeControl", default: 120 },
+  { key: "dates", default: 150 },
+  { key: "games", default: 80 },
+];
+
+// "AAAA.MM.JJ" brut (meme convention que GamesTable, pas de reformatage) --
+// vide si aucune partie du tournoi n'a de date exploitable, une seule date
+// si debut et fin coincident (tournoi d'un jour ou rattrapage partiel).
+function formatTournamentDateRange(tour: TournamentSummary): string {
+  if (!tour.dateStart) return tour.dateEnd ?? "";
+  if (!tour.dateEnd || tour.dateEnd === tour.dateStart) return tour.dateStart;
+  return `${tour.dateStart} – ${tour.dateEnd}`;
+}
+
+const FIDE_TABLE_COLUMNS = [
+  { key: "rowNumber", default: 70 },
+  { key: "name", default: 200 },
+  { key: "fed", default: 70 },
+  { key: "sex", default: 50 },
+  { key: "title", default: 60 },
+  { key: "wTitle", default: 60 },
+  { key: "oTitle", default: 60 },
+  { key: "std", default: 100 },
+  { key: "rapid", default: 90 },
+  { key: "blitz", default: 80 },
+  { key: "birthYear", default: 70 },
+  { key: "flag", default: 90 },
+];
 
 const GAMES_PAGE_SIZE = 200;
 const PLAYERS_PAGE_SIZE = 200;
 const FIDE_PAGE_SIZE = 200;
+const TOURNAMENTS_PAGE_SIZE = 200;
 
 export function BasesPanelView() {
   const { t } = useTranslation();
@@ -23,6 +63,9 @@ export function BasesPanelView() {
     onToggleReference,
     onDeleteBase,
     error,
+    externalUpdatesEstimate,
+    externalUpdatesBusy,
+    onCheckExternalUpdates,
   } = useHomeContext();
   const selectedBase = activeSource?.kind === "base" ? activeSource.base : null;
   return (
@@ -41,6 +84,18 @@ export function BasesPanelView() {
             )}
             <button onClick={onDeleteBase}>{t("common.delete")}</button>
           </>
+        )}
+        <button onClick={onCheckExternalUpdates} disabled={externalUpdatesBusy !== null}>
+          {externalUpdatesBusy === "checking"
+            ? t("home.externalUpdates.checking")
+            : externalUpdatesBusy === "estimating"
+              ? t("home.externalUpdates.estimating")
+              : t("home.externalUpdates.button")}
+        </button>
+        {externalUpdatesBusy === null && externalUpdatesEstimate && (
+          <span className="external-updates-badge" title={t("home.externalUpdates.badgeTitle")}>
+            {t("home.externalUpdates.weeksBehind", { weeks: externalUpdatesEstimate.weeksBehind })}
+          </span>
         )}
       </div>
       <BasesTable bases={bases} selectedPath={selectedBase?.path ?? null} onSelect={onSelectBase} onDropGames={onDropGamesOnBase} />
@@ -238,9 +293,9 @@ export function PartiesPanelView() {
           </label>
           <input
             type="text"
-            placeholder={t("home.timeControlPlaceholder")}
-            value={gamesAdvancedFilter.timeControl}
-            onChange={(e) => onGamesAdvancedFilterChange({ timeControl: e.target.value })}
+            placeholder={t("home.tournamentPlaceholder")}
+            value={gamesAdvancedFilter.tournament}
+            onChange={(e) => onGamesAdvancedFilterChange({ tournament: e.target.value })}
             onKeyDown={(e) => {
               if (e.key === "Enter") onGamesFilterCommit();
             }}
@@ -285,6 +340,7 @@ export function PlayersPanelView() {
     onPrepareAgainstPlayer,
   } = useHomeContext();
   const [menu, setMenu] = useState<{ x: number; y: number; name: string } | null>(null);
+  const { widths, startResize, totalWidth } = useColumnWidths("playersTable", PLAYERS_TABLE_COLUMNS);
 
   if (activeSource?.kind !== "base") {
     return (
@@ -321,14 +377,17 @@ export function PlayersPanelView() {
       {players.length === 0 ? (
         <p className="notation-empty">{t("home.noPlayers")}</p>
       ) : (
-        <table className="explorer-table">
+        <div className="resizable-table-wrap">
+        <table className="explorer-table resizable-table" style={{ width: totalWidth }}>
           <thead>
             <tr>
-              <th className="games-table-sortable" onClick={() => onPlayersSortChange("name")}>
+              <th className="games-table-sortable" style={{ width: widths.name }} onClick={() => onPlayersSortChange("name")}>
                 {t("home.playerName")} {playersSort?.column === "name" ? (playersSort.dir === "asc" ? "▲" : "▼") : ""}
+                <ColumnResizeHandle onMouseDown={startResize("name")} />
               </th>
-              <th className="games-table-sortable" onClick={() => onPlayersSortChange("games")}>
+              <th className="games-table-sortable" style={{ width: widths.games }} onClick={() => onPlayersSortChange("games")}>
                 {t("explorer.games")} {playersSort?.column === "games" ? (playersSort.dir === "asc" ? "▲" : "▼") : ""}
+                <ColumnResizeHandle onMouseDown={startResize("games")} />
               </th>
             </tr>
           </thead>
@@ -348,6 +407,7 @@ export function PlayersPanelView() {
             ))}
           </tbody>
         </table>
+        </div>
       )}
       {menu && (
         <ContextMenu
@@ -365,6 +425,155 @@ export function PlayersPanelView() {
             },
           ]}
         />
+      )}
+    </div>
+  );
+}
+
+// Cellule de cadence editable d'un tournoi : un simple champ texte (meme
+// format PGN TimeControl que la bulle d'aide de SaveBasePicker, reutilisee ici
+// a l'identique) plutot que les trois boutons Blitz/Rapide/Classique de ce
+// dernier -- ici on n'edite jamais qu'un seul champ a la fois, pas besoin du
+// raccourci de saisie, seulement de voir/corriger la valeur deja enregistree.
+function TournamentCadenceCell({ tournament }: { tournament: TournamentSummary }) {
+  const { t } = useTranslation();
+  const { onSetTournamentCadence } = useHomeContext();
+  const [value, setValue] = useState(tournament.timeControl ?? "");
+  useEffect(() => setValue(tournament.timeControl ?? ""), [tournament.id, tournament.timeControl]);
+
+  function commit() {
+    if (value !== (tournament.timeControl ?? "")) onSetTournamentCadence(tournament.id, value);
+  }
+
+  return (
+    <input
+      type="text"
+      className="tournament-cadence-input"
+      value={value}
+      title={t("savePicker.timeControlHelp")}
+      placeholder={t("savePicker.timeControlPlaceholder")}
+      onClick={(e) => e.stopPropagation()}
+      onChange={(e) => setValue(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+      }}
+    />
+  );
+}
+
+export function TournamentsPanelView() {
+  const { t } = useTranslation();
+  const {
+    activeSource,
+    tournaments,
+    tournamentsTotal,
+    tournamentsLoading,
+    tournamentsPage,
+    tournamentsSearchInput,
+    onTournamentsSearchChange,
+    onTournamentsPageChange,
+    onTournamentsFilterCommit,
+    tournamentsSort,
+    onTournamentsSortChange,
+    onFilterGamesByTournament,
+  } = useHomeContext();
+  const { widths, startResize, totalWidth } = useColumnWidths("tournamentsTable", TOURNAMENTS_TABLE_COLUMNS);
+
+  // Au survol : les details du tournoi meme si le nom/lieu est tronque par
+  // une colonne trop etroite -- pas de nouvelle donnee, juste ce qui est deja
+  // dans la ligne (voir TournamentSummary).
+  function tournamentTooltip(tour: TournamentSummary): string {
+    return [
+      `${t("home.tournamentName")}: ${tour.name}`,
+      `${t("home.tournamentSite")}: ${tour.site}`,
+      `${t("savePicker.timeControl")}: ${tour.timeControl || "?"}`,
+      `${t("home.tournamentDates")}: ${formatTournamentDateRange(tour) || "?"}`,
+      `${t("explorer.games")}: ${tour.games}`,
+    ].join("\n");
+  }
+
+  if (activeSource?.kind !== "base") {
+    return (
+      <div className="dock-panel-content">
+        <p className="notation-empty">{t("home.selectBaseOrPgn")}</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="dock-panel-content">
+      <div className="games-pagination">
+        <input
+          type="search"
+          placeholder={t("home.searchNamePlaceholder")}
+          value={tournamentsSearchInput}
+          onChange={(e) => onTournamentsSearchChange(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") onTournamentsFilterCommit();
+          }}
+        />
+        <button disabled={tournamentsLoading} onClick={onTournamentsFilterCommit}>
+          {t("home.search")}
+        </button>
+        <PageNav
+          page={tournamentsPage}
+          pageSize={TOURNAMENTS_PAGE_SIZE}
+          total={tournamentsTotal}
+          loading={tournamentsLoading}
+          onPageChange={onTournamentsPageChange}
+          emptyLabel={t("home.noGames")}
+        />
+      </div>
+      {tournaments.length === 0 ? (
+        <p className="notation-empty">{t("home.noTournaments")}</p>
+      ) : (
+        <div className="resizable-table-wrap">
+        <table className="explorer-table resizable-table" style={{ width: totalWidth }}>
+          <thead>
+            <tr>
+              <th className="games-table-sortable" style={{ width: widths.name }} onClick={() => onTournamentsSortChange("name")}>
+                {t("home.tournamentName")} {tournamentsSort?.column === "name" ? (tournamentsSort.dir === "asc" ? "▲" : "▼") : ""}
+                <ColumnResizeHandle onMouseDown={startResize("name")} />
+              </th>
+              <th style={{ width: widths.site }}>
+                {t("home.tournamentSite")}
+                <ColumnResizeHandle onMouseDown={startResize("site")} />
+              </th>
+              <th style={{ width: widths.timeControl }}>
+                {t("savePicker.timeControl")}
+                <ColumnResizeHandle onMouseDown={startResize("timeControl")} />
+              </th>
+              <th style={{ width: widths.dates }}>
+                {t("home.tournamentDates")}
+                <ColumnResizeHandle onMouseDown={startResize("dates")} />
+              </th>
+              <th className="games-table-sortable" style={{ width: widths.games }} onClick={() => onTournamentsSortChange("games")}>
+                {t("explorer.games")} {tournamentsSort?.column === "games" ? (tournamentsSort.dir === "asc" ? "▲" : "▼") : ""}
+                <ColumnResizeHandle onMouseDown={startResize("games")} />
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {tournaments.map((tour) => (
+              <tr
+                key={tour.id}
+                className="tournament-row"
+                title={tournamentTooltip(tour)}
+                onClick={() => onFilterGamesByTournament(tour.name)}
+              >
+                <td>{tour.name}</td>
+                <td>{tour.site}</td>
+                <td>
+                  <TournamentCadenceCell tournament={tour} />
+                </td>
+                <td>{formatTournamentDateRange(tour)}</td>
+                <td>{tour.games}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        </div>
       )}
     </div>
   );
@@ -389,6 +598,10 @@ export function FidePanelView() {
     onFideSearchChange,
     onFidePageChange,
     onFideFilterCommit,
+    fideAdvancedOpen,
+    onToggleFideAdvanced,
+    fideAdvancedFilter,
+    onFideAdvancedFilterChange,
     fideSort,
     onFideSortChange,
     fideLastUpdated,
@@ -399,6 +612,7 @@ export function FidePanelView() {
   } = useHomeContext();
 
   const sortIndicator = (column: string) => (fideSort?.column === column ? (fideSort.dir === "asc" ? "▲" : "▼") : "");
+  const { widths, startResize, totalWidth } = useColumnWidths("fideTable", FIDE_TABLE_COLUMNS);
 
   return (
     <div className="dock-panel-content">
@@ -410,17 +624,24 @@ export function FidePanelView() {
       </div>
       {fideRefreshError && <p className="error">{fideRefreshError}</p>}
       <div className="games-pagination">
-        <input
-          type="search"
-          placeholder={t("home.searchNamePlaceholder")}
-          value={fideSearchInput}
-          onChange={(e) => onFideSearchChange(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") onFideFilterCommit();
-          }}
-        />
-        <button disabled={fideLoading} onClick={onFideFilterCommit}>
-          {t("home.search")}
+        {!fideAdvancedOpen && (
+          <input
+            type="search"
+            placeholder={t("home.searchNamePlaceholder")}
+            value={fideSearchInput}
+            onChange={(e) => onFideSearchChange(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") onFideFilterCommit();
+            }}
+          />
+        )}
+        {!fideAdvancedOpen && (
+          <button disabled={fideLoading} onClick={onFideFilterCommit}>
+            {t("home.search")}
+          </button>
+        )}
+        <button className="games-advanced-toggle" onClick={onToggleFideAdvanced}>
+          {t("home.advancedFilters")} {fideAdvancedOpen ? "▲" : "▼"}
         </button>
         <PageNav
           page={fidePage}
@@ -431,41 +652,135 @@ export function FidePanelView() {
           emptyLabel={t("home.noGames")}
         />
       </div>
+      {fideAdvancedOpen && (
+        <div className="games-advanced-filters">
+          <input
+            type="text"
+            placeholder={t("home.fideFedPlaceholder")}
+            value={fideAdvancedFilter.fed}
+            onChange={(e) => onFideAdvancedFilterChange({ fed: e.target.value })}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") onFideFilterCommit();
+            }}
+          />
+          <select value={fideAdvancedFilter.title} onChange={(e) => onFideAdvancedFilterChange({ title: e.target.value })}>
+            <option value="">{t("home.allTitles")}</option>
+            <option value="GM">GM</option>
+            <option value="IM">IM</option>
+            <option value="FM">FM</option>
+            <option value="CM">CM</option>
+            <option value="WGM">WGM</option>
+            <option value="WIM">WIM</option>
+            <option value="WFM">WFM</option>
+            <option value="WCM">WCM</option>
+            <option value="NM">NM</option>
+          </select>
+          <select value={fideAdvancedFilter.sex} onChange={(e) => onFideAdvancedFilterChange({ sex: e.target.value })}>
+            <option value="">{t("home.allSexes")}</option>
+            <option value="M">M</option>
+            <option value="F">F</option>
+          </select>
+          <select value={fideAdvancedFilter.status} onChange={(e) => onFideAdvancedFilterChange({ status: e.target.value })}>
+            <option value="">{t("home.allStatuses")}</option>
+            <option value="active">{t("home.fideActive")}</option>
+            <option value="inactive">{t("home.fideInactive")}</option>
+          </select>
+          <label>
+            {t("home.fideBirthYearFrom")}{" "}
+            <input
+              type="text"
+              inputMode="numeric"
+              placeholder={t("home.fideBirthYearPlaceholder")}
+              value={fideAdvancedFilter.birthYearMin}
+              onChange={(e) => onFideAdvancedFilterChange({ birthYearMin: e.target.value })}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") onFideFilterCommit();
+              }}
+            />
+          </label>
+          <label>
+            {t("home.fideBirthYearTo")}{" "}
+            <input
+              type="text"
+              inputMode="numeric"
+              placeholder={t("home.fideBirthYearPlaceholder")}
+              value={fideAdvancedFilter.birthYearMax}
+              onChange={(e) => onFideAdvancedFilterChange({ birthYearMax: e.target.value })}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") onFideFilterCommit();
+              }}
+            />
+          </label>
+          <button disabled={fideLoading} onClick={onFideFilterCommit}>
+            {t("home.search")}
+          </button>
+        </div>
+      )}
       {fidePlayers.length === 0 ? (
         <p className="notation-empty">{t("home.noPlayers")}</p>
       ) : (
         <div className="fide-table-wrap">
-          <table className="explorer-table">
+          <table className="explorer-table resizable-table" style={{ width: totalWidth }}>
             <thead>
               <tr>
-                <th className="games-table-sortable" onClick={() => onFideSortChange("name")}>
+                <th style={{ width: widths.rowNumber }}>
+                  {t("home.rowNumber")}
+                  <ColumnResizeHandle onMouseDown={startResize("rowNumber")} />
+                </th>
+                <th className="games-table-sortable" style={{ width: widths.name }} onClick={() => onFideSortChange("name")}>
                   {t("home.playerName")} {sortIndicator("name")}
+                  <ColumnResizeHandle onMouseDown={startResize("name")} />
                 </th>
-                <th className="games-table-sortable" onClick={() => onFideSortChange("fed")}>
+                <th className="games-table-sortable" style={{ width: widths.fed }} onClick={() => onFideSortChange("fed")}>
                   {t("home.fideFed")} {sortIndicator("fed")}
+                  <ColumnResizeHandle onMouseDown={startResize("fed")} />
                 </th>
-                <th>{t("home.fideSex")}</th>
-                <th>{t("home.fideTitle")}</th>
-                <th>{t("home.fideWTitle")}</th>
-                <th>{t("home.fideOTitle")}</th>
-                <th className="games-table-sortable" onClick={() => onFideSortChange("std")}>
+                <th style={{ width: widths.sex }}>
+                  {t("home.fideSex")}
+                  <ColumnResizeHandle onMouseDown={startResize("sex")} />
+                </th>
+                <th style={{ width: widths.title }}>
+                  {t("home.fideTitle")}
+                  <ColumnResizeHandle onMouseDown={startResize("title")} />
+                </th>
+                <th style={{ width: widths.wTitle }}>
+                  {t("home.fideWTitle")}
+                  <ColumnResizeHandle onMouseDown={startResize("wTitle")} />
+                </th>
+                <th style={{ width: widths.oTitle }}>
+                  {t("home.fideOTitle")}
+                  <ColumnResizeHandle onMouseDown={startResize("oTitle")} />
+                </th>
+                <th className="games-table-sortable" style={{ width: widths.std }} onClick={() => onFideSortChange("std")}>
                   {t("home.fideStd")} {sortIndicator("std")}
+                  <ColumnResizeHandle onMouseDown={startResize("std")} />
                 </th>
-                <th className="games-table-sortable" onClick={() => onFideSortChange("rapid")}>
+                <th className="games-table-sortable" style={{ width: widths.rapid }} onClick={() => onFideSortChange("rapid")}>
                   {t("home.fideRapid")} {sortIndicator("rapid")}
+                  <ColumnResizeHandle onMouseDown={startResize("rapid")} />
                 </th>
-                <th className="games-table-sortable" onClick={() => onFideSortChange("blitz")}>
+                <th className="games-table-sortable" style={{ width: widths.blitz }} onClick={() => onFideSortChange("blitz")}>
                   {t("home.fideBlitz")} {sortIndicator("blitz")}
+                  <ColumnResizeHandle onMouseDown={startResize("blitz")} />
                 </th>
-                <th className="games-table-sortable" onClick={() => onFideSortChange("birthYear")}>
+                <th
+                  className="games-table-sortable"
+                  style={{ width: widths.birthYear }}
+                  onClick={() => onFideSortChange("birthYear")}
+                >
                   {t("home.fideBirthYear")} {sortIndicator("birthYear")}
+                  <ColumnResizeHandle onMouseDown={startResize("birthYear")} />
                 </th>
-                <th>{t("home.fideFlag")}</th>
+                <th style={{ width: widths.flag }}>
+                  {t("home.fideFlag")}
+                  <ColumnResizeHandle onMouseDown={startResize("flag")} />
+                </th>
               </tr>
             </thead>
             <tbody>
-              {fidePlayers.map((p) => (
+              {fidePlayers.map((p, index) => (
                 <tr key={p.fideId}>
+                  <td>{fidePage * FIDE_PAGE_SIZE + index + 1}</td>
                   <td>{p.name}</td>
                   <td>{p.fed}</td>
                   <td>{p.sex}</td>
@@ -493,4 +808,5 @@ export const homeDockviewComponents = {
   parties: PartiesPanelView,
   players: PlayersPanelView,
   fide: FidePanelView,
+  tournaments: TournamentsPanelView,
 };
