@@ -345,7 +345,12 @@ export function HomeDockview({
       listen<UpdatePreview | null>("external-updates-done", async (event) => {
         setExternalUpdatesBusy(null);
         setExternalUpdatesProgress(null);
-        if (!event.payload) {
+        // event.payload non nul mais totalGames=0 : des editions TWIC plus
+        // recentes existaient (d'ou le retard estime), mais une fois
+        // recoupees avec la base de reference (voir write_source cote Rust),
+        // toutes leurs parties s'averent deja connues -- rien a revoir, meme
+        // message que "pas de retard du tout" plutot qu'une revue vide.
+        if (!event.payload || event.payload.totalGames === 0) {
           await message(t("home.externalUpdates.upToDate"), { title: t("home.externalUpdates.title") });
           return;
         }

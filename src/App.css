@@ -234,6 +234,20 @@ textarea {
   opacity: 0.6;
 }
 
+/* Boutons de la barre Bases (nouvelle/ouvrir/reference/supprimer/maj) : juste
+   un picto, le libelle n'apparait qu'au survol via title -- demande explicite
+   de l'utilisateur, les gros boutons textuels prenaient trop de place. */
+.home-toolbar .icon-button {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  font-size: 1.05em;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .fide-status {
   color: var(--ink-2);
   font-size: 0.85em;

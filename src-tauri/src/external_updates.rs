@@ -55,12 +55,21 @@ pub struct UpdatePreview {
 /// moment de l'import reel.
 type GameKey = (String, String, String, String);
 
-fn canon_name(fide_conn: Option<&Connection>, raw: &str) -> String {
-    fide_conn.and_then(|c| fide::canonicalize(c, raw, None)).map(|(name, _)| name).unwrap_or_else(|| raw.trim().to_string())
+/// `elo_hint`, quand il est connu, doit etre transmis : sans lui,
+/// fide::canonicalize refuse de trancher un nom ambigu (initiale seule,
+/// plusieurs joueurs du meme nom de famille -- voir son commentaire) et
+/// renvoie le nom brut tel quel, alors que l'import reel (bulk_import,
+/// lib.rs) le transmet et resout un nom canonique different. Un appelant qui
+/// omettrait l'indice d'Elo ici comparerait donc un nom brut a un nom
+/// canonique deja stocke en base -- aucune correspondance, un doublon pourrait
+/// alors sembler nouveau (rapporte par l'utilisateur : la revue annoncait des
+/// parties qui s'averaient toutes deja connues une fois l'import reel lance).
+fn canon_name(fide_conn: Option<&Connection>, raw: &str, elo_hint: Option<i32>) -> String {
+    fide_conn.and_then(|c| fide::canonicalize(c, raw, elo_hint)).map(|(name, _)| name).unwrap_or_else(|| raw.trim().to_string())
 }
 
 fn game_key(fide_conn: Option<&Connection>, g: &pgn::PgnGameSummary) -> GameKey {
-    (canon_name(fide_conn, &g.white), canon_name(fide_conn, &g.black), g.date.clone(), g.result.clone())
+    (canon_name(fide_conn, &g.white, g.white_elo), canon_name(fide_conn, &g.black, g.black_elo), g.date.clone(), g.result.clone())
 }
 
 // Petit adaptateur local : rusqlite::Result -> Result<Option<T>, String>,
@@ -143,16 +152,27 @@ struct TournamentTally {
     date_end: Option<String>,
 }
 
-/// Ecrit les parties d'une source dans le fichier de sortie, en sautant
-/// celles deja ecrites par une source prioritaire (voir `written`) -- mais
-/// note `from_twic`/`from_lichess` dans tous les cas, meme pour une partie
+/// Ecrit les parties d'une source dans le fichier de sortie, en sautant :
+/// - celles deja presentes dans la base de reference (`ref_conn`), via le
+///   MEME dedoublonnage que l'import reel (voir db::find_duplicate) -- sans
+///   ca, la revue annoncait des tournois/parties "nouveaux" qui s'averaient
+///   n'etre que des doublons une fois l'import reellement lance (rapporte
+///   par l'utilisateur : "il récupère plein de mises à jour et ne trouve que
+///   des doublons"), et la base ne progressant jamais, le prochain
+///   rattrapage recommencait du meme point et retelechargeait tout ;
+/// - celles deja ecrites par une source prioritaire au sein de ce MEME
+///   rattrapage (voir `written`).
+/// Note `from_twic`/`from_lichess` dans tous les cas, meme pour une partie
 /// sautee : un tournoi couvert par les deux sources doit se signaler "both"
 /// a l'utilisateur, pas seulement "lichess" parce que ses parties TWIC se
-/// sont toutes averees des doublons.
+/// sont toutes averees des doublons (de la source Lichess de ce meme
+/// rattrapage -- pas de la base, auquel cas le tournoi n'apparait pas du
+/// tout, voir le filtre `games_written > 0` dans compute_update_preview).
 fn write_source(
     out: &mut impl Write,
     source: &ParsedSource,
     fide_conn: Option<&Connection>,
+    ref_conn: &Connection,
     is_lichess: bool,
     written: &mut BTreeSet<GameKey>,
     per_tournament: &mut BTreeMap<String, TournamentTally>,
@@ -165,9 +185,22 @@ fn write_source(
         } else {
             tally.from_twic = true;
         }
+
+        let tree = pgn::parse_game_at(&source.bytes, i as u32)?;
+        let mainline = tree.mainline_sans();
+        let dup_tags = BTreeMap::from([
+            ("White".to_string(), canon_name(fide_conn, &g.white, g.white_elo)),
+            ("Black".to_string(), canon_name(fide_conn, &g.black, g.black_elo)),
+            ("Date".to_string(), g.date.clone()),
+            ("Result".to_string(), g.result.clone()),
+        ]);
+        if db::find_duplicate(ref_conn, &dup_tags, &mainline)?.is_some() {
+            continue;
+        }
+
         let key = game_key(fide_conn, g);
         if written.insert(key) {
-            append_game(out, source, i as u32)?;
+            writeln!(out, "{}\n", pgn::write_game(&tree)).map_err(|e| e.to_string())?;
             tally.games_written += 1;
             added += 1;
             if db::is_known_date(&g.date) {
@@ -237,6 +270,7 @@ pub fn compute_update_preview(
     let Some(range) = compute_catchup_range(reference_db_path)? else { return Ok(None) };
     let (start_issue, latest_issue) = (range.from_issue - 1, range.to_issue);
 
+    let ref_conn = db::open(Path::new(reference_db_path))?;
     let mut out = std::io::BufWriter::new(std::fs::File::create(output_pgn_path).map_err(|e| e.to_string())?);
     let mut written: BTreeSet<GameKey> = BTreeSet::new();
     let mut per_tournament: BTreeMap<String, TournamentTally> = BTreeMap::new();
@@ -254,10 +288,10 @@ pub fn compute_update_preview(
             if let Some(lichess_source) = fetch_matching_lichess_games(&twic_source, &mut on_progress)? {
                 // Lichess prioritaire : ecrit en premier, TWIC ne comble
                 // ensuite que ce qui manque (choix explicite de l'utilisateur).
-                total_games += write_source(&mut out, &lichess_source, fide_conn, true, &mut written, &mut per_tournament)?;
+                total_games += write_source(&mut out, &lichess_source, fide_conn, &ref_conn, true, &mut written, &mut per_tournament)?;
             }
         }
-        total_games += write_source(&mut out, &twic_source, fide_conn, false, &mut written, &mut per_tournament)?;
+        total_games += write_source(&mut out, &twic_source, fide_conn, &ref_conn, false, &mut written, &mut per_tournament)?;
     }
     out.flush().map_err(|e| e.to_string())?;
 
@@ -445,6 +479,110 @@ mod tests {
         let pgn = "[Event \"Round 1: A - B\"]\n\n1. e4 *\n";
         let rewritten = rewrite_event_tag(pgn, "Tournoi \"Spécial\" \\ 2026");
         assert!(rewritten.contains("[Event \"Tournoi \\\"Spécial\\\" \\\\ 2026\"]"));
+    }
+
+    fn games_table_conn() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE games (
+                id INTEGER PRIMARY KEY,
+                white TEXT, black TEXT, white_elo INTEGER, black_elo INTEGER,
+                result TEXT, event TEXT, site TEXT, round TEXT, date_played TEXT,
+                eco TEXT, opening_name TEXT, ply_count INTEGER, time_control TEXT,
+                pgn_moves TEXT NOT NULL, extra_tags TEXT, mainline_sans TEXT, start_fen TEXT, tournament_id INTEGER,
+                created_at INTEGER NOT NULL, last_modified INTEGER NOT NULL
+            );
+            CREATE TABLE tournaments (
+                id INTEGER PRIMARY KEY, name TEXT NOT NULL, site TEXT NOT NULL, time_control TEXT,
+                games INTEGER NOT NULL, date_start TEXT, date_end TEXT, created_at INTEGER NOT NULL, last_modified INTEGER NOT NULL
+            );
+            CREATE UNIQUE INDEX idx_tournaments_name_site ON tournaments(name, site);
+            CREATE TABLE san_dict (id INTEGER PRIMARY KEY, san TEXT NOT NULL UNIQUE);
+            CREATE TABLE positions (
+                zobrist INTEGER NOT NULL, game_id INTEGER NOT NULL, next_id INTEGER, result INTEGER NOT NULL,
+                PRIMARY KEY (zobrist, game_id)
+            ) WITHOUT ROWID;",
+        )
+        .unwrap();
+        conn
+    }
+
+    // Reproduit le bug rapporte par l'utilisateur : une partie deja presente
+    // dans la base de reference (meme si rattrapee via une edition TWIC plus
+    // recente que la derniere connue) ne doit plus etre comptee/ecrite comme
+    // "nouvelle" dans la revue -- avant ce correctif, write_source ne
+    // dedoublonnait qu'au sein du rattrapage en cours, jamais contre la base
+    // elle-meme, voir le commentaire de la fonction.
+    #[test]
+    fn write_source_skips_games_already_present_in_the_reference_base() {
+        let conn = games_table_conn();
+        let mut existing_tags = BTreeMap::new();
+        for (k, v) in [("Event", "Tournoi X"), ("White", "Alice"), ("Black", "Bob"), ("Date", "2026.10.01"), ("Result", "1-0")] {
+            existing_tags.insert(k.to_string(), v.to_string());
+        }
+        db::save_game(&conn, "1. e4 e5 1-0", &existing_tags, "e4 e5").unwrap();
+
+        let pgn = "[Event \"Tournoi X\"]\n[White \"Alice\"]\n[Black \"Bob\"]\n[Date \"2026.10.01\"]\n[Result \"1-0\"]\n\n1. e4 e5 1-0\n\n\
+                   [Event \"Tournoi X\"]\n[White \"Carol\"]\n[Black \"Dan\"]\n[Date \"2026.10.08\"]\n[Result \"0-1\"]\n\n1. d4 d5 0-1\n";
+        let source = parse_source(pgn.as_bytes().to_vec()).unwrap();
+
+        let mut out: Vec<u8> = Vec::new();
+        let mut written = BTreeSet::new();
+        let mut per_tournament = BTreeMap::new();
+        let added = write_source(&mut out, &source, None, &conn, false, &mut written, &mut per_tournament).unwrap();
+
+        assert_eq!(added, 1);
+        let out_text = String::from_utf8(out).unwrap();
+        assert!(!out_text.contains("\"Alice\""), "la partie deja connue ne doit pas etre reecrite");
+        assert!(out_text.contains("\"Carol\""));
+        assert_eq!(per_tournament.get("Tournoi X").map(|t| t.games_written), Some(1));
+    }
+
+    // Reproduit un second bug rapporte par l'utilisateur, plus insidieux que
+    // le precedent : meme apres avoir ajoute le dedoublonnage contre la base
+    // de reference, la revue continuait a annoncer comme "nouvelles" des
+    // parties qui s'averaient toutes deja connues une fois l'import reel
+    // lance. Cause : canon_name/game_key appelaient fide::canonicalize sans
+    // l'indice d'Elo (WhiteElo/BlackElo), alors que l'import reel (lib.rs) le
+    // transmet -- un nom de famille + initiale ambigu ("Giri,A") sans Elo
+    // reste donc INCHANGE ici alors que l'import reel le resout vers sa forme
+    // canonique ("Giri, Anish") deja stockee en base : aucune correspondance,
+    // le doublon passait inapercu a la revue.
+    #[test]
+    fn write_source_canonicalizes_ambiguous_names_using_the_elo_hint_before_comparing() {
+        let fide_conn = Connection::open_in_memory().unwrap();
+        fide_conn
+            .execute_batch(
+                "CREATE TABLE fide_players (
+                    fide_id TEXT PRIMARY KEY, name TEXT NOT NULL COLLATE NOCASE, fed TEXT NOT NULL, sex TEXT NOT NULL,
+                    title TEXT NOT NULL, w_title TEXT NOT NULL, o_title TEXT NOT NULL,
+                    std_rating INTEGER, rapid_rating INTEGER, blitz_rating INTEGER, birth_year INTEGER, flag TEXT NOT NULL
+                );
+                INSERT INTO fide_players (fide_id, name, fed, sex, title, w_title, o_title, std_rating, flag) VALUES
+                    ('1', 'Giri, Anish', 'NED', 'M', '', '', '', 2750, ''),
+                    ('2', 'Giri, Andrea', 'ITA', 'M', '', '', '', 2095, '');",
+            )
+            .unwrap();
+
+        let conn = games_table_conn();
+        let mut existing_tags = BTreeMap::new();
+        for (k, v) in [("Event", "Tournoi X"), ("White", "Giri, Anish"), ("Black", "Bob"), ("Date", "2026.10.01"), ("Result", "1-0")] {
+            existing_tags.insert(k.to_string(), v.to_string());
+        }
+        db::save_game(&conn, "1. e4 e5 1-0", &existing_tags, "e4 e5").unwrap();
+
+        // Meme partie que celle deja en base, mais sous la forme abregee et
+        // ambigue typique d'un export TWIC/Lichess -- seul le WhiteElo permet
+        // de la resoudre vers "Giri, Anish" (voir fide::disambiguate_by_elo).
+        let pgn = "[Event \"Tournoi X\"]\n[White \"Giri,A\"]\n[WhiteElo \"2750\"]\n[Black \"Bob\"]\n[Date \"2026.10.01\"]\n[Result \"1-0\"]\n\n1. e4 e5 1-0\n";
+        let source = parse_source(pgn.as_bytes().to_vec()).unwrap();
+
+        let mut out: Vec<u8> = Vec::new();
+        let mut written = BTreeSet::new();
+        let mut per_tournament = BTreeMap::new();
+        let added = write_source(&mut out, &source, Some(&fide_conn), &conn, false, &mut written, &mut per_tournament).unwrap();
+
+        assert_eq!(added, 0, "la partie abregee doit etre reconnue comme doublon grace a l'indice d'Elo");
     }
 
     #[test]

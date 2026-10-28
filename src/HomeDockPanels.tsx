@@ -73,24 +73,43 @@ export function BasesPanelView() {
       {error && <p className="error">{error}</p>}
       <div className="home-toolbar">
         <h2>{t("home.bases")}</h2>
-        <button onClick={onCreateBase}>{t("home.newBase")}</button>
-        <button onClick={onAddExistingBase}>{t("home.openExistingBase")}</button>
+        <button className="icon-button" onClick={onCreateBase} title={t("home.newBase")} aria-label={t("home.newBase")}>
+          ➕
+        </button>
+        <button className="icon-button" onClick={onAddExistingBase} title={t("home.openExistingBase")} aria-label={t("home.openExistingBase")}>
+          📂
+        </button>
         {selectedBase && (
           <>
             {!selectedBase.missing && (
-              <button onClick={onToggleReference}>
-                {selectedBase.isReference ? t("home.unmarkReference") : t("home.markReference")}
+              <button
+                className="icon-button"
+                onClick={onToggleReference}
+                title={selectedBase.isReference ? t("home.unmarkReference") : t("home.markReference")}
+                aria-label={selectedBase.isReference ? t("home.unmarkReference") : t("home.markReference")}
+              >
+                📚
               </button>
             )}
-            <button onClick={onDeleteBase}>{t("common.delete")}</button>
+            <button className="icon-button" onClick={onDeleteBase} title={t("common.delete")} aria-label={t("common.delete")}>
+              🗑️
+            </button>
           </>
         )}
-        <button onClick={onCheckExternalUpdates} disabled={externalUpdatesBusy !== null}>
-          {externalUpdatesBusy === "checking"
-            ? t("home.externalUpdates.checking")
-            : externalUpdatesBusy === "estimating"
-              ? t("home.externalUpdates.estimating")
-              : t("home.externalUpdates.button")}
+        <button
+          className="icon-button"
+          onClick={onCheckExternalUpdates}
+          disabled={externalUpdatesBusy !== null}
+          title={
+            externalUpdatesBusy === "checking"
+              ? t("home.externalUpdates.checking")
+              : externalUpdatesBusy === "estimating"
+                ? t("home.externalUpdates.estimating")
+                : t("home.externalUpdates.button")
+          }
+          aria-label={t("home.externalUpdates.button")}
+        >
+          🔄
         </button>
         {externalUpdatesBusy === null && externalUpdatesEstimate && (
           <span className="external-updates-badge" title={t("home.externalUpdates.badgeTitle")}>
