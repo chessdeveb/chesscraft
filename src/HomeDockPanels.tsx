@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { useTranslation } from "react-i18next";
 import { useHomeContext } from "./HomeContext";
 import { BasesTable } from "./components/BasesTable";
@@ -633,6 +634,15 @@ export function FidePanelView() {
   const sortIndicator = (column: string) => (fideSort?.column === column ? (fideSort.dir === "asc" ? "▲" : "▼") : "");
   const { widths, startResize, totalWidth } = useColumnWidths("fideTable", FIDE_TABLE_COLUMNS);
 
+  // Cette table vient directement de la base FIDE : chaque ligne a deja son
+  // vrai fideId, pas besoin de recherche par nom (contrairement a l'en-tete
+  // de la fenetre Partie, ou le fideId n'est connu que si le PGN le porte).
+  const openFidePage = (fideId: string) => {
+    openUrl(`https://ratings.fide.com/profile/${encodeURIComponent(fideId)}`).catch((e) =>
+      console.error("openFidePage", e)
+    );
+  };
+
   return (
     <div className="dock-panel-content">
       <div className="home-toolbar">
@@ -800,7 +810,11 @@ export function FidePanelView() {
               {fidePlayers.map((p, index) => (
                 <tr key={p.fideId}>
                   <td>{fidePage * FIDE_PAGE_SIZE + index + 1}</td>
-                  <td>{p.name}</td>
+                  <td>
+                    <span className="player-link" title={t("notation.openFidePage")} onClick={() => openFidePage(p.fideId)}>
+                      {p.name}
+                    </span>
+                  </td>
                   <td>{p.fed}</td>
                   <td>{p.sex}</td>
                   <td>{p.title}</td>

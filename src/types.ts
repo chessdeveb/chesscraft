@@ -33,6 +33,14 @@ export interface TreeDto {
   tags: Record<string, string>;
 }
 
+// Un autre onglet ouvert dans la meme fenetre Partie -- voir App.tsx
+// (GameTabInfo) et Notation.tsx/GameLinkPicker.tsx (citation d'une partie
+// dans un commentaire, restreinte aux onglets deja ouverts).
+export interface OpenTabRef {
+  id: number;
+  title: string;
+}
+
 export interface PvMove {
   san: string;
   fen: string;

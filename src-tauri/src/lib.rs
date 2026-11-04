@@ -220,6 +220,28 @@ fn get_active_base_path(state: State<AppState>, tab_id: u32) -> Result<Option<St
     Ok(session.active_base_path.clone())
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GameRefDto {
+    path: String,
+    id: i64,
+}
+
+/// Identite base+id d'un onglet, pour citer sa partie dans le commentaire
+/// d'un AUTRE onglet (voir Notation.tsx/GameLinkPicker.tsx) -- None si cet
+/// onglet n'est pas (encore) rattache a une partie sauvegardee (nouvelle
+/// partie jamais enregistree, partie de preparation adversaire...), auquel
+/// cas il n'y a simplement rien a citer.
+#[tauri::command]
+fn get_active_game_ref(state: State<AppState>, tab_id: u32) -> Result<Option<GameRefDto>, String> {
+    let sessions = state.sessions.lock().unwrap();
+    let session = sessions.get(&tab_id).ok_or_else(|| "onglet introuvable".to_string())?;
+    Ok(match (&session.active_base_path, session.active_game_id) {
+        (Some(path), Some(id)) => Some(GameRefDto { path: path.clone(), id }),
+        _ => None,
+    })
+}
+
 #[tauri::command]
 fn legal_moves(state: State<AppState>, tab_id: u32, node_id: u32) -> Result<Vec<MoveDto>, String> {
     let sessions = state.sessions.lock().unwrap();
@@ -2743,6 +2765,7 @@ pub fn run() {
             list_fide_players,
             open_player_prep_tab,
             get_active_base_path,
+            get_active_game_ref,
             close_tab,
             get_tree,
             legal_moves,

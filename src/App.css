@@ -1680,6 +1680,7 @@ textarea {
   overflow-y: auto;
   min-height: 0;
   line-height: 1.8;
+  font-size: 1.1rem;
 }
 
 .annotate-bar {
@@ -1740,21 +1741,65 @@ textarea {
      parent -- au bout de 3-4 niveaux (frequent sur les parties tres
      annotees), le texte devient quasi illisible. color ne compose pas de
      cette facon : meme tres imbriquee, une variante reste au meme ton.
-     Meme raisonnement pour la taille : em se recalcule par rapport au
-     parent, donc se retrecit encore a chaque niveau d'imbrication ; rem se
-     base uniquement sur la racine, taille fixe quelle que soit la
-     profondeur. */
+     Pas de font-size ici (retour utilisateur : meme taille que le trait
+     principal, pas de police differente selon la profondeur) -- herite
+     donc du 1.1rem de .notation, par construction identique a tout niveau
+     d'imbrication puisqu'aucun niveau ne le redefinit. */
   color: var(--ink-2);
-  font-size: 0.92rem;
 }
 
 .comment {
   font-style: italic;
-  /* var(--ink-2) plutot qu'une opacite : une opacite reduit le contraste de
-     facon imprevisible selon ce qu'il y a derriere, alors que --ink-2 est
-     calibre pour rester lisible en clair comme en sombre. */
-  color: var(--ink-2);
+  /* var(--comment-ink) (bleu marine, demande explicite de l'utilisateur)
+     plutot qu'une opacite : une opacite reduit le contraste de facon
+     imprevisible selon ce qu'il y a derriere, alors que ce jeton est
+     calibre pour rester lisible en clair comme en sombre (eclairci en
+     sombre, voir tokens.css). */
+  color: var(--comment-ink);
   white-space: pre-wrap;
+}
+
+.game-link-tab-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.game-link-tab-list button {
+  width: 100%;
+  text-align: left;
+  padding: 6px 10px;
+}
+
+.game-link {
+  /* --accent plutot que --comment-ink : une citation de partie est un lien
+     vers AUTRE CHOSE, pas une annotation sur le coup courant -- meme
+     logique de couleur que les liens classiques (souligne + accent), pour
+     rester distincte au premier coup d'oeil des commentaires qui l'entourent. */
+  color: var(--accent);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.game-link:hover {
+  text-decoration-thickness: 2px;
+}
+
+.player-link {
+  /* Nom de joueur dans l'en-tete : cliquable vers sa fiche FIDE, mais le nom
+     garde l'apparence du texte du header au repos -- seul le survol signale
+     que c'est un lien, pour ne pas alourdir l'en-tete en permanence. */
+  cursor: pointer;
+}
+
+.player-link:hover {
+  color: var(--accent);
+  text-decoration: underline;
 }
 
 .move-clock {
@@ -1873,6 +1918,20 @@ textarea {
   background-color: var(--panel);
   color: var(--ink-1);
   cursor: pointer;
+}
+
+.engine-field input[type="number"] {
+  /* Profondeur en saisie libre (pas de plafond arbitraire -- voir retour
+     utilisateur : laisser tourner le moteur toute une nuit sur une
+     profondeur elevee) : largeur fixe courte, un select n'a besoin de rien
+     de plus large pour 2-3 chiffres. */
+  width: 4.5em;
+  font: inherit;
+  border-radius: var(--r-md);
+  border: 1px solid var(--line-strong);
+  padding: 3px 6px;
+  background-color: var(--panel);
+  color: var(--ink-1);
 }
 
 .engine-lines {

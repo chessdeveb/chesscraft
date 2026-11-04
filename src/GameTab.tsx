@@ -24,6 +24,7 @@ import type {
   GameReportSummary,
   MoveDto,
   NodeDto,
+  OpenTabRef,
   OpeningMoveStat,
   PvMove,
   SaveResult,
@@ -48,6 +49,10 @@ interface GameTabProps {
   // absent : demarre a la racine de l'arbre, comme avant.
   initialNodeId?: number;
   onTreeChange?: (tabId: number, tree: TreeDto) => void;
+  // Autres onglets ouverts dans cette fenetre Partie (voir App.tsx) -- sert
+  // uniquement a la citation de partie dans un commentaire (Notation.tsx/
+  // GameLinkPicker.tsx), restreinte a ce qui est deja ouvert.
+  otherTabs?: OpenTabRef[];
 }
 
 // Expose a l'appelant (App.tsx) un point d'entree unique pour demander la
@@ -114,7 +119,7 @@ function loadGamePanelPrefs(): GamePanelPrefs {
 }
 
 export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
-  { tabId, active, isPlayerPrep = false, initialNodeId, onTreeChange },
+  { tabId, active, isPlayerPrep = false, initialNodeId, onTreeChange, otherTabs = [] },
   ref
 ) {
   const { t } = useTranslation();
@@ -271,6 +276,17 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
       if (!tree) return;
       const byId = new Map(tree.nodes.map((n) => [n.id, n]));
 
+      // Un choix de variante est deja affiche (on est bloque sur le noeud de
+      // branchement) : continuer a cliquer sur la fleche "suivant" (bouton
+      // de transport, pas le clavier qui a sa propre gestion dans le
+      // keydown) prend la variante actuellement en surbrillance plutot que
+      // de ne rien faire -- voir le retour utilisateur sur ce comportement.
+      if (direction === "next" && variationChoice) {
+        setCurrentNodeId(variationChoice[highlightedIndex].id);
+        setVariationChoice(null);
+        return;
+      }
+
       if (direction === "start") {
         setCurrentNodeId(tree.root);
         setVariationChoice(null);
@@ -304,7 +320,7 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
         }
       }
     },
-    [tree, currentNodeId]
+    [tree, currentNodeId, variationChoice, highlightedIndex]
   );
 
   const refreshTree = useCallback(async () => {
@@ -1276,6 +1292,20 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
     [previewTree, previewNodeId]
   );
 
+  // Clic sur une citation de partie ("[%game ...]") inseree dans un
+  // commentaire (voir Notation.tsx/GameLinkPicker.tsx) -- meme mecanique que
+  // handleOpenPreviewGame (open_game + emit "game-tab-opened", capte par
+  // App.tsx de CETTE fenetre Partie), mais sans position de depart
+  // particuliere : la partie citee s'ouvre a sa racine.
+  const handleOpenGameLink = useCallback(async (path: string, id: number) => {
+    try {
+      const tab = await invoke<TabDto>("open_game", { path, id });
+      await emit("game-tab-opened", tab);
+    } catch (e) {
+      setError(String(e));
+    }
+  }, []);
+
   const handleOpenPreviewGame = useCallback(async () => {
     if (previewGameId === null || !explorerGamesBasePath) return;
     try {
@@ -1463,6 +1493,8 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
     highlightedIndex,
     chooseVariation,
     handleSetComment,
+    handleOpenGameLink,
+    otherTabs,
     handleToggleNag,
     handlePromoteVariation,
     handleDeleteVariation,

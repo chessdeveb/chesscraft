@@ -40,17 +40,20 @@
   --accent: var(--accent-l);
   --on-accent: #ffffff;
 
-  /* legerement assombris par rapport a un blanc pur (retour utilisateur :
-     "le fond est trop blanc") -- --panel restait a #ffffff, ce qui rend
-     la plupart des ecrans (tableaux, panneaux) eblouissants sur un moniteur
-     lumineux. Hierarchie relative (panel > ground > sunken > raised)
-     inchangee, juste toute la gamme un peu plus douce. */
-  --ground: #f4f3f1;
-  --panel: #fafaf8;
-  --raised: #e8e6e3;
-  --sunken: #eeece9;
-  --line: #e0dfdc;
-  --line-strong: #cbcac6;
+  /* Fond beige (retour utilisateur), toute la famille de neutres clairs
+     teintee ensemble -- --ground n'est en fait visible que dans de rares
+     interstices (ex. .game-tabs-bar) : la quasi-totalite de l'interface
+     (dockview, tableaux, champs) est peinte avec --panel/--raised/--sunken.
+     Changer --ground seul a cree une bande d'une couleur au milieu d'une
+     interface restee presque blanche -- cf. retour utilisateur. Hierarchie
+     relative (panel plus clair que ground, raised/sunken plus sombres)
+     conservee, juste toute la gamme deplacee vers le meme beige. */
+  --ground: #e8d2b5;
+  --panel: #f1e3c9;
+  --raised: #ddc49f;
+  --sunken: #e3cdab;
+  --line: #d6ba91;
+  --line-strong: #c0a173;
 
   --ink-1: #141613;
   --ink-2: #585b57;
@@ -58,6 +61,13 @@
 
   --danger: #a8422f;
   --danger-weak: #f6e7e3;
+
+  /* commentaires de la notation (voir .comment) : bleu marine distinct des
+     neutres --ink-*, pour les detacher visuellement des coups/variantes.
+     Plus sature/clair qu'un marine "pur" (#1f3a66 a l'origine) : retour
+     utilisateur, pas assez de contraste avec le noir --ink-1 pour distinguer
+     un commentaire d'un coup au premier coup d'oeil. */
+  --comment-ink: #1e45c4;
 
   /* tons d'accent derives : remplacent la dizaine d'opacites de bleu
      choisies au hasard dans l'ancienne feuille de style par trois
@@ -123,6 +133,11 @@
     --danger: #d9765f;
     --danger-weak: #2c1b17;
 
+    /* meme intention bleu marine qu'en clair, mais eclaircie : un marine
+       sombre serait quasi invisible sur le fond sombre --ground. Plus
+       sature que le premier essai (#9bb3e3), meme motif qu'en clair. */
+    --comment-ink: #93b4ff;
+
     --accent-weak: color-mix(in srgb, var(--accent) 18%, transparent);
     --accent-line: color-mix(in srgb, var(--accent) 38%, transparent);
     --accent-strong: color-mix(in srgb, var(--accent) 58%, transparent);
@@ -149,6 +164,8 @@
 
   --danger: #d9765f;
   --danger-weak: #2c1b17;
+
+  --comment-ink: #93b4ff;
 
   --accent-weak: color-mix(in srgb, var(--accent) 18%, transparent);
   --accent-line: color-mix(in srgb, var(--accent) 38%, transparent);

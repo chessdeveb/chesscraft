@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { useTranslation } from "react-i18next";
 import type { Dests } from "@lichess-org/chessground/types";
 import { NAG_CLUSTERS, PREFIX_NAG_CODES, nagSymbol } from "../nag";
-import type { GameReportProgress, GameReportSummary, NodeDto, TreeDto } from "../types";
+import type { GameReportProgress, GameReportSummary, NodeDto, OpenTabRef, TreeDto } from "../types";
 import { Board } from "./Board";
+import { GameLinkPicker } from "./GameLinkPicker";
 import { GameReportChart } from "./GameReportChart";
 import { GameReportDialog } from "./GameReportDialog";
 import { NagClusterButton } from "./NagClusterButton";
@@ -18,6 +20,12 @@ interface NotationProps {
   currentNodeId: number;
   onSelect: (id: number) => void;
   onSetComment?: (before: string, after: string) => void;
+  /** Clic sur une citation de partie ("[%game ...]", voir renderCommentText)
+      dans un commentaire -- absent en lecture seule (apercu Explorateur). */
+  onOpenGameLink?: (path: string, id: number) => void;
+  /** Autres onglets ouverts dans cette fenetre, seules cibles possibles
+      d'une citation (voir GameLinkPicker) -- absent en lecture seule. */
+  otherTabs?: OpenTabRef[];
   onToggleNag?: (code: number) => void;
   /** Fait de la branche du coup courant la ligne principale (bouton a
       gauche des NAG). */
@@ -55,17 +63,58 @@ function parseClock(comment: string | null): { clock: string | null; rest: strin
   return { clock: match ? match[1] : null, rest: comment.replace(CLOCK_RE, "").trim() };
 }
 
+// Citation d'une autre partie (n'importe quelle base) inseree dans un
+// commentaire -- balise auto-suffisante au style des annotations deja
+// gerees ailleurs ([%eval ...], [%clk ...]) : un lecteur PGN tiers qui ne la
+// reconnait pas l'affiche telle quelle comme texte inerte, sans rien casser.
+// base/label passes par guillemets simples (voir insertGameLink) pour ne
+// jamais avoir a echapper un guillemet double a l'interieur.
+const GAME_LINK_RE = /\[%game id=(\d+) base="([^"]*)" label="([^"]*)"\]/g;
+
+/** Coupe un commentaire en segments texte / citations de partie cliquables
+    (voir GAME_LINK_RE) -- onOpenGameLink absent (lecture seule) ou non
+    fourni : le clic ne fait simplement rien, la citation reste visible. */
+function renderCommentText(text: string, onOpenGameLink?: (path: string, id: number) => void): ReactNode[] {
+  const out: ReactNode[] = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  GAME_LINK_RE.lastIndex = 0;
+  while ((match = GAME_LINK_RE.exec(text))) {
+    if (match.index > lastIndex) out.push(text.slice(lastIndex, match.index));
+    const [, idStr, base, label] = match;
+    out.push(
+      <span
+        key={`gl-${match.index}`}
+        className="game-link"
+        onClick={(e) => {
+          e.stopPropagation();
+          onOpenGameLink?.(base, Number(idStr));
+        }}
+      >
+        {label}
+      </span>
+    );
+    lastIndex = match.index + match[0].length;
+  }
+  if (lastIndex < text.length) out.push(text.slice(lastIndex));
+  return out;
+}
+
 function InlineCommentEditor({
   value,
   onSave,
   onClose,
+  otherTabs,
 }: {
   value: string;
   onSave: (text: string) => void;
   onClose: () => void;
+  otherTabs: OpenTabRef[];
 }) {
   const { t } = useTranslation();
   const [text, setText] = useState(value);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
     const timeout = setTimeout(() => onSave(text), 500);
@@ -73,18 +122,37 @@ function InlineCommentEditor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [text]);
 
+  function insertGameLink(path: string, id: number, label: string) {
+    // Guillemets simples : la balise elle-meme utilise des guillemets
+    // doubles comme delimiteurs (voir GAME_LINK_RE) -- un chemin/libelle qui
+    // en contiendrait casserait le parsing sans cette substitution.
+    const safePath = path.replace(/"/g, "'");
+    const safeLabel = label.replace(/"/g, "'");
+    const tag = `[%game id=${id} base="${safePath}" label="${safeLabel}"]`;
+    const pos = textareaRef.current?.selectionStart ?? text.length;
+    setText(text.slice(0, pos) + tag + text.slice(pos));
+    setPickerOpen(false);
+  }
+
   return (
     <div className="comment-editor-inline">
       <textarea
+        ref={textareaRef}
         autoFocus
         rows={2}
         value={text}
         onChange={(e) => setText(e.currentTarget.value)}
         placeholder={t("notation.commentPlaceholder")}
       />
+      <button onClick={() => setPickerOpen(true)} title={t("notation.linkGame")} aria-label={t("notation.linkGame")}>
+        🔗
+      </button>
       <button onClick={onClose} title={t("notation.close")} aria-label={t("notation.closeCommentEditor")}>
         ✕
       </button>
+      {pickerOpen && (
+        <GameLinkPicker otherTabs={otherTabs} onCancel={() => setPickerOpen(false)} onConfirm={insertGameLink} />
+      )}
     </div>
   );
 }
@@ -94,6 +162,8 @@ export function Notation({
   currentNodeId,
   onSelect,
   onSetComment,
+  onOpenGameLink,
+  otherTabs,
   onToggleNag,
   onPromoteVariation,
   onDeleteVariation,
@@ -159,7 +229,7 @@ export function Notation({
     return (
       <span key={node.id}>
         {hasMove && label && <span className="move-number">{label} </span>}
-        {before.rest && <span className="comment">{before.rest} </span>}
+        {before.rest && <span className="comment">{renderCommentText(before.rest, onOpenGameLink)} </span>}
         {before.clock && <span className="move-clock">🕐{before.clock} </span>}
         {hasMove && prefixNagText && <span className="nag-prefix">{prefixNagText} </span>}
         {hasMove && (
@@ -174,7 +244,7 @@ export function Notation({
         )}
         {hasMove && " "}
         {after.clock && <span className="move-clock">🕐{after.clock} </span>}
-        {after.rest && <span className="comment">{after.rest} </span>}
+        {after.rest && <span className="comment">{renderCommentText(after.rest, onOpenGameLink)} </span>}
       </span>
     );
   }
@@ -261,6 +331,19 @@ export function Notation({
   const date = tree.tags.Date;
   const result = tree.tags.Result;
 
+  // FIDE ne propose pas de recherche par nom fiable via URL -- si la partie
+  // porte un id FIDE (tag non standard mais utilise par certains exports),
+  // on va directement sur le profil ; sinon on retombe sur la recherche par
+  // nom dans la base FIDE.
+  const openFidePage = (color: "White" | "Black", name: string) => {
+    const fideId = tree.tags[`${color}FideId`];
+    const url =
+      fideId && fideId !== "?"
+        ? `https://ratings.fide.com/profile/${encodeURIComponent(fideId)}`
+        : `https://ratings.fide.com/index.phtml?search=${encodeURIComponent(name)}`;
+    openUrl(url).catch((e) => console.error("openFidePage", e));
+  };
+
   return (
     <div className="notation-wrapper">
       {!readOnly && (
@@ -281,8 +364,28 @@ export function Notation({
       {(white !== "?" || black !== "?" || event || date) && (
         <div className="notation-header">
           <div className="notation-header-players">
-            {white}
-            {elo("White")} – {black}
+            {white !== "?" ? (
+              <span
+                className="player-link"
+                title={t("notation.openFidePage")}
+                onClick={() => openFidePage("White", white)}
+              >
+                {white}
+              </span>
+            ) : (
+              white
+            )}
+            {elo("White")} – {black !== "?" ? (
+              <span
+                className="player-link"
+                title={t("notation.openFidePage")}
+                onClick={() => openFidePage("Black", black)}
+              >
+                {black}
+              </span>
+            ) : (
+              black
+            )}
             {elo("Black")}
             {result && <span className="notation-header-result">{result}</span>}
           </div>
@@ -355,6 +458,7 @@ export function Notation({
               value={currentNode.commentBefore ?? ""}
               onSave={(text) => onSetComment?.(text, currentNode.commentAfter ?? "")}
               onClose={() => setEditing(null)}
+              otherTabs={otherTabs ?? []}
             />
           )}
           {editing === "after" && (
@@ -362,6 +466,7 @@ export function Notation({
               value={currentNode.commentAfter ?? ""}
               onSave={(text) => onSetComment?.(currentNode.commentBefore ?? "", text)}
               onClose={() => setEditing(null)}
+              otherTabs={otherTabs ?? []}
             />
           )}
         </div>

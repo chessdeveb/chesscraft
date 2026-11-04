@@ -11,6 +11,7 @@ import type {
   GameReportSummary,
   MoveComparison,
   NodeDto,
+  OpenTabRef,
   OpeningMoveStat,
   PvMove,
   ShapeDto,
@@ -67,6 +68,13 @@ export interface AppContextValue {
   highlightedIndex: number;
   chooseVariation: (id: number) => void;
   handleSetComment: (before: string, after: string) => void;
+  // Clic sur une citation de partie ("[%game ...]") dans un commentaire,
+  // voir Notation.tsx -- ouvre la partie visee (n'importe quelle base,
+  // pas forcement celle de l'onglet courant) comme nouvel onglet.
+  handleOpenGameLink: (path: string, id: number) => void;
+  // Autres onglets ouverts dans cette fenetre (voir App.tsx), proposes par
+  // GameLinkPicker comme seules cibles possibles pour une citation.
+  otherTabs: OpenTabRef[];
   handleToggleNag: (code: number) => void;
   handlePromoteVariation: () => void;
   handleDeleteVariation: () => void;

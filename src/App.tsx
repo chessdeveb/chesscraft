@@ -197,6 +197,7 @@ function App() {
               isPlayerPrep={tab.isPlayerPrep}
               initialNodeId={tab.initialNodeId}
               onTreeChange={handleTreeChange}
+              otherTabs={tabs.filter((other) => other.id !== tab.id).map((other) => ({ id: other.id, title: other.title }))}
             />
           </div>
         ))}

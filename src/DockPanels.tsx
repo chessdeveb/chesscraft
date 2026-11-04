@@ -167,6 +167,8 @@ export function NotationPanelView() {
     highlightedIndex,
     chooseVariation,
     handleSetComment,
+    handleOpenGameLink,
+    otherTabs,
     handleToggleNag,
     handlePromoteVariation,
     handleDeleteVariation,
@@ -202,6 +204,8 @@ export function NotationPanelView() {
         currentNodeId={currentNodeId}
         onSelect={handleSelect}
         onSetComment={handleSetComment}
+        onOpenGameLink={handleOpenGameLink}
+        otherTabs={otherTabs}
         onToggleNag={handleToggleNag}
         onPromoteVariation={handlePromoteVariation}
         onDeleteVariation={handleDeleteVariation}

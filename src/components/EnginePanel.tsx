@@ -221,13 +221,13 @@ export function EnginePanel({
           <div className="engine-settings-row">
             <label className="engine-field">
               {t("engine.depth")}
-              <select value={depth} onChange={(e) => onDepthChange(Number(e.currentTarget.value))}>
-                <option value={10}>10</option>
-                <option value={14}>14</option>
-                <option value={18}>18</option>
-                <option value={22}>22</option>
-                <option value={26}>26</option>
-              </select>
+              <input
+                type="number"
+                min={1}
+                value={depth}
+                onChange={(e) => onDepthChange(Math.max(1, Number(e.currentTarget.value) || 1))}
+                title={t("engine.depthUnbounded")}
+              />
             </label>
             <label className="engine-field">
               {t("engine.multiPv")}
@@ -237,6 +237,11 @@ export function EnginePanel({
                 <option value={3}>3</option>
                 <option value={4}>4</option>
                 <option value={5}>5</option>
+                <option value={6}>6</option>
+                <option value={7}>7</option>
+                <option value={8}>8</option>
+                <option value={9}>9</option>
+                <option value={10}>10</option>
               </select>
             </label>
             <label className="engine-field">
