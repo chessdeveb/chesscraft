@@ -67,8 +67,21 @@ function formatRebuildProgress(event: ToolRebuildProgressEvent): string {
 async function focusIfAlreadyOpen(label: string): Promise<boolean> {
   const existing = await WebviewWindow.getByLabel(label);
   if (!existing) return false;
-  await existing.setFocus();
+  await bringToFront(existing);
   return true;
+}
+
+// setFocus seul ne suffit pas sous Windows : apres un double-clic dans
+// l'Accueil, la fenetre Partie deja ouverte recevait sa partie mais restait
+// derriere (rapporte par l'utilisateur : "on a l'impression qu'il ne s'est
+// rien passe"). Passer brievement la fenetre en "toujours au premier plan"
+// force Windows a la remonter, quel que soit l'etat du focus ; on la
+// restaure aussi si elle etait reduite dans la barre des taches.
+async function bringToFront(win: WebviewWindow): Promise<void> {
+  if (await win.isMinimized()) await win.unminimize();
+  await win.setAlwaysOnTop(true);
+  await win.setFocus();
+  await win.setAlwaysOnTop(false);
 }
 
 // Creer la fenetre Partie depuis une commande Rust (WebviewWindowBuilder
@@ -78,8 +91,8 @@ async function focusIfAlreadyOpen(label: string): Promise<boolean> {
 async function openTabInGameWindow(tab: TabDto): Promise<void> {
   const existing = await WebviewWindow.getByLabel("game");
   if (existing) {
-    await existing.setFocus();
     await emit("game-tab-opened", tab);
+    await bringToFront(existing);
     return;
   }
   const win = new WebviewWindow("game", {

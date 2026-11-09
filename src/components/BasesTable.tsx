@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { GAME_DRAG_MIME, type GameDragPayload } from "../dnd";
 import type { BaseInfo } from "../types";
+import { compareText, useClientSort, type Comparators } from "../useClientSort";
 import { ColumnResizeHandle, useColumnWidths } from "../useColumnWidths";
 
 const BASES_TABLE_COLUMNS = [
@@ -9,6 +10,14 @@ const BASES_TABLE_COLUMNS = [
   { key: "games", default: 70 },
   { key: "location", default: 320 },
 ];
+
+// Liste courte et deja entierement chargee (list_bases) : triee cote
+// interface. Sans tri choisi, l'ordre d'enregistrement est garde.
+const BASES_COMPARATORS: Comparators<BaseInfo, "name" | "games" | "location"> = {
+  name: (a, b) => compareText(a.name, b.name),
+  games: (a, b) => a.games - b.games || compareText(a.name, b.name),
+  location: (a, b) => compareText(a.path, b.path),
+};
 
 interface BasesTableProps {
   bases: BaseInfo[];
@@ -32,6 +41,7 @@ export function BasesTable({ bases, loading, selectedPath, onSelect, onDropGames
   const { t } = useTranslation();
   const [dragOverPath, setDragOverPath] = useState<string | null>(null);
   const { widths, startResize, totalWidth } = useColumnWidths("basesTable", BASES_TABLE_COLUMNS);
+  const { sorted: sortedBases, toggleSort: onSortChange, sortArrow } = useClientSort(bases, BASES_COMPARATORS);
 
   if (bases.length === 0) {
     return loading ? <p className="status-message">{t("common.loading")}</p> : <p className="notation-empty">{t("basesTable.empty")}</p>;
@@ -42,22 +52,22 @@ export function BasesTable({ bases, loading, selectedPath, onSelect, onDropGames
     <table className="explorer-table resizable-table" style={{ width: totalWidth }}>
       <thead>
         <tr>
-          <th style={{ width: widths.name }}>
-            {t("basesTable.name")}
+          <th className="games-table-sortable" style={{ width: widths.name }} onClick={() => onSortChange("name")}>
+            {t("basesTable.name")} {sortArrow("name")}
             <ColumnResizeHandle onMouseDown={startResize("name")} />
           </th>
-          <th style={{ width: widths.games }}>
-            {t("basesTable.games")}
+          <th className="games-table-sortable" style={{ width: widths.games }} onClick={() => onSortChange("games")}>
+            {t("basesTable.games")} {sortArrow("games")}
             <ColumnResizeHandle onMouseDown={startResize("games")} />
           </th>
-          <th style={{ width: widths.location }}>
-            {t("basesTable.location")}
+          <th className="games-table-sortable" style={{ width: widths.location }} onClick={() => onSortChange("location")}>
+            {t("basesTable.location")} {sortArrow("location")}
             <ColumnResizeHandle onMouseDown={startResize("location")} />
           </th>
         </tr>
       </thead>
       <tbody>
-        {bases.map((b) => (
+        {sortedBases.map((b) => (
           <tr
             key={b.path}
             className={

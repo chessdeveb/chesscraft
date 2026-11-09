@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from "react";
 import type { IDockviewPanelProps } from "dockview-react";
 import type { Color, Key } from "@lichess-org/chessground/types";
 import { useTranslation } from "react-i18next";
@@ -15,6 +16,33 @@ import { TrainingPanel } from "./components/TrainingPanel";
 import type { TreeDto } from "./types";
 
 const EXPLORER_GAMES_PAGE_SIZE = 20;
+
+// Part de la largeur du panneau Explorateur occupee par l'apercu de partie
+// (echiquier + notation), reglable en glissant la barre qui le separe des
+// stats/parties (rapporte par l'utilisateur comme manquant), memorisee.
+const EXPLORER_PREVIEW_FRACTION_KEY = "explorerPreviewFraction";
+const EXPLORER_PREVIEW_DEFAULT = 0.45;
+const EXPLORER_PREVIEW_MIN = 0.2;
+const EXPLORER_PREVIEW_MAX = 0.75;
+
+const clampPreviewFraction = (value: number) => Math.min(EXPLORER_PREVIEW_MAX, Math.max(EXPLORER_PREVIEW_MIN, value));
+
+function loadPreviewFraction(): number {
+  try {
+    const value = Number(localStorage.getItem(EXPLORER_PREVIEW_FRACTION_KEY));
+    return value > 0 ? clampPreviewFraction(value) : EXPLORER_PREVIEW_DEFAULT;
+  } catch {
+    return EXPLORER_PREVIEW_DEFAULT;
+  }
+}
+
+function savePreviewFraction(value: number) {
+  try {
+    localStorage.setItem(EXPLORER_PREVIEW_FRACTION_KEY, String(value));
+  } catch {
+    // preference perdue au prochain lancement, sans consequence
+  }
+}
 
 const CLOCK_RE = /\[%clk\s+([\d:.]+)\]/;
 
@@ -254,8 +282,47 @@ export function ExplorerPanelView() {
     boardTheme,
     boardFlipped,
   } = useAppContext();
+  const panelRef = useRef<HTMLDivElement>(null);
+  const [previewFraction, setPreviewFraction] = useState(loadPreviewFraction);
+
+  const startSplitDrag = (e: ReactMouseEvent) => {
+    e.preventDefault();
+    const panel = panelRef.current;
+    if (!panel) return;
+    const rect = panel.getBoundingClientRect();
+    let latest = previewFraction;
+    const onMove = (ev: MouseEvent) => {
+      latest = clampPreviewFraction((rect.right - ev.clientX) / rect.width);
+      setPreviewFraction(latest);
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      document.body.classList.remove("explorer-splitting");
+      savePreviewFraction(latest);
+    };
+    document.body.classList.add("explorer-splitting");
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+
+  const applyPreviewFraction = (value: number) => {
+    const next = clampPreviewFraction(value);
+    setPreviewFraction(next);
+    savePreviewFraction(next);
+  };
+
+  // Accessible au clavier aussi (fleches), comme une barre de separation
+  // standard ; double-clic = largeur par defaut.
+  const onSplitKeyDown = (e: ReactKeyboardEvent) => {
+    if (e.key === "ArrowLeft") applyPreviewFraction(previewFraction + 0.02);
+    else if (e.key === "ArrowRight") applyPreviewFraction(previewFraction - 0.02);
+    else return;
+    e.preventDefault();
+  };
+
   return (
-    <div className="dock-panel-content explorer-panel">
+    <div className="dock-panel-content explorer-panel" ref={panelRef}>
       <div className="explorer-panel-col explorer-panel-col--left">
         {checkSuffixesCleanupCount !== null && (
           <p className="explorer-cleanup-status">{t("explorer.checkSuffixCleanup", { count: checkSuffixesCleanupCount.toLocaleString() })}</p>
@@ -279,7 +346,21 @@ export function ExplorerPanelView() {
           onSelectGame={onSelectPreviewGame}
         />
       </div>
-      <div className="explorer-panel-col explorer-panel-col--right">
+      <div
+        className="explorer-splitter"
+        role="separator"
+        aria-orientation="vertical"
+        aria-valuenow={Math.round(previewFraction * 100)}
+        aria-valuemin={EXPLORER_PREVIEW_MIN * 100}
+        aria-valuemax={EXPLORER_PREVIEW_MAX * 100}
+        aria-label={t("explorer.resizePreview")}
+        title={t("explorer.resizePreview")}
+        tabIndex={0}
+        onMouseDown={startSplitDrag}
+        onDoubleClick={() => applyPreviewFraction(EXPLORER_PREVIEW_DEFAULT)}
+        onKeyDown={onSplitKeyDown}
+      />
+      <div className="explorer-panel-col explorer-panel-col--right" style={{ flexBasis: `${previewFraction * 100}%` }}>
         <ExplorerPreview
           gameId={previewGameId}
           tree={previewTree}

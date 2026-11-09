@@ -1134,11 +1134,31 @@ pub fn count_at_zobrist(conn: &Connection, zobrist: i64, filters: &crate::explor
             .map_err(|e| e.to_string())?;
         return Ok(count as u32);
     }
-    let (from, where_clause, params) = zobrist_from_and_where(zobrist, filters);
-    let sql = format!("SELECT COUNT(*) FROM {from} {where_clause}");
+    let (sql, params) = count_at_zobrist_query(zobrist, filters);
     let params_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
     let count: i64 = conn.query_row(&sql, params_refs.as_slice(), |row| row.get(0)).map_err(|e| e.to_string())?;
     Ok(count as u32)
+}
+
+fn count_at_zobrist_query(zobrist: i64, filters: &crate::explorer::ExplorerFilters) -> (String, Vec<Box<dyn rusqlite::ToSql>>) {
+    let (from, where_clause, params) = zobrist_from_and_where(zobrist, filters);
+    (format!("SELECT COUNT(*) FROM {from} {where_clause}"), params)
+}
+
+/// Plans d'execution (EXPLAIN QUERY PLAN) des requetes filtrees de
+/// count_at_zobrist et games_at_zobrist, pour verifier en test qu'elles
+/// cherchent le joueur par index au lieu de parcourir toute la table.
+#[cfg(test)]
+pub fn explain_zobrist_queries(conn: &Connection, zobrist: i64, filters: &crate::explorer::ExplorerFilters) -> Vec<String> {
+    [count_at_zobrist_query(zobrist, filters), games_at_zobrist_query(zobrist, filters, "", "", 200, 0)]
+        .into_iter()
+        .map(|(sql, params)| {
+            let params_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
+            let mut stmt = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+            let rows = stmt.query_map(params_refs.as_slice(), |row| row.get::<_, String>(3)).unwrap();
+            rows.map(|r| r.unwrap()).collect::<Vec<_>>().join(" | ")
+        })
+        .collect()
 }
 
 /// Traduit (colonne, sens) fournis par l'interface en clause ORDER BY fixe
@@ -1159,6 +1179,9 @@ fn explorer_games_order_by_clause(sort_by: &str, sort_dir: &str) -> &'static str
         ("whiteElo", true) => "ORDER BY white_elo DESC, id DESC",
         ("blackElo", false) => "ORDER BY black_elo ASC, id DESC",
         ("blackElo", true) => "ORDER BY black_elo DESC, id DESC",
+        // qualifie : `positions` a aussi une colonne result (jointure)
+        ("result", false) => "ORDER BY g.result ASC, g.id DESC",
+        ("result", true) => "ORDER BY g.result DESC, g.id DESC",
         _ => "ORDER BY id DESC",
     }
 }
@@ -1178,6 +1201,25 @@ pub fn games_at_zobrist(
     limit: u32,
     offset: u32,
 ) -> Result<Vec<ExplorerGameSummary>, String> {
+    let (sql, params) = games_at_zobrist_query(zobrist, filters, sort_by, sort_dir, limit, offset);
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let params_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
+    let rows = stmt
+        .query_map(params_refs.as_slice(), map_explorer_game_summary_row)
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string());
+    rows
+}
+
+fn games_at_zobrist_query(
+    zobrist: i64,
+    filters: &crate::explorer::ExplorerFilters,
+    sort_by: &str,
+    sort_dir: &str,
+    limit: u32,
+    offset: u32,
+) -> (String, Vec<Box<dyn rusqlite::ToSql>>) {
     // Ordre par defaut : game_id decroissant = parcours a l'envers de
     // l'intervalle de cle (zobrist, game_id) de `positions`, les 200 dernieres
     // parties sont lues sans trier les millions de correspondances. Un tri
@@ -1193,14 +1235,7 @@ pub fn games_at_zobrist(
          FROM {from} {where_clause}
          {order_by} LIMIT ?{limit_ph} OFFSET ?{offset_ph}"
     );
-    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-    let params_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
-    let rows = stmt
-        .query_map(params_refs.as_slice(), map_explorer_game_summary_row)
-        .map_err(|e| e.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string());
-    rows
+    (sql, params)
 }
 
 #[derive(Serialize, Clone)]
@@ -1639,6 +1674,13 @@ fn tournaments_order_by_clause(sort_by: &str, sort_dir: &str) -> &'static str {
         ("name", false) => "ORDER BY name COLLATE NOCASE ASC",
         ("name", true) => "ORDER BY name COLLATE NOCASE DESC",
         ("games", false) => "ORDER BY games ASC, name COLLATE NOCASE ASC",
+        ("site", false) => "ORDER BY site COLLATE NOCASE ASC, name COLLATE NOCASE ASC",
+        ("site", true) => "ORDER BY site COLLATE NOCASE DESC, name COLLATE NOCASE ASC",
+        ("timeControl", false) => "ORDER BY time_control COLLATE NOCASE ASC, name COLLATE NOCASE ASC",
+        ("timeControl", true) => "ORDER BY time_control COLLATE NOCASE DESC, name COLLATE NOCASE ASC",
+        // "AAAA.MM.JJ" : l'ordre du texte est l'ordre chronologique
+        ("dates", false) => "ORDER BY date_start ASC, date_end ASC, name COLLATE NOCASE ASC",
+        ("dates", true) => "ORDER BY date_start DESC, date_end DESC, name COLLATE NOCASE ASC",
         _ => "ORDER BY games DESC, name COLLATE NOCASE ASC",
     }
 }
@@ -2290,6 +2332,34 @@ mod tests {
 
         let asc = games_at_zobrist(&conn, zobrist, &no_filters(), "whiteElo", "asc", 10, 0).unwrap();
         assert_eq!(asc.iter().map(|g| g.white.as_str()).collect::<Vec<_>>(), vec!["Alice", "Erin", "Carol"]);
+
+        // "0-1" < "1-0" < "1/2-1/2" (ordre du texte)
+        let by_result = games_at_zobrist(&conn, zobrist, &no_filters(), "result", "asc", 10, 0).unwrap();
+        assert_eq!(by_result.iter().map(|g| g.white.as_str()).collect::<Vec<_>>(), vec!["Carol", "Alice", "Erin"]);
+        // aussi avec un filtre joueur (autre forme de jointure)
+        let filters = crate::explorer::ExplorerFilters {
+            player: Some(crate::explorer::PlayerFilter { name: "Alice".to_string(), white: true, exact: true }),
+            ..Default::default()
+        };
+        assert_eq!(games_at_zobrist(&conn, zobrist, &filters, "result", "desc", 10, 0).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn list_tournaments_page_sorts_by_site_time_control_and_dates() {
+        let conn = open(Path::new(":memory:")).unwrap();
+        conn.execute_batch(
+            "INSERT INTO tournaments (name, site, time_control, games, date_start, date_end, created_at, last_modified) VALUES
+               ('Open A', 'Paris', '90+30', 10, '2024.05.01', '2024.05.09', 0, 0),
+               ('Open B', 'Berlin', '3+2', 20, '2023.01.01', '2023.01.02', 0, 0),
+               ('Open C', 'Lyon', '15+10', 5, '2025.07.01', '2025.07.03', 0, 0);",
+        )
+        .unwrap();
+        let names = |sort_by: &str, dir: &str| {
+            list_tournaments_page(&conn, "", sort_by, dir, 10, 0).unwrap().into_iter().map(|t| t.name).collect::<Vec<_>>()
+        };
+        assert_eq!(names("site", "asc"), vec!["Open B", "Open C", "Open A"]);
+        assert_eq!(names("dates", "desc"), vec!["Open C", "Open A", "Open B"]);
+        assert_eq!(names("timeControl", "asc"), vec!["Open C", "Open B", "Open A"]);
     }
 
     #[test]

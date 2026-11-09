@@ -1,8 +1,23 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { KeyboardEvent } from "react";
 import { useTranslation } from "react-i18next";
 import type { EcoInfo, OpeningMoveStat } from "../types";
+import { compareText, useClientSort, type Comparators } from "../useClientSort";
 import { ColumnResizeHandle, useColumnWidths } from "../useColumnWidths";
+
+type ExplorerStatsColumn = "move" | "games" | "whiteDrawBlack";
+
+// Score des Blancs (gains + moitie des nulles) sur ce coup, de 0 a 1.
+function whiteScore(s: OpeningMoveStat): number {
+  return s.games > 0 ? (s.whiteWins + s.draws / 2) / s.games : 0;
+}
+
+// Ordre par defaut (sans tri choisi) : celui du Rust, les plus joues d'abord.
+const EXPLORER_STATS_COMPARATORS: Comparators<OpeningMoveStat, ExplorerStatsColumn> = {
+  move: (a, b) => compareText(a.san, b.san),
+  games: (a, b) => a.games - b.games,
+  whiteDrawBlack: (a, b) => whiteScore(a) - whiteScore(b) || a.games - b.games,
+};
 
 const EXPLORER_STATS_COLUMNS = [
   { key: "move", default: 70 },
@@ -30,10 +45,13 @@ function pct(part: number, total: number): number {
 export function OpeningExplorer({ stats, loading, error, ecoInfo, onSelectMove }: OpeningExplorerProps) {
   const { t } = useTranslation();
   const [highlightedIndex, setHighlightedIndex] = useState(0);
+  // Tri garde ici (pas dans ExplorerTable, demontee quand la position n'a
+  // aucun coup) : il reste le meme d'une position a l'autre.
+  const { sorted, sort, toggleSort, sortArrow } = useClientSort(stats, EXPLORER_STATS_COMPARATORS);
 
   useEffect(() => {
     setHighlightedIndex(0);
-  }, [stats]);
+  }, [stats, sort]);
 
   return (
     <div className="explorer-table-wrap">
@@ -54,7 +72,14 @@ export function OpeningExplorer({ stats, loading, error, ecoInfo, onSelectMove }
       ) : stats.length === 0 ? (
         <p className="notation-empty">{t("explorer.empty")}</p>
       ) : (
-        <ExplorerTable stats={stats} highlightedIndex={highlightedIndex} setHighlightedIndex={setHighlightedIndex} onSelectMove={onSelectMove} />
+        <ExplorerTable
+          stats={sorted}
+          highlightedIndex={highlightedIndex}
+          setHighlightedIndex={setHighlightedIndex}
+          onSelectMove={onSelectMove}
+          onSortChange={toggleSort}
+          sortArrow={sortArrow}
+        />
       )}
     </div>
   );
@@ -65,14 +90,24 @@ function ExplorerTable({
   highlightedIndex,
   setHighlightedIndex,
   onSelectMove,
+  onSortChange,
+  sortArrow,
 }: {
   stats: OpeningMoveStat[];
   highlightedIndex: number;
   setHighlightedIndex: (i: number) => void;
   onSelectMove: (san: string) => void;
+  onSortChange: (column: ExplorerStatsColumn) => void;
+  sortArrow: (column: ExplorerStatsColumn) => string;
 }) {
   const { t } = useTranslation();
   const { widths, startResize, totalWidth } = useColumnWidths("explorerStats", EXPLORER_STATS_COLUMNS);
+  // Les coups les plus joues restent mis en avant quel que soit le tri
+  // affiche (pas simplement les deux premieres lignes).
+  const topMoves = useMemo(
+    () => new Set([...stats].sort((a, b) => b.games - a.games).slice(0, TOP_MOVES_HIGHLIGHTED).map((s) => s.san)),
+    [stats]
+  );
   const total = stats.reduce((sum, s) => sum + s.games, 0);
   const totalWhite = stats.reduce((sum, s) => sum + s.whiteWins, 0);
   const totalDraws = stats.reduce((sum, s) => sum + s.draws, 0);
@@ -107,16 +142,21 @@ function ExplorerTable({
     >
       <thead>
         <tr>
-          <th style={{ width: widths.move }}>
-            {t("explorer.move")}
+          <th className="games-table-sortable" style={{ width: widths.move }} onClick={() => onSortChange("move")}>
+            {t("explorer.move")} {sortArrow("move")}
             <ColumnResizeHandle onMouseDown={startResize("move")} />
           </th>
-          <th style={{ width: widths.games }}>
-            {t("explorer.games")}
+          <th className="games-table-sortable" style={{ width: widths.games }} onClick={() => onSortChange("games")}>
+            {t("explorer.games")} {sortArrow("games")}
             <ColumnResizeHandle onMouseDown={startResize("games")} />
           </th>
-          <th style={{ width: widths.whiteDrawBlack }}>
-            {t("explorer.whiteDrawBlack")}
+          <th
+            className="games-table-sortable"
+            style={{ width: widths.whiteDrawBlack }}
+            title={t("explorer.whiteScoreSortHint")}
+            onClick={() => onSortChange("whiteDrawBlack")}
+          >
+            {t("explorer.whiteDrawBlack")} {sortArrow("whiteDrawBlack")}
             <ColumnResizeHandle onMouseDown={startResize("whiteDrawBlack")} />
           </th>
         </tr>
@@ -125,7 +165,7 @@ function ExplorerTable({
         {stats.map((s, index) => {
           const rowClasses = [
             index === highlightedIndex ? "explorer-table-row--selected" : "",
-            index < TOP_MOVES_HIGHLIGHTED ? "explorer-table-row--top" : "",
+            topMoves.has(s.san) ? "explorer-table-row--top" : "",
           ]
             .filter(Boolean)
             .join(" ");

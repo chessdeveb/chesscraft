@@ -405,23 +405,67 @@ textarea {
   overflow: auto;
 }
 
+/* Colonne gauche en flex vertical : les stats d'ouverture gardent leur
+   hauteur naturelle et la liste "parties dans cette position" prend toute la
+   hauteur restante (avant : une boite fixe de 220 px qui defilait seule au
+   milieu du panneau, rapporte par l'utilisateur comme une "sous-fenetre").
+   La colonne ne defile elle-meme que si le panneau est trop bas pour tout
+   afficher (voir min-height de .explorer-games). */
 .explorer-panel-col--left {
-  flex: 1 1 55%;
-  padding-right: 12px;
-}
-
-.explorer-panel-col--right {
-  flex: 1 1 45%;
-  padding-left: 12px;
-  border-left: 1px solid var(--line);
+  flex: 1 1 0;
+  padding-right: 6px;
   display: flex;
   flex-direction: column;
+}
+
+.explorer-panel-col--left > * {
+  flex-shrink: 0;
+}
+
+/* Largeur posee en style inline (flex-basis, voir ExplorerPanelView) :
+   reglee en glissant .explorer-splitter. */
+.explorer-panel-col--right {
+  flex: 0 0 auto;
+  padding-left: 6px;
+  display: flex;
+  flex-direction: column;
+}
+
+.explorer-splitter {
+  flex: 0 0 9px;
+  cursor: col-resize;
+  /* trait fin centre sur une zone de prise plus large que lui */
+  background: linear-gradient(to right, transparent 4px, var(--line) 4px, var(--line) 5px, transparent 5px);
+}
+
+.explorer-splitter:hover,
+.explorer-splitter:focus-visible,
+body.explorer-splitting .explorer-splitter {
+  background: linear-gradient(to right, transparent 3px, var(--accent) 3px, var(--accent) 6px, transparent 6px);
+  outline: none;
+}
+
+/* pendant le glisser : curseur partout, et pas de selection de texte
+   accidentelle dans les tableaux survoles */
+body.explorer-splitting {
+  cursor: col-resize;
+  user-select: none;
 }
 
 .explorer-games {
   margin-top: 14px;
   padding-top: 10px;
   border-top: 1px solid var(--line);
+}
+
+.explorer-panel-col--left > .explorer-games {
+  flex: 1 1 auto;
+  min-height: 180px;
+  display: flex;
+  flex-direction: column;
+}
+
+.explorer-panel-col--left > .explorer-games > * {
   flex-shrink: 0;
 }
 
@@ -432,9 +476,22 @@ textarea {
 }
 
 .explorer-games-table {
-  max-height: 220px;
   overflow-y: auto;
   display: block;
+}
+
+/* remplit la hauteur restante de la colonne (voir .explorer-games) au lieu
+   d'une hauteur fixe ; l'en-tete reste visible pendant le defilement */
+.explorer-panel-col--left > .explorer-games > .explorer-games-table {
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+.explorer-games-table thead {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background-color: var(--panel);
 }
 
 .explorer-games-table thead,
@@ -463,10 +520,13 @@ textarea {
   padding-top: 10px;
 }
 
+/* Suit la largeur de la colonne (reglable, voir .explorer-splitter), sans
+   depasser ~60 % de sa hauteur pour laisser de la place aux boutons et a la
+   notation ; l'echiquier (Board) prend le plus grand carre qui tient dedans. */
 .explorer-preview-board {
   width: 100%;
-  max-width: 260px;
   aspect-ratio: 1 / 1;
+  max-height: 60%;
   flex-shrink: 0;
 }
 

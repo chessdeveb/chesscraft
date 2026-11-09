@@ -33,8 +33,16 @@ impl PlayerFilter {
     pub fn where_clause(&self, params: &mut Vec<Box<dyn ToSql>>) -> String {
         let column = if self.white { "white" } else { "black" };
         if self.exact {
+            // COLLATE NOCASE indispensable : idx_games_white/black sont en
+            // NOCASE (voir db::migrate_name_indexes), une egalite en collation
+            // binaire ne peut pas s'en servir et parcourait tout l'index (10 M
+            // d'entrees, une recherche dans positions pour chacune) : la
+            // preparation d'adversaire etait tres lente et la liste des
+            // parties (compteur + page, deux parcours de plus) depassait la
+            // limite de 15 s, donc restait vide. Sans effet sur le resultat :
+            // player_stats fusionne deja les noms a la casse pres.
             params.push(Box::new(self.name.clone()));
-            format!("{column} = ?{}", params.len())
+            format!("{column} = ?{} COLLATE NOCASE", params.len())
         } else {
             let lo = self.name.clone();
             let hi = format!("{lo}\u{ffff}");
@@ -978,10 +986,49 @@ mod tests {
             .map(|r| r.unwrap())
             .collect::<Vec<_>>()
             .join(" | ");
-        let g = plan.find("SEARCH g").or_else(|| plan.find("SCAN g")).expect(&plan);
+        // SEARCH (recherche par nom dans l'index), jamais SCAN : un parcours
+        // complet de games, meme "USING COVERING INDEX", c'est 10 M de lignes
+        // sur la base de reference (cas reel : preparation d'adversaire tres
+        // lente, liste des parties vide faute de finir en 15 s).
+        assert!(!plan.contains("SCAN g"), "{plan}");
+        let g = plan.find("SEARCH g").expect(&plan);
         let p = plan.find("SEARCH p").expect(&plan);
         assert!(g < p, "{plan}");
         assert!(plan.contains("zobrist=? AND game_id=?"), "{plan}");
+    }
+
+    // Meme exigence pour le panneau "parties dans cette position" (compteur
+    // et page de parties) de la preparation d'adversaire.
+    #[test]
+    fn player_filtered_games_list_searches_games_by_name() {
+        let conn = db::open(Path::new(":memory:")).unwrap();
+        for white in [true, false] {
+            let filters =
+                ExplorerFilters { player: Some(PlayerFilter { name: "Alice".to_string(), white, exact: true }), ..Default::default() };
+            for plan in db::explain_zobrist_queries(&conn, 1, &filters) {
+                assert!(!plan.contains("SCAN g"), "{plan}");
+                assert!(plan.contains("SEARCH g"), "{plan}");
+            }
+        }
+    }
+
+    // Le nom vient de player_stats (fusionne a la casse pres) : une partie
+    // stockee avec une autre casse doit aussi etre retrouvee.
+    #[test]
+    fn exact_player_filter_ignores_case() {
+        let conn = db::open(Path::new(":memory:")).unwrap();
+        let mut tags = BTreeMap::new();
+        tags.insert("White".to_string(), "carlsen, magnus".to_string());
+        tags.insert("Result".to_string(), "1-0".to_string());
+        db::save_game(&conn, "1. e4 *", &tags, "e4 e5 Nf3").unwrap();
+
+        let filters =
+            ExplorerFilters { player: Some(PlayerFilter { name: "Carlsen, Magnus".to_string(), white: true, exact: true }), ..Default::default() };
+        let stats = explore(&conn, &["e4".to_string(), "e5".to_string()], &filters, None).unwrap();
+        assert_eq!(stats.len(), 1);
+        let zobrist = current_zobrist(&["e4".to_string(), "e5".to_string()], None).unwrap();
+        assert_eq!(db::count_at_zobrist(&conn, zobrist, &filters).unwrap(), 1);
+        assert_eq!(db::games_at_zobrist(&conn, zobrist, &filters, "", "", 10, 0).unwrap().len(), 1);
     }
 
     #[test]

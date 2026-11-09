@@ -47,7 +47,24 @@ struct ParsedInfo {
     multipv: u32,
     score_cp: Option<i32>,
     score_mate: Option<i32>,
+    /// Score "lowerbound"/"upperbound" : borne provisoire d'une recherche
+    /// qui echoue haut ou bas, pas une evaluation definitive.
+    bound: bool,
     pv: Vec<String>,
+}
+
+impl ParsedInfo {
+    /// Ligne de variante complete et definitive, la seule a afficher dans le
+    /// panneau Moteur. Passe ~3 s de recherche (donc a profondeur elevee),
+    /// Stockfish envoie aussi "info depth N currmove X currmovenumber K" --
+    /// sans score, sans variante et sans multipv (donc compte comme ligne 1) :
+    /// ces lignes remplacaient la meilleure variante par une ligne vide au
+    /// score "…" (rapporte par l'utilisateur). Les lignes "bound" (score
+    /// provisoire, variante souvent reduite a un coup) faisaient de meme
+    /// clignoter la ligne 1 : on garde la derniere ligne exacte a la place.
+    fn is_complete_line(&self) -> bool {
+        self.depth.is_some() && !self.pv.is_empty() && (self.score_cp.is_some() || self.score_mate.is_some()) && !self.bound
+    }
 }
 
 fn parse_info_line(line: &str) -> Option<ParsedInfo> {
@@ -59,6 +76,7 @@ fn parse_info_line(line: &str) -> Option<ParsedInfo> {
     let mut multipv = 1u32;
     let mut score_cp = None;
     let mut score_mate = None;
+    let mut bound = false;
     let mut pv = Vec::new();
     let mut i = 0;
     while i < tokens.len() {
@@ -85,6 +103,10 @@ fn parse_info_line(line: &str) -> Option<ParsedInfo> {
                 }
                 _ => i += 1,
             },
+            "lowerbound" | "upperbound" => {
+                bound = true;
+                i += 1;
+            }
             "pv" => {
                 pv = tokens[i + 1..].iter().map(|s| s.to_string()).collect();
                 break;
@@ -100,6 +122,7 @@ fn parse_info_line(line: &str) -> Option<ParsedInfo> {
         multipv,
         score_cp,
         score_mate,
+        bound,
         pv,
     })
 }
@@ -205,7 +228,7 @@ pub fn start(app: AppHandle, path: &str, tab_id: u32) -> Result<EngineHandle, St
             match reader.read_line(&mut line) {
                 Ok(0) => break,
                 Ok(_) => {
-                    if let Some(info) = parse_info_line(line.trim_end()) {
+                    if let Some(info) = parse_info_line(line.trim_end()).filter(ParsedInfo::is_complete_line) {
                         let fen = thread_fen.lock().unwrap().clone();
                         if !fen.is_empty() {
                             if let Some(payload) = resolve_line(&fen, &info) {
@@ -445,5 +468,51 @@ impl EngineHandle {
         let _ = write_line(&mut self.stdin, "quit");
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const START_FEN: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+
+    #[test]
+    fn full_pv_line_is_displayed() {
+        let info = parse_info_line(
+            "info depth 32 seldepth 45 multipv 1 score cp 28 nodes 812345678 nps 2500000 hashfull 999 tbhits 0 time 324000 pv e2e4 e7e5 g1f3",
+        )
+        .unwrap();
+        assert!(info.is_complete_line());
+        let payload = resolve_line(START_FEN, &info).unwrap();
+        assert_eq!(payload.multipv, 1);
+        assert_eq!(payload.score_cp, Some(28));
+        assert_eq!(payload.pv.iter().map(|m| m.san.as_str()).collect::<Vec<_>>(), vec!["e4", "e5", "Nf3"]);
+    }
+
+    // Cas reel rapporte par l'utilisateur : a profondeur elevee (apres ~3 s
+    // de recherche), Stockfish envoie ces lignes sans score ni variante ni
+    // multipv -- elles remplacaient la meilleure variante par "…".
+    #[test]
+    fn currmove_progress_line_is_not_displayed() {
+        let info = parse_info_line("info depth 32 currmove e2e4 currmovenumber 1").unwrap();
+        assert!(!info.is_complete_line());
+    }
+
+    #[test]
+    fn bound_lines_are_not_displayed() {
+        for line in [
+            "info depth 33 seldepth 50 multipv 1 score cp 35 lowerbound nodes 900000000 nps 2500000 time 360000 pv e2e4",
+            "info depth 33 seldepth 50 multipv 1 score cp 20 upperbound nodes 900000000 nps 2500000 time 360000 pv e2e4",
+        ] {
+            assert!(!parse_info_line(line).unwrap().is_complete_line(), "{line}");
+        }
+    }
+
+    #[test]
+    fn mate_score_line_is_displayed() {
+        let info = parse_info_line("info depth 40 seldepth 12 multipv 2 score mate 5 nodes 1000 time 10 pv e2e4").unwrap();
+        assert!(info.is_complete_line());
+        assert_eq!(info.multipv, 2);
     }
 }

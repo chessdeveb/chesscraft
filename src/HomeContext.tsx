@@ -15,13 +15,24 @@ export interface PlayersSort {
   dir: "asc" | "desc";
 }
 
-export type FideSortColumn = "name" | "fed" | "std" | "rapid" | "blitz" | "birthYear";
+export type FideSortColumn =
+  | "name"
+  | "fed"
+  | "sex"
+  | "title"
+  | "wTitle"
+  | "oTitle"
+  | "std"
+  | "rapid"
+  | "blitz"
+  | "birthYear"
+  | "flag";
 export interface FideSort {
   column: FideSortColumn;
   dir: "asc" | "desc";
 }
 
-export type TournamentsSortColumn = "name" | "games";
+export type TournamentsSortColumn = "name" | "site" | "timeControl" | "dates" | "games";
 export interface TournamentsSort {
   column: TournamentsSortColumn;
   dir: "asc" | "desc";

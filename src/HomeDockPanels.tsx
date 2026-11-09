@@ -556,16 +556,20 @@ export function TournamentsPanelView() {
                 {t("home.tournamentName")} {tournamentsSort?.column === "name" ? (tournamentsSort.dir === "asc" ? "▲" : "▼") : ""}
                 <ColumnResizeHandle onMouseDown={startResize("name")} />
               </th>
-              <th style={{ width: widths.site }}>
-                {t("home.tournamentSite")}
+              <th className="games-table-sortable" style={{ width: widths.site }} onClick={() => onTournamentsSortChange("site")}>
+                {t("home.tournamentSite")} {tournamentsSort?.column === "site" ? (tournamentsSort.dir === "asc" ? "▲" : "▼") : ""}
                 <ColumnResizeHandle onMouseDown={startResize("site")} />
               </th>
-              <th style={{ width: widths.timeControl }}>
-                {t("savePicker.timeControl")}
+              <th
+                className="games-table-sortable"
+                style={{ width: widths.timeControl }}
+                onClick={() => onTournamentsSortChange("timeControl")}
+              >
+                {t("savePicker.timeControl")} {tournamentsSort?.column === "timeControl" ? (tournamentsSort.dir === "asc" ? "▲" : "▼") : ""}
                 <ColumnResizeHandle onMouseDown={startResize("timeControl")} />
               </th>
-              <th style={{ width: widths.dates }}>
-                {t("home.tournamentDates")}
+              <th className="games-table-sortable" style={{ width: widths.dates }} onClick={() => onTournamentsSortChange("dates")}>
+                {t("home.tournamentDates")} {tournamentsSort?.column === "dates" ? (tournamentsSort.dir === "asc" ? "▲" : "▼") : ""}
                 <ColumnResizeHandle onMouseDown={startResize("dates")} />
               </th>
               <th className="games-table-sortable" style={{ width: widths.games }} onClick={() => onTournamentsSortChange("games")}>
@@ -764,20 +768,20 @@ export function FidePanelView() {
                   {t("home.fideFed")} {sortIndicator("fed")}
                   <ColumnResizeHandle onMouseDown={startResize("fed")} />
                 </th>
-                <th style={{ width: widths.sex }}>
-                  {t("home.fideSex")}
+                <th className="games-table-sortable" style={{ width: widths.sex }} onClick={() => onFideSortChange("sex")}>
+                  {t("home.fideSex")} {sortIndicator("sex")}
                   <ColumnResizeHandle onMouseDown={startResize("sex")} />
                 </th>
-                <th style={{ width: widths.title }}>
-                  {t("home.fideTitle")}
+                <th className="games-table-sortable" style={{ width: widths.title }} onClick={() => onFideSortChange("title")}>
+                  {t("home.fideTitle")} {sortIndicator("title")}
                   <ColumnResizeHandle onMouseDown={startResize("title")} />
                 </th>
-                <th style={{ width: widths.wTitle }}>
-                  {t("home.fideWTitle")}
+                <th className="games-table-sortable" style={{ width: widths.wTitle }} onClick={() => onFideSortChange("wTitle")}>
+                  {t("home.fideWTitle")} {sortIndicator("wTitle")}
                   <ColumnResizeHandle onMouseDown={startResize("wTitle")} />
                 </th>
-                <th style={{ width: widths.oTitle }}>
-                  {t("home.fideOTitle")}
+                <th className="games-table-sortable" style={{ width: widths.oTitle }} onClick={() => onFideSortChange("oTitle")}>
+                  {t("home.fideOTitle")} {sortIndicator("oTitle")}
                   <ColumnResizeHandle onMouseDown={startResize("oTitle")} />
                 </th>
                 <th className="games-table-sortable" style={{ width: widths.std }} onClick={() => onFideSortChange("std")}>
@@ -800,8 +804,8 @@ export function FidePanelView() {
                   {t("home.fideBirthYear")} {sortIndicator("birthYear")}
                   <ColumnResizeHandle onMouseDown={startResize("birthYear")} />
                 </th>
-                <th style={{ width: widths.flag }}>
-                  {t("home.fideFlag")}
+                <th className="games-table-sortable" style={{ width: widths.flag }} onClick={() => onFideSortChange("flag")}>
+                  {t("home.fideFlag")} {sortIndicator("flag")}
                   <ColumnResizeHandle onMouseDown={startResize("flag")} />
                 </th>
               </tr>

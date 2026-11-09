@@ -329,6 +329,8 @@
   "explorer.move": "Move",
   "explorer.games": "Games",
   "explorer.whiteDrawBlack": "White / Draw / Black",
+  "explorer.resizePreview": "Drag to resize the preview (double-click: default size)",
+  "explorer.whiteScoreSortHint": "Sort by White's score (wins + half the draws)",
   "explorer.filters": "Filters",
   "explorer.filterPlayer": "Player",
   "explorer.filterPlayerPlaceholder": "Name...",

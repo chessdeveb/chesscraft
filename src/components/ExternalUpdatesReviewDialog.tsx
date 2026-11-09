@@ -3,6 +3,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "react-i18next";
 import { useAutoDismissError } from "../useAutoDismissError";
 import type { UpdatePreview, UpdatePreviewTournament } from "../types";
+import { compareText, useClientSort, type Comparators } from "../useClientSort";
+
+type ReviewColumn = "selected" | "event" | "dates" | "games" | "source";
+
+// Sans date exploitable : en dernier dans les deux sens.
+const isMissingDate = (tour: UpdatePreviewTournament, column: ReviewColumn) => column === "dates" && !tour.dateStart && !tour.dateEnd;
 
 interface ExternalUpdatesReviewDialogProps {
   preview: UpdatePreview;
@@ -41,6 +47,33 @@ export function ExternalUpdatesReviewDialog({ preview, onConfirm, onCancel }: Ex
       return next;
     });
   };
+
+  // Tri sur les cases cochees : fige au moment du clic sur l'en-tete
+  // (instantane de `excluded`), sinon la ligne qu'on vient de cocher ou
+  // decocher sauterait ailleurs sous le curseur.
+  const [excludedAtSort, setExcludedAtSort] = useState<Set<string>>(excluded);
+  const comparators = useMemo<Comparators<UpdatePreviewTournament, ReviewColumn>>(
+    () => ({
+      selected: (a, b) => Number(excludedAtSort.has(a.event)) - Number(excludedAtSort.has(b.event)),
+      event: (a, b) => compareText(a.event, b.event),
+      dates: (a, b) => compareText(a.dateStart ?? a.dateEnd, b.dateStart ?? b.dateEnd) || compareText(a.dateEnd, b.dateEnd),
+      games: (a, b) => a.games - b.games,
+      source: (a, b) => compareText(t(`home.externalUpdates.source.${a.source}`), t(`home.externalUpdates.source.${b.source}`)),
+    }),
+    [excludedAtSort, t]
+  );
+  const { sorted, toggleSort, sortArrow } = useClientSort(preview.tournaments, comparators, isMissingDate);
+  const sortableHeader = (column: ReviewColumn, label: string) => (
+    <th
+      className="games-table-sortable"
+      onClick={() => {
+        if (column === "selected") setExcludedAtSort(excluded);
+        toggleSort(column);
+      }}
+    >
+      {label} {sortArrow(column)}
+    </th>
+  );
 
   const selectedTotal = useMemo(
     () => preview.tournaments.filter((tour) => !excluded.has(tour.event)).reduce((sum, tour) => sum + tour.games, 0),
@@ -81,15 +114,15 @@ export function ExternalUpdatesReviewDialog({ preview, onConfirm, onCancel }: Ex
           <table className="external-updates-table">
             <thead>
               <tr>
-                <th></th>
-                <th>{t("home.externalUpdates.columnEvent")}</th>
-                <th>{t("home.externalUpdates.columnDates")}</th>
-                <th>{t("home.externalUpdates.columnGames")}</th>
-                <th>{t("home.externalUpdates.columnSource")}</th>
+                {sortableHeader("selected", "")}
+                {sortableHeader("event", t("home.externalUpdates.columnEvent"))}
+                {sortableHeader("dates", t("home.externalUpdates.columnDates"))}
+                {sortableHeader("games", t("home.externalUpdates.columnGames"))}
+                {sortableHeader("source", t("home.externalUpdates.columnSource"))}
               </tr>
             </thead>
             <tbody>
-              {preview.tournaments.map((tour) => (
+              {sorted.map((tour) => (
                 <tr key={tour.event}>
                   <td>
                     <input type="checkbox" checked={!excluded.has(tour.event)} onChange={() => toggle(tour.event)} />

@@ -118,10 +118,14 @@ export function ExplorerGamesList({
                 width={widths.date}
                 onResizeStart={startResize("date")}
               />
-              <th style={{ width: widths.result }}>
-                {t("common.result")}
-                <ColumnResizeHandle onMouseDown={startResize("result")} />
-              </th>
+              <SortableHeader
+                label={t("common.result")}
+                column="result"
+                sort={sort}
+                onSortChange={onSortChange}
+                width={widths.result}
+                onResizeStart={startResize("result")}
+              />
             </tr>
           </thead>
           <tbody>

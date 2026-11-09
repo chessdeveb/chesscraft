@@ -359,6 +359,19 @@ fn map_fide_player_row(row: &rusqlite::Row) -> rusqlite::Result<FidePlayer> {
     })
 }
 
+/// Rang d'un titre FIDE (1 = GM ... 9 = NM, 99 = aucun/inconnu), en
+/// expression SQL sur la colonne donnee -- macro pour rester une chaine
+/// &'static construite a la compilation (voir order_by_clause).
+macro_rules! title_rank {
+    ($col:literal) => {
+        concat!(
+            "(CASE ", $col,
+            " WHEN 'GM' THEN 1 WHEN 'IM' THEN 2 WHEN 'WGM' THEN 3 WHEN 'FM' THEN 4",
+            " WHEN 'WIM' THEN 5 WHEN 'CM' THEN 6 WHEN 'WFM' THEN 7 WHEN 'WCM' THEN 8 WHEN 'NM' THEN 9 ELSE 99 END)"
+        )
+    };
+}
+
 fn order_by_clause(sort_by: &str, sort_dir: &str) -> &'static str {
     let desc = sort_dir == "desc";
     match (sort_by, desc) {
@@ -374,6 +387,21 @@ fn order_by_clause(sort_by: &str, sort_dir: &str) -> &'static str {
         ("blitz", false) => "ORDER BY blitz_rating ASC, name ASC",
         ("birthYear", true) => "ORDER BY birth_year DESC, name ASC",
         ("birthYear", false) => "ORDER BY birth_year ASC, name ASC",
+        ("sex", true) => "ORDER BY sex DESC, name ASC",
+        ("sex", false) => "ORDER BY sex ASC, name ASC",
+        ("flag", true) => "ORDER BY flag DESC, name ASC",
+        ("flag", false) => "ORDER BY flag ASC, name ASC",
+        // Titres par rang (le plus fort d'abord en croissant), pas par ordre
+        // alphabetique (CM avant GM n'aurait aucun sens) ; sans titre en
+        // dernier dans les deux sens.
+        ("title", false) => concat!("ORDER BY ", title_rank!("title"), " ASC, name ASC"),
+        ("title", true) => concat!("ORDER BY ", title_rank!("title"), " = 99, ", title_rank!("title"), " DESC, name ASC"),
+        ("wTitle", false) => concat!("ORDER BY ", title_rank!("w_title"), " ASC, name ASC"),
+        ("wTitle", true) => concat!("ORDER BY ", title_rank!("w_title"), " = 99, ", title_rank!("w_title"), " DESC, name ASC"),
+        // Autres titres (arbitre, entraineur...) : pas de hierarchie unique,
+        // ordre alphabetique, sans titre en dernier.
+        ("oTitle", false) => "ORDER BY COALESCE(o_title, '') = '', o_title ASC, name ASC",
+        ("oTitle", true) => "ORDER BY COALESCE(o_title, '') = '', o_title DESC, name ASC",
         _ => "ORDER BY std_rating DESC, name ASC",
     }
 }
@@ -617,6 +645,34 @@ mod tests {
         // combine : federation ET titre ET sexe ne laisse plus personne ici
         let combined = FideFilters { fed: Some("NOR".to_string()), title: Some("GM".to_string()), sex: Some("F".to_string()), ..Default::default() };
         assert_eq!(count_fide_players(&conn, "", &combined).unwrap(), 0);
+    }
+
+    #[test]
+    fn list_fide_players_page_sorts_titles_by_rank_with_untitled_last() {
+        let conn = open_at(Path::new(":memory:")).unwrap();
+        for (id, name, title) in [("1", "Ann", "FM"), ("2", "Ben", ""), ("3", "Cid", "GM"), ("4", "Dan", "CM"), ("5", "Eve", "IM")] {
+            conn.execute(
+                "INSERT INTO fide_players (fide_id, name, fed, sex, title, w_title, o_title, std_rating, rapid_rating, blitz_rating, birth_year, flag)
+                 VALUES (?1, ?2, 'FRA', 'M', ?3, '', '', NULL, NULL, NULL, NULL, '')",
+                params![id, name, title],
+            )
+            .unwrap();
+        }
+        let names = |dir: &str| {
+            list_fide_players_page(&conn, "", &FideFilters::default(), "title", dir, 10, 0)
+                .unwrap()
+                .into_iter()
+                .map(|p| p.name)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names("asc"), vec!["Cid", "Eve", "Ann", "Dan", "Ben"]);
+        assert_eq!(names("desc"), vec!["Dan", "Ann", "Eve", "Cid", "Ben"]);
+        // les autres nouvelles colonnes produisent un SQL valide
+        for column in ["sex", "flag", "wTitle", "oTitle"] {
+            for dir in ["asc", "desc"] {
+                assert_eq!(list_fide_players_page(&conn, "", &FideFilters::default(), column, dir, 10, 0).unwrap().len(), 5);
+            }
+        }
     }
 
     fn conn_with_players(names: &[&str]) -> Connection {

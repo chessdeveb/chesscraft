@@ -187,7 +187,7 @@ export type SaveResult = { kind: "saved"; id: number } | { kind: "duplicate"; ex
 
 export type ExplorerGameSummary = GameSummary;
 
-export type ExplorerGamesSortColumn = "white" | "black" | "date" | "whiteElo" | "blackElo";
+export type ExplorerGamesSortColumn = "white" | "black" | "date" | "whiteElo" | "blackElo" | "result";
 export interface ExplorerGamesSort {
   column: ExplorerGamesSortColumn;
   dir: "asc" | "desc";

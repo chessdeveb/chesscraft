@@ -1,6 +1,6 @@
 [package]
 name = "chesscraft"
-version = "1.1.0"
+version = "1.2.0"
 description = "ChessCraft - gestionnaire de parties d'echecs"
 authors = ["ChessCraft"]
 edition = "2021"
@@ -35,8 +35,8 @@ rusqlite = { version = "0.40.2", features = ["bundled"] }
 pgn-reader = "0.29.0"
 tauri-plugin-dialog = "2.7.2"
 # Mises a jour beta-testeurs (menu Aide) : verifie/telecharge/installe une
-# nouvelle version depuis le manifeste JSON publie sur le depot public
-# separe chesscraft-releases (voir tauri.conf.json, plugins.updater). Pas
+# nouvelle version depuis le manifeste JSON (latest.json) joint a la derniere
+# version publiee sur GitHub (voir tauri.conf.json, plugins.updater). Pas
 # besoin de tauri-plugin-process pour relancer l'appli : sur Windows,
 # Update::downloadAndInstall lance l'installeur MSI puis quitte l'appli
 # elle-meme.

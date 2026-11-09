@@ -329,6 +329,8 @@
   "explorer.move": "Coup",
   "explorer.games": "Parties",
   "explorer.whiteDrawBlack": "Blancs / Nulle / Noirs",
+  "explorer.resizePreview": "Glisser pour redimensionner l'aperçu (double-clic : taille par défaut)",
+  "explorer.whiteScoreSortHint": "Trier par score des Blancs (gains + moitié des nulles)",
   "explorer.filters": "Filtres",
   "explorer.filterPlayer": "Joueur",
   "explorer.filterPlayerPlaceholder": "Nom...",
