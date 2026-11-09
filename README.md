@@ -66,4 +66,4 @@ Ressources tierces :
 
 - pièces « cburnett » de Colin M.L. Burnett, fournies avec chessground ;
 - noms et codes d'ouvertures issus de [lichess-org/chess-openings](https://github.com/lichess-org/chess-openings) (CC0) ;
-- polices [IBM Plex](https://github.com/IBM/plex) (SIL Open Font License 1.1).
+- polices [IBM Plex](https://github.com/IBM/plex) d'IBM, sous SIL Open Font License 1.1 (voir [src/fonts/OFL.txt](src/fonts/OFL.txt)).
