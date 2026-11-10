@@ -1,7 +1,7 @@
 import type { MouseEvent } from "react";
 import { useTranslation } from "react-i18next";
 import type { ExplorerGameSummary, ExplorerGamesSort, ExplorerGamesSortColumn } from "../types";
-import { ColumnResizeHandle, useColumnWidths } from "../useColumnWidths";
+import { ColumnResizeHandle, useColumnWidths, useFillWidth } from "../useColumnWidths";
 
 const EXPLORER_GAMES_COLUMNS = [
   { key: "white", default: 100 },
@@ -65,8 +65,10 @@ export function ExplorerGamesList({
   selectedGameId,
   onSelectGame,
 }: ExplorerGamesListProps) {
-  const { t } = useTranslation();
-  const { widths, startResize, totalWidth } = useColumnWidths("explorerGamesList", EXPLORER_GAMES_COLUMNS);
+  const { t, i18n } = useTranslation();
+  const { widths: baseWidths, startResize } = useColumnWidths("explorerGamesList", EXPLORER_GAMES_COLUMNS);
+  // la place libre va aux noms des joueurs, les colonnes qui se tronquent
+  const { tableRef, fitted: widths, tableWidth } = useFillWidth(baseWidths, ["white", "black"]);
 
   return (
     <div className="explorer-games">
@@ -75,7 +77,7 @@ export function ExplorerGamesList({
       {games.length === 0 && !loading ? (
         <p className="notation-empty">{t("gamesTable.empty")}</p>
       ) : (
-        <table className="explorer-table explorer-games-table" style={{ width: totalWidth }}>
+        <table ref={tableRef} className="explorer-table explorer-games-table" style={{ width: tableWidth }}>
           <thead>
             <tr>
               <SortableHeader
@@ -161,9 +163,9 @@ export function ExplorerGamesList({
           </button>
           <span>
             {t("home.pageOf", {
-              from: page * pageSize + 1,
-              to: Math.min((page + 1) * pageSize, total),
-              total,
+              from: (page * pageSize + 1).toLocaleString(i18n.language),
+              to: Math.min((page + 1) * pageSize, total).toLocaleString(i18n.language),
+              total: total.toLocaleString(i18n.language),
             })}
           </span>
           <button disabled={loading || (page + 1) * pageSize >= total} onClick={() => onPageChange(page + 1)}>

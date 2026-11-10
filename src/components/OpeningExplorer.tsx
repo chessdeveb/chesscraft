@@ -3,7 +3,7 @@ import type { KeyboardEvent } from "react";
 import { useTranslation } from "react-i18next";
 import type { EcoInfo, OpeningMoveStat } from "../types";
 import { compareText, useClientSort, type Comparators } from "../useClientSort";
-import { ColumnResizeHandle, useColumnWidths } from "../useColumnWidths";
+import { ColumnResizeHandle, useColumnWidths, useFillWidth } from "../useColumnWidths";
 
 type ExplorerStatsColumn = "move" | "games" | "whiteDrawBlack";
 
@@ -101,7 +101,9 @@ function ExplorerTable({
   sortArrow: (column: ExplorerStatsColumn) => string;
 }) {
   const { t } = useTranslation();
-  const { widths, startResize, totalWidth } = useColumnWidths("explorerStats", EXPLORER_STATS_COLUMNS);
+  const { widths: baseWidths, startResize } = useColumnWidths("explorerStats", EXPLORER_STATS_COLUMNS);
+  // la place libre va a la barre Blancs/nulles/Noirs, plus lisible large
+  const { tableRef, fitted: widths, tableWidth } = useFillWidth(baseWidths, ["whiteDrawBlack"]);
   // Les coups les plus joues restent mis en avant quel que soit le tri
   // affiche (pas simplement les deux premieres lignes).
   const topMoves = useMemo(
@@ -135,8 +137,9 @@ function ExplorerTable({
     // aux stats d'ouverture (barre, coups en tete, ligne total) pour ne
     // jamais affecter ces autres tables.
     <table
+      ref={tableRef}
       className="explorer-table explorer-stats-table resizable-table"
-      style={{ width: totalWidth }}
+      style={{ width: tableWidth }}
       tabIndex={0}
       onKeyDown={handleKeyDown}
     >

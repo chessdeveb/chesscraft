@@ -67,8 +67,11 @@ export function BasesPanelView() {
     externalUpdatesEstimate,
     externalUpdatesBusy,
     onCheckExternalUpdates,
+    megabaseBadge,
+    onOpenMegabase,
   } = useHomeContext();
   const selectedBase = activeSource?.kind === "base" ? activeSource.base : null;
+  const hasReference = bases.some((b) => b.isReference && !b.missing);
   return (
     <div className="dock-panel-content">
       {error && <p className="error">{error}</p>}
@@ -116,6 +119,17 @@ export function BasesPanelView() {
           <span className="external-updates-badge" title={t("home.externalUpdates.badgeTitle")}>
             {t("home.externalUpdates.weeksBehind", { weeks: externalUpdatesEstimate.weeksBehind })}
           </span>
+        )}
+        {megabaseBadge ? (
+          <button className="megabase-badge" onClick={onOpenMegabase} title={t("megabase.badgeTitle")}>
+            {megabaseBadge}
+          </button>
+        ) : (
+          !hasReference && (
+            <button className="icon-button" onClick={onOpenMegabase} title={t("megabase.button")} aria-label={t("megabase.button")}>
+              ⬇️
+            </button>
+          )
         )}
       </div>
       <BasesTable bases={bases} selectedPath={selectedBase?.path ?? null} onSelect={onSelectBase} onDropGames={onDropGamesOnBase} />

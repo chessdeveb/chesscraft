@@ -15,6 +15,7 @@ mod game_tree;
 mod i18n;
 mod lichess;
 mod lichess_broadcast;
+mod megabase;
 mod performance;
 mod pgn;
 mod recent_pgns;
@@ -86,6 +87,11 @@ struct AppState {
     // tool_job_running car semantique differente (analyse d'une partie
     // precise dans un onglet, pas maintenance d'une base).
     game_report_running: Mutex<bool>,
+    // Telechargement de la megabase (voir megabase.rs) : un seul a la fois ;
+    // megabase_stop vaut 0 (continuer), 1 (pause : fichiers gardes pour
+    // reprendre) ou 2 (annulation : fichiers supprimes).
+    megabase_running: Mutex<bool>,
+    megabase_stop: Mutex<u8>,
     // Connexion vers la base de reference, reutilisee entre les appels de
     // l'explorateur d'ouvertures : en rouvrir une a chaque coup joue coute
     // tres cher sur une base de plusieurs Go (WAL a re-verifier a chaque
@@ -2146,6 +2152,128 @@ fn add_existing_base(app: AppHandle, path: String) -> Result<BaseInfo, String> {
     Ok(BaseInfo { name, path, games, is_reference: false, missing: false })
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MegabaseStatus {
+    running: bool,
+    pending: Option<megabase::PendingStatus>,
+}
+
+#[tauri::command]
+fn megabase_status(app: AppHandle, state: State<AppState>) -> Result<MegabaseStatus, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    Ok(MegabaseStatus {
+        running: *state.megabase_running.lock().unwrap(),
+        pending: megabase::pending_status(&dir),
+    })
+}
+
+/// Manifeste de la megabase publiee (taille, nombre de parties...) :
+/// requete reseau, donc hors du thread principal.
+#[tauri::command]
+async fn megabase_manifest() -> Result<megabase::Manifest, megabase::MegabaseError> {
+    tauri::async_runtime::spawn_blocking(megabase::fetch_manifest)
+        .await
+        .map_err(|e| megabase::MegabaseError::with("manifest", e))?
+}
+
+#[tauri::command]
+fn megabase_start(
+    app: AppHandle,
+    state: State<AppState>,
+    dir: String,
+    manifest: megabase::Manifest,
+) -> Result<(), megabase::MegabaseError> {
+    if *state.megabase_running.lock().unwrap() {
+        return Err(megabase::MegabaseError::new("busy"));
+    }
+    let data_dir = app.path().app_data_dir().map_err(|e| megabase::MegabaseError::with("io", e))?;
+    megabase::prepare(&data_dir, Path::new(&dir), &manifest)?;
+    spawn_megabase_job(app, &state)
+}
+
+#[tauri::command]
+fn megabase_resume(app: AppHandle, state: State<AppState>) -> Result<(), megabase::MegabaseError> {
+    let data_dir = app.path().app_data_dir().map_err(|e| megabase::MegabaseError::with("io", e))?;
+    if megabase::load_pending(&data_dir).is_none() {
+        return Err(megabase::MegabaseError::new("noPending"));
+    }
+    spawn_megabase_job(app, &state)
+}
+
+#[tauri::command]
+fn megabase_pause(state: State<AppState>) {
+    *state.megabase_stop.lock().unwrap() = 1;
+}
+
+/// Annule le telechargement : en cours, le thread s'arrete et supprime les
+/// fichiers partiels lui-meme ; en pause, on les supprime directement.
+#[tauri::command]
+fn megabase_cancel(app: AppHandle, state: State<AppState>) -> Result<(), String> {
+    if *state.megabase_running.lock().unwrap() {
+        *state.megabase_stop.lock().unwrap() = 2;
+    } else {
+        let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        megabase::discard(&data_dir);
+    }
+    Ok(())
+}
+
+fn spawn_megabase_job(app: AppHandle, state: &State<AppState>) -> Result<(), megabase::MegabaseError> {
+    {
+        let mut running = state.megabase_running.lock().unwrap();
+        if *running {
+            return Err(megabase::MegabaseError::new("busy"));
+        }
+        *running = true;
+    }
+    *state.megabase_stop.lock().unwrap() = 0;
+    let data_dir = app.path().app_data_dir().map_err(|e| megabase::MegabaseError::with("io", e))?;
+    std::thread::spawn(move || {
+        let progress_app = app.clone();
+        let stop_app = app.clone();
+        let result = megabase::run(
+            &data_dir,
+            &mut |progress| {
+                let _ = progress_app.emit("megabase-progress", progress);
+            },
+            &|| *stop_app.state::<AppState>().megabase_stop.lock().unwrap() != 0,
+        );
+        let stop = *app.state::<AppState>().megabase_stop.lock().unwrap();
+        match result {
+            Ok(megabase::Outcome::Done { path, manifest }) => {
+                let path = path.to_string_lossy().into_owned();
+                let name = "Megabase".to_string();
+                let make_reference = !bases::has_reference(&data_dir);
+                let registered = bases::register_base(&data_dir, &name, &path)
+                    .and_then(|_| if make_reference { bases::set_reference(&data_dir, &path, true) } else { Ok(()) });
+                match registered {
+                    Ok(()) => {
+                        let info = BaseInfo { name, path, games: manifest.games as u32, is_reference: make_reference, missing: false };
+                        let _ = app.emit("megabase-done", info);
+                    }
+                    Err(e) => {
+                        let _ = app.emit("megabase-error", megabase::MegabaseError::with("io", e));
+                    }
+                }
+                megabase::count_install(&manifest);
+            }
+            Ok(megabase::Outcome::Stopped) if stop == 2 => {
+                megabase::discard(&data_dir);
+                let _ = app.emit("megabase-cancelled", ());
+            }
+            Ok(megabase::Outcome::Stopped) => {
+                let _ = app.emit("megabase-paused", ());
+            }
+            Err(e) => {
+                let _ = app.emit("megabase-error", e);
+            }
+        }
+        *app.state::<AppState>().megabase_running.lock().unwrap() = false;
+    });
+    Ok(())
+}
+
 /// Performance Elo (methode FIDE) du joueur le plus present dans les parties
 /// selectionnees du panneau Parties ; None s'il n'y a rien d'exploitable.
 #[tauri::command]
@@ -2371,6 +2499,8 @@ fn build_menu(app: &AppHandle, home_panels: bool, game_panels: bool, lang: &str,
         .item(&import_lichess_item)
         .item(&import_chesscom_item)
         .build()?;
+    let download_megabase_item =
+        MenuItemBuilder::with_id("download_megabase", t("menu.file.downloadMegabase")).build(app)?;
     let export_item = MenuItemBuilder::with_id("export_pgn", t("menu.file.exportPgn"))
         .accelerator("CmdOrCtrl+E")
         .build(app)?;
@@ -2383,6 +2513,7 @@ fn build_menu(app: &AppHandle, home_panels: bool, game_panels: bool, lang: &str,
         .separator()
         .item(&import_item)
         .item(&import_submenu)
+        .item(&download_megabase_item)
         .item(&export_item)
         .separator()
         .item(&save_item)
@@ -2691,6 +2822,8 @@ pub fn run() {
                 check_suffixes_cleanup_running: Mutex::new(false),
                 tool_job_running: Mutex::new(false),
                 game_report_running: Mutex::new(false),
+                megabase_running: Mutex::new(false),
+                megabase_stop: Mutex::new(0),
                 reference_conn: Mutex::new(None),
                 explorer_cache: Mutex::new(HashMap::new()),
                 language: Mutex::new(initial_lang.clone()),
@@ -2725,6 +2858,7 @@ pub fn run() {
                     "bulk_import_pgn" => "menu-bulk-import-pgn",
                     "import_lichess" => "menu-import-lichess",
                     "import_chesscom" => "menu-import-chesscom",
+                    "download_megabase" => "menu-download-megabase",
                     "rebuild_explorer_stats" => "menu-rebuild-explorer-stats",
                     "deduplicate_base" => "menu-deduplicate-base",
                     "backfill_fide_ids" => "menu-backfill-fide-ids",
@@ -2811,6 +2945,12 @@ pub fn run() {
             list_bases,
             create_base,
             add_existing_base,
+            megabase_status,
+            megabase_manifest,
+            megabase_start,
+            megabase_resume,
+            megabase_pause,
+            megabase_cancel,
             list_games_in_base,
             games_performance,
             list_players_in_base,

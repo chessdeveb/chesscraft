@@ -24,8 +24,10 @@ import {
 import { persistDockviewLayout, syncPanelCheckedStates, tryRestoreDockviewLayout, useDockviewTheme } from "./dockviewPersistence";
 import { homeDockviewComponents } from "./HomeDockPanels";
 import { ExternalUpdatesReviewDialog } from "./components/ExternalUpdatesReviewDialog";
+import { MegabaseDialog } from "./components/MegabaseDialog";
 import { MoveGameBasePicker } from "./components/MoveGameBasePicker";
 import { useAutoDismissError } from "./useAutoDismissError";
+import { useMegabaseDownload } from "./useMegabaseDownload";
 import type {
   BaseInfo,
   CatchupRange,
@@ -78,6 +80,7 @@ function loadHomePanelPrefs(): HomePanelPrefs {
 }
 
 const EXTERNAL_UPDATES_PREVIEW_KEY = "externalUpdatesPreview";
+const MEGABASE_OFFER_KEY = "megabaseOfferShown";
 
 // Voir le commentaire au point d'utilisation (externalUpdatesPreview) pour la
 // raison d'etre de cette persistance -- try/catch comme loadHomePanelPrefs :
@@ -387,6 +390,7 @@ export function HomeDockview({
     [referenceBasePath, dismissExternalUpdatesPreview, onImportExternalUpdates]
   );
 
+  const [basesLoaded, setBasesLoaded] = useState(false);
   const refreshBases = useCallback(async () => {
     try {
       const list = await invoke<BaseInfo[]>("list_bases");
@@ -396,10 +400,54 @@ export function HomeDockview({
         const match = list.find((b) => b.path === prev.base.path);
         return match ? { kind: "base", base: match } : prev;
       });
+      setBasesLoaded(true);
     } catch (e) {
       setError(String(e));
     }
   }, []);
+
+  // Megabase (voir megabase.rs) : base de reference telechargeable,
+  // proposee automatiquement une seule fois, au premier lancement (aucune
+  // base enregistree), puis disponible depuis Fichier > Telecharger la megabase.
+  const megabase = useMegabaseDownload(
+    useCallback(
+      (info: BaseInfo) => {
+        refreshBases();
+        setActiveSource({ kind: "base", base: info });
+        emit("bases-changed");
+      },
+      [refreshBases]
+    )
+  );
+  const openMegabaseDialog = megabase.openDialog;
+  useEffect(() => {
+    if (!basesLoaded || !megabase.ready || megabase.phase !== "idle" || bases.length > 0) return;
+    try {
+      if (localStorage.getItem(MEGABASE_OFFER_KEY)) return;
+      localStorage.setItem(MEGABASE_OFFER_KEY, "1");
+    } catch {
+      return;
+    }
+    openMegabaseDialog();
+  }, [basesLoaded, megabase.ready, megabase.phase, bases.length, openMegabaseDialog]);
+  useEffect(() => {
+    const unlisten = listen("menu-download-megabase", () => openMegabaseDialog());
+    return () => {
+      unlisten.then((f) => f());
+    };
+  }, [openMegabaseDialog]);
+  const megabaseBadge =
+    megabase.dialogOpen || megabase.phase === "idle" || megabase.phase === "done"
+      ? null
+      : megabase.phase === "running"
+        ? t("megabase.badge", {
+            percent: megabase.progress && megabase.progress.total > 0
+              ? Math.floor((megabase.progress.done / megabase.progress.total) * 100)
+              : 0,
+          })
+        : megabase.phase === "paused"
+          ? t("megabase.badgePaused")
+          : t("megabase.badgeError");
 
   const refreshRecentPgns = useCallback(async () => {
     try {
@@ -1175,6 +1223,8 @@ export function HomeDockview({
     externalUpdatesEstimate,
     externalUpdatesBusy,
     onCheckExternalUpdates: handleCheckExternalUpdates,
+    megabaseBadge,
+    onOpenMegabase: openMegabaseDialog,
   };
 
   return (
@@ -1230,6 +1280,7 @@ export function HomeDockview({
           </div>
         </div>
       )}
+      {megabase.dialogOpen && <MegabaseDialog download={megabase} />}
       {externalUpdatesPreview && (
         <ExternalUpdatesReviewDialog
           preview={externalUpdatesPreview}

@@ -517,6 +517,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "shakmaty",
  "tauri",
  "tauri-build",
@@ -527,6 +528,7 @@ dependencies = [
  "webview2-com",
  "windows-core 0.61.2",
  "zip 2.4.2",
+ "zstd",
 ]
 
 [[package]]

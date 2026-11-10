@@ -94,6 +94,10 @@ export interface HomeContextValue {
   externalUpdatesBusy: "estimating" | "checking" | null;
   onCheckExternalUpdates: () => void;
 
+  /** Texte du badge de progression de la megabase (null : rien a afficher). */
+  megabaseBadge: string | null;
+  onOpenMegabase: () => void;
+
   games: GameSummary[];
   gamesTotal: number;
   gamesLoading: boolean;

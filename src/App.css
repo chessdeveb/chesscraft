@@ -405,12 +405,11 @@ textarea {
   overflow: auto;
 }
 
-/* Colonne gauche en flex vertical : les stats d'ouverture gardent leur
-   hauteur naturelle et la liste "parties dans cette position" prend toute la
-   hauteur restante (avant : une boite fixe de 220 px qui defilait seule au
-   milieu du panneau, rapporte par l'utilisateur comme une "sous-fenetre").
-   La colonne ne defile elle-meme que si le panneau est trop bas pour tout
-   afficher (voir min-height de .explorer-games). */
+/* Colonne gauche : stats d'ouverture puis liste "parties dans cette
+   position", chacune a sa hauteur naturelle, et UN SEUL defilement, celui de
+   la colonne. Avant : la liste defilait seule dans une boite (220 px, puis
+   "le reste de la hauteur") -- rapporte deux fois par l'utilisateur comme une
+   "sous-fenetre", avec deux barres de defilement imbriquees. */
 .explorer-panel-col--left {
   flex: 1 1 0;
   padding-right: 6px;
@@ -458,47 +457,31 @@ body.explorer-splitting {
   border-top: 1px solid var(--line);
 }
 
-.explorer-panel-col--left > .explorer-games {
-  flex: 1 1 auto;
-  min-height: 180px;
-  display: flex;
-  flex-direction: column;
-}
-
-.explorer-panel-col--left > .explorer-games > * {
-  flex-shrink: 0;
-}
-
 .explorer-games-title {
   margin: 0 0 6px;
   font-size: 0.9em;
   opacity: 0.8;
 }
 
+/* Un seul tableau (en-tete et lignes partagent les memes colonnes) : les
+   largeurs posees sur les en-tetes (useColumnWidths) valent pour toutes les
+   lignes. L'ancienne separation thead/tbody en deux tables independantes
+   (pour un en-tete fixe dans une boite qui defilait) decalait les colonnes :
+   la table des lignes ignorait les largeurs de l'en-tete. */
 .explorer-games-table {
-  overflow-y: auto;
-  display: block;
+  table-layout: fixed;
 }
 
-/* remplit la hauteur restante de la colonne (voir .explorer-games) au lieu
-   d'une hauteur fixe ; l'en-tete reste visible pendant le defilement */
-.explorer-panel-col--left > .explorer-games > .explorer-games-table {
-  flex: 1 1 0;
-  min-height: 0;
+.explorer-games-table td {
+  max-width: none;
 }
 
-.explorer-games-table thead {
+/* en-tete colle en haut de la colonne pendant son defilement */
+.explorer-games-table thead th {
   position: sticky;
   top: 0;
   z-index: 1;
   background-color: var(--panel);
-}
-
-.explorer-games-table thead,
-.explorer-games-table tbody {
-  display: table;
-  width: 100%;
-  table-layout: fixed;
 }
 
 /* flex:1/min-height:0 pour occuper toute la hauteur de la colonne
@@ -1139,7 +1122,6 @@ body.explorer-splitting {
    sur ce tableau, voir plus haut -- sans ca, max-width:0 ecraserait toute
    largeur explicite, voir le commentaire au-dessus de .resizable-table). */
 .explorer-games-table th {
-  position: relative;
   max-width: none;
 }
 
@@ -1587,6 +1569,39 @@ body.explorer-splitting {
   opacity: 0.6;
   word-break: break-all;
   margin: 0;
+}
+
+.about-licenses {
+  margin-top: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  font-size: 0.85em;
+}
+
+.about-licenses h3 {
+  margin: 0 0 6px;
+  font-size: 1em;
+}
+
+.about-licenses p {
+  margin: 0 0 6px;
+}
+
+.about-licenses summary {
+  cursor: pointer;
+}
+
+/* texte integral de la licence : zone defilante, la fenetre A propos est
+   petite et non redimensionnable */
+.about-license-text {
+  max-height: 150px;
+  overflow: auto;
+  margin: 6px 0 0;
+  padding: 6px 8px;
+  white-space: pre-wrap;
+  font-size: 0.85em;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
 }
 
 .about-release-notes {
@@ -2289,6 +2304,122 @@ body.explorer-splitting {
 .external-updates-badge {
   color: var(--ink-2);
   font-size: 0.85em;
+}
+
+/* Telechargement de la megabase (voir MegabaseDialog.tsx) */
+.megabase-dialog {
+  width: min(520px, 90vw);
+}
+
+.megabase-dialog p {
+  margin: 0;
+  line-height: 1.45;
+}
+
+.megabase-facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px 14px;
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: var(--r-md);
+  background-color: var(--sunken);
+}
+
+.megabase-facts dt {
+  color: var(--ink-2);
+}
+
+.megabase-facts dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.megabase-folder {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.megabase-folder-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.9em;
+}
+
+.megabase-folder button {
+  cursor: pointer;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  background: transparent;
+  color: inherit;
+  padding: 2px 10px;
+  font: inherit;
+  font-size: 0.9em;
+}
+
+.megabase-note {
+  color: var(--ink-2);
+  font-size: 0.85em;
+}
+
+.megabase-stage {
+  font-weight: 600;
+}
+
+.megabase-progress {
+  width: 100%;
+  height: 10px;
+  appearance: none;
+  border: none;
+  border-radius: 5px;
+  overflow: hidden;
+  background-color: var(--sunken);
+}
+
+.megabase-progress::-webkit-progress-bar {
+  background-color: var(--sunken);
+}
+
+.megabase-progress::-webkit-progress-value {
+  background-color: var(--accent);
+  transition: width 0.3s ease;
+}
+
+.megabase-details {
+  font-variant-numeric: tabular-nums;
+  font-size: 0.9em;
+}
+
+.megabase-dialog .modal-actions {
+  gap: 8px;
+}
+
+.megabase-dialog .modal-actions button.megabase-primary {
+  background-color: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+
+.megabase-dialog .modal-actions button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.megabase-badge {
+  cursor: pointer;
+  border: 1px solid var(--accent-line);
+  border-radius: var(--r-md);
+  background-color: var(--accent-weak);
+  color: inherit;
+  padding: 1px 8px;
+  font: inherit;
+  font-size: 0.85em;
+  font-variant-numeric: tabular-nums;
 }
 
 .external-updates-table {

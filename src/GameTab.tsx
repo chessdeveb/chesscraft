@@ -1406,8 +1406,30 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
       // l'onglet actif (quel que soit le chemin -- bouton "x" ou menu) : la
       // fermeture via son propre bouton ne passait auparavant par aucun code
       // a nous, laissant explorerVisible bloque a true indefiniment.
-      const explorerActiveDisposable = api.onDidActivePanelChange(() => setExplorerVisible(api.activePanel?.id === "explorer"));
-      explorerVisibilitySyncCleanupRef.current = () => explorerActiveDisposable.dispose();
+      //
+      // "Au premier plan" = onglet affiche dans SON groupe (panel.api.isVisible),
+      // PAS le panneau actif de toute la fenetre (api.activePanel) : celui-ci
+      // suit le focus, et jouer un coup sur l'echiquier ou naviguer dans la
+      // notation rendait ces panneaux actifs -- l'explorateur, pourtant
+      // toujours affiche a cote, cessait alors de suivre les coups jusqu'a
+      // ce qu'on reclique dedans (rapporte par l'utilisateur).
+      let explorerPanelDisposable: { dispose(): void } | null = null;
+      const syncExplorerVisible = () => setExplorerVisible(!!api.getPanel("explorer")?.api.isVisible);
+      const watchExplorerPanel = () => {
+        explorerPanelDisposable?.dispose();
+        explorerPanelDisposable = api.getPanel("explorer")?.api.onDidVisibilityChange(syncExplorerVisible) ?? null;
+        syncExplorerVisible();
+      };
+      const explorerDisposables = [
+        api.onDidActivePanelChange(syncExplorerVisible),
+        api.onDidAddPanel(watchExplorerPanel),
+        api.onDidRemovePanel(watchExplorerPanel),
+        api.onDidLayoutFromJSON(watchExplorerPanel),
+      ];
+      explorerVisibilitySyncCleanupRef.current = () => {
+        explorerDisposables.forEach((d) => d.dispose());
+        explorerPanelDisposable?.dispose();
+      };
       api.addPanel({ id: "board", component: "board", title: t("gameTab.panel.board") });
       if (isPlayerPrep) {
         // onglet de preparation d'adversaire : pas de coups a lister (partie
@@ -1425,7 +1447,7 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
           // case a cocher a l'epoque), il resterait sinon introuvable pour
           // toujours : on le regarantit toujours present.
           if (!api.getPanel("board")) setPanelVisible("board", true);
-          setExplorerVisible(api.activePanel?.id === "explorer");
+          watchExplorerPanel();
         }
         syncPanelCheckedStates(api, GAME_PANEL_IDS);
         gameLayoutCleanupRef.current = persistDockviewLayout(api, GAME_LAYOUT_KEY_PREP, GAME_PANEL_IDS);
@@ -1433,7 +1455,7 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
       }
       if (tryRestoreDockviewLayout(api, GAME_LAYOUT_KEY)) {
         if (!api.getPanel("board")) setPanelVisible("board", true);
-        setExplorerVisible(api.activePanel?.id === "explorer");
+        watchExplorerPanel();
         syncPanelCheckedStates(api, GAME_PANEL_IDS);
         gameLayoutCleanupRef.current = persistDockviewLayout(api, GAME_LAYOUT_KEY, GAME_PANEL_IDS);
         return;
@@ -1444,7 +1466,7 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
       if (prefs.engine) setPanelVisible("engine", true);
       if (prefs.training) setPanelVisible("training", true);
       api.getPanel("notation")?.api.setActive();
-      setExplorerVisible(api.activePanel?.id === "explorer");
+      watchExplorerPanel();
       syncPanelCheckedStates(api, GAME_PANEL_IDS);
       gameLayoutCleanupRef.current = persistDockviewLayout(api, GAME_LAYOUT_KEY, GAME_PANEL_IDS);
     },

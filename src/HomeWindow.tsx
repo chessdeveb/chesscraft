@@ -260,8 +260,8 @@ export function HomeWindow() {
     const win = new WebviewWindow("about", {
       url: "/?window=about",
       title: t("homeWindow.aboutWindowTitle"),
-      width: 420,
-      height: 320,
+      width: 460,
+      height: 440,
       resizable: false,
     });
     win.once("tauri://error", (e) => setError(String(e.payload)));

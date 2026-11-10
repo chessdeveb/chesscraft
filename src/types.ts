@@ -171,6 +171,37 @@ export interface BaseInfo {
   missing: boolean;
 }
 
+// Megabase telechargeable (voir megabase.rs)
+export interface MegabaseManifest {
+  version: string;
+  url: string;
+  compressedSize: number;
+  size: number;
+  sha256: string;
+  games: number;
+  countUrl?: string | null;
+}
+
+export interface MegabasePending {
+  dir: string;
+  downloaded: number;
+  manifest: MegabaseManifest;
+}
+
+export interface MegabaseProgress {
+  stage: "download" | "verify" | "decompress";
+  done: number;
+  total: number;
+  bytesPerSec: number;
+}
+
+export interface MegabaseError {
+  code: string;
+  detail: string | null;
+  needed: number | null;
+  available: number | null;
+}
+
 export interface GameSummary {
   id: number;
   white: string;

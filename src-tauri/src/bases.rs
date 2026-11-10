@@ -94,6 +94,10 @@ pub fn set_reference(app_data_dir: &Path, path: &str, is_reference: bool) -> Res
     save_registry(app_data_dir, &entries)
 }
 
+pub fn has_reference(app_data_dir: &Path) -> bool {
+    load_registry(app_data_dir).iter().any(|e| e.is_reference && Path::new(&e.path).exists())
+}
+
 pub fn unregister(app_data_dir: &Path, path: &str) -> Result<(), String> {
     let mut entries = load_registry(app_data_dir);
     entries.retain(|e| e.path != path);

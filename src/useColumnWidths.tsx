@@ -99,6 +99,50 @@ export function useColumnWidths(storageKey: string, columns: ColumnSpec[]) {
   return { widths, startResize, totalWidth };
 }
 
+// Etire un tableau a colonnes redimensionnables jusqu'a la largeur de son
+// conteneur (l'element parent du <table>, observe avec ResizeObserver) :
+// l'espace libre est reparti a parts egales entre `growKeys`, les autres
+// colonnes gardent exactement la largeur choisie. Plus etroit que la somme
+// des colonnes, rien n'est retreci : le conteneur defile horizontalement,
+// comme sans ce hook. A utiliser avec useColumnWidths : `fitted` remplace
+// `widths` sur les en-tetes, `tableWidth` remplace `totalWidth`, et
+// `tableRef` se pose sur le <table>.
+export function useFillWidth(widths: Record<string, number>, growKeys: string[]) {
+  const [table, setTable] = useState<HTMLTableElement | null>(null);
+  // largeur disponible, deja diminuee des marges interieures des en-tetes :
+  // la largeur posee sur un <th> ne les compte pas, la colonne reelle fait
+  // largeur + marges (sans ce calcul, le tableau depassait de quelques
+  // pixels et faisait apparaitre un defilement horizontal)
+  const [available, setAvailable] = useState(0);
+  const tableRef = useCallback((node: HTMLTableElement | null) => setTable(node), []);
+
+  useEffect(() => {
+    const container = table?.parentElement;
+    if (!table || !container) return;
+    const update = () => {
+      let padding = 0;
+      table.querySelectorAll("thead th").forEach((th) => {
+        const cs = getComputedStyle(th);
+        padding += parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
+      });
+      setAvailable(container.clientWidth - padding);
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [table]);
+
+  const total = Object.values(widths).reduce((sum, w) => sum + w, 0);
+  const extra = growKeys.length > 0 ? Math.max(0, Math.floor(available - total)) : 0;
+  const fitted = { ...widths };
+  growKeys.forEach((key, i) => {
+    const share = Math.floor(extra / growKeys.length) + (i === 0 ? extra % growKeys.length : 0);
+    fitted[key] = (fitted[key] ?? 0) + share;
+  });
+  return { tableRef, fitted, tableWidth: total + extra };
+}
+
 // Poignee de redimensionnement : un trait fin colle au bord droit de
 // l'en-tete (voir .col-resize-handle, App.css) -- l'en-tete doit etre en
 // position:relative pour que ce positionnement absolu s'ancre bien sur lui,
