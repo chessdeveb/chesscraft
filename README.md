@@ -7,6 +7,7 @@ Gestionnaire de parties d'échecs pour Windows : des bases de plusieurs millions
 ## Fonctionnalités
 
 - **Bases de parties** : import de PGN en masse et des comptes Lichess et chess.com, base de référence tenue à jour depuis TWIC et les retransmissions Lichess (revue tournoi par tournoi avant chaque import, doublons écartés).
+- **Megabase prête à l'emploi** : plus de 10 millions de parties, construite à partir de [Lumbra's GigaBase](https://lumbrasgigabase.com/en/) (CC BY-NC 4.0), à installer depuis l'application (Fichier › Télécharger la megabase…). Le téléchargement de 15,6 Go reprend après une coupure, puis la base est vérifiée et définie comme base de référence. Facultative : chacun peut importer la base PGN de son choix.
 - **Explorateur d'ouvertures** : résultats Blancs / nulle / Noirs, code ECO, filtres par joueur, classement et année. La recherche par position retrouve aussi les transpositions, y compris en Chess960.
 - **Analyse avec Stockfish** : jusqu'à 10 lignes en parallèle, profondeur libre, aperçu de la position au survol de chaque coup. Le rapport de partie calcule précision, gaffes et courbe d'évaluation.
 - **Mode entraînement** : rejouer une partie en cherchant les coups, avec précision en direct et résumé de séance.
@@ -53,8 +54,9 @@ Un `npm run tauri build` sans clé de signature produit un installateur utilisab
 | Dossier | Contenu |
 |---|---|
 | `src/` | Interface React : fenêtres Accueil et Partie, panneaux (`DockPanels.tsx`, `HomeDockPanels.tsx`), composants dans `components/`, traductions dans `locales/` |
-| `src-tauri/src/` | Moteur Rust : bases SQLite (`db.rs`), index des positions par empreinte de Zobrist (`explorer.rs`), PGN (`pgn.rs`, `game_tree.rs`), Stockfish via UCI (`engine.rs`), liste FIDE (`fide.rs`), imports Lichess, chess.com et TWIC |
+| `src-tauri/src/` | Moteur Rust : bases SQLite (`db.rs`), index des positions par empreinte de Zobrist (`explorer.rs`), PGN (`pgn.rs`, `game_tree.rs`), Stockfish via UCI (`engine.rs`), liste FIDE (`fide.rs`), imports Lichess, chess.com et TWIC, téléchargement de la megabase (`megabase.rs`) |
 | `src-tauri/resources/` | Référentiel des ouvertures ECO |
+| `megabase.json` | Manifeste de la megabase publiée (lien, taille, empreinte SHA-256), lu par l'application : le modifier suffit pour publier une nouvelle base |
 
 ## Licence
 
