@@ -861,7 +861,7 @@ body.explorer-splitting {
   right: 0;
   bottom: 0;
   background: #f4f1ea;
-  transition: height 0.3s ease;
+  transition: height 0.6s ease;
 }
 
 /* echiquier retourne : les Blancs sont en haut */
@@ -1472,6 +1472,12 @@ body.explorer-splitting {
   flex-direction: column;
   gap: 10px;
   box-shadow: 0 8px 30px rgba(0, 0, 0, 0.3);
+}
+
+/* la boite recoit le focus clavier a son ouverture (voir modalFocus.ts) :
+   pas de contour autour de la boite entiere */
+.modal:focus {
+  outline: none;
 }
 
 .modal h2 {

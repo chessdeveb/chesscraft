@@ -53,6 +53,9 @@ interface GameTabProps {
   // uniquement a la citation de partie dans un commentaire (Notation.tsx/
   // GameLinkPicker.tsx), restreinte a ce qui est deja ouvert.
   otherTabs?: OpenTabRef[];
+  /** Cet onglet a une question a poser (confirmation de fermeture) : la
+      fenetre doit l'afficher. */
+  onAttention?: (tabId: number) => void;
 }
 
 // Expose a l'appelant (App.tsx) un point d'entree unique pour demander la
@@ -120,7 +123,7 @@ function loadGamePanelPrefs(): GamePanelPrefs {
 }
 
 export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
-  { tabId, active, isPlayerPrep = false, initialNodeId, onTreeChange, otherTabs = [] },
+  { tabId, active, isPlayerPrep = false, initialNodeId, onTreeChange, onAttention, otherTabs = [] },
   ref
 ) {
   const { t } = useTranslation();
@@ -490,9 +493,13 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
     if (isPlayerPrep || !isDirty) return Promise.resolve(true);
     return new Promise<boolean>((resolve) => {
       closeResolveRef.current = resolve;
+      // la question s'affiche DANS cet onglet : s'il n'est pas celui affiche
+      // (fermeture de la fenetre, ou croix d'un onglet en arriere-plan), elle
+      // restait invisible et l'appli semblait bloquee.
+      onAttention?.(tabId);
       setCloseConfirmOpen(true);
     });
-  }, [isPlayerPrep, isDirty]);
+  }, [isPlayerPrep, isDirty, onAttention, tabId]);
 
   useImperativeHandle(ref, () => ({ requestClose }), [requestClose]);
 

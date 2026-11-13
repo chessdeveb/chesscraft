@@ -143,7 +143,10 @@ function App() {
   useEffect(() => {
     const unlistenPromise = getCurrentWindow().onCloseRequested(async (event) => {
       event.preventDefault();
-      for (const tab of tabs) {
+      // l'onglet affiche d'abord, puis les autres dans l'ordre : chacun passe
+      // au premier plan s'il a une question a poser (voir onAttention).
+      const ordered = [...tabs.filter((tab) => tab.id === activeTabId), ...tabs.filter((tab) => tab.id !== activeTabId)];
+      for (const tab of ordered) {
         const proceed = await (tabRefs.current[tab.id]?.requestClose() ?? Promise.resolve(true));
         if (!proceed) return;
       }
@@ -152,7 +155,7 @@ function App() {
     return () => {
       unlistenPromise.then((unlisten) => unlisten());
     };
-  }, [tabs]);
+  }, [tabs, activeTabId]);
 
   if (tabs.length === 0) {
     return (
@@ -197,6 +200,7 @@ function App() {
               isPlayerPrep={tab.isPlayerPrep}
               initialNodeId={tab.initialNodeId}
               onTreeChange={handleTreeChange}
+              onAttention={setActiveTabId}
               otherTabs={tabs.filter((other) => other.id !== tab.id).map((other) => ({ id: other.id, title: other.title }))}
             />
           </div>

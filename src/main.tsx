@@ -6,6 +6,9 @@ import { HomeWindow } from "./HomeWindow";
 import { PositionEditorWindow } from "./PositionEditorWindow";
 import { AboutWindow } from "./AboutWindow";
 import "./i18n";
+import { installModalFocus } from "./modalFocus";
+
+installModalFocus();
 
 const windowParam = new URLSearchParams(window.location.search).get("window");
 

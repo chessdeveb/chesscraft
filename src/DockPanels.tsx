@@ -94,6 +94,8 @@ function clocksAtNode(tree: TreeDto, nodeId: number): { white: string | null; bl
 // largeur reservee a gauche de l'echiquier pour la barre d'evaluation (voir
 // .board-panel-board--with-bar dans App.css, meme valeur)
 const EVAL_BAR_SPACE = 28;
+// profondeur a partir de laquelle la barre d'evaluation suit le moteur
+const EVAL_BAR_MIN_DEPTH = 12;
 
 export function BoardPanel() {
   const { t } = useTranslation();
@@ -111,6 +113,7 @@ export function BoardPanel() {
     handleNewChess960,
     engineRunning,
     engineLines,
+    engineDepth,
     trainingOnBoard,
   } = useAppContext();
   const [fenCopied, setFenCopied] = useState(false);
@@ -118,7 +121,12 @@ export function BoardPanel() {
   // est conservee entre deux positions (les lignes sont videes a chaque
   // coup, voir GameTab.tsx) pour que la barre glisse au lieu de disparaitre
   // puis reapparaitre.
-  const bestLine = engineLines.find((l) => l.multipv === 1) ?? null;
+  // Les premieres profondeurs d'une recherche donnent des evaluations tres
+  // instables : la barre sautait dans tous les sens a chaque coup avant de se
+  // poser (rapporte par l'utilisateur). Elle ne bouge donc qu'a partir d'une
+  // profondeur ou le score est fiable -- atteinte en une fraction de seconde.
+  const barMinDepth = Math.min(EVAL_BAR_MIN_DEPTH, engineDepth);
+  const bestLine = engineLines.find((l) => l.multipv === 1 && l.depth >= barMinDepth) ?? null;
   const lastBestLineRef = useRef<EngineInfo | null>(null);
   if (bestLine) lastBestLineRef.current = bestLine;
   if (!engineRunning) lastBestLineRef.current = null;

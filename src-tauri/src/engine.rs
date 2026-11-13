@@ -5,6 +5,7 @@ use shakmaty::uci::UciMove;
 use shakmaty::{CastlingMode, Chess, Color, EnPassantMode, Position};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter};
 
@@ -12,6 +13,10 @@ pub struct EngineHandle {
     child: Child,
     stdin: ChildStdin,
     current_fen: Arc<Mutex<String>>,
+    /// Vrai entre une nouvelle demande d'analyse et le debut effectif de la
+    /// nouvelle recherche : les lignes "info" encore en transit a ce moment
+    /// appartiennent a la position PRECEDENTE (voir is_search_restart).
+    awaiting_restart: Arc<AtomicBool>,
     /// Le moteur annonce une option "Hash" (voir read_uci_options).
     supports_hash: bool,
     /// Derniere taille de table envoyee : "setoption name Hash" vide la table
@@ -285,6 +290,8 @@ pub fn start(app: AppHandle, path: &str, tab_id: u32) -> Result<EngineHandle, St
 
     let current_fen = Arc::new(Mutex::new(String::new()));
     let thread_fen = current_fen.clone();
+    let awaiting_restart = Arc::new(AtomicBool::new(false));
+    let thread_awaiting = awaiting_restart.clone();
 
     let event_name = format!("engine-info-{tab_id}");
     std::thread::spawn(move || {
@@ -294,7 +301,20 @@ pub fn start(app: AppHandle, path: &str, tab_id: u32) -> Result<EngineHandle, St
             match reader.read_line(&mut line) {
                 Ok(0) => break,
                 Ok(_) => {
-                    if let Some(info) = parse_info_line(line.trim_end()).filter(ParsedInfo::is_complete_line) {
+                    let trimmed = line.trim_end();
+                    if thread_awaiting.load(Ordering::SeqCst) {
+                        if is_search_restart(trimmed) {
+                            thread_awaiting.store(false, Ordering::SeqCst);
+                        } else {
+                            // reste de la recherche precedente : l'interpreter
+                            // avec la nouvelle position donnerait un score du
+                            // mauvais signe (trait inverse) et une variante
+                            // tronquee -- la barre d'evaluation faisait un
+                            // aller-retour a chaque coup.
+                            continue;
+                        }
+                    }
+                    if let Some(info) = parse_info_line(trimmed).filter(ParsedInfo::is_complete_line) {
                         let fen = thread_fen.lock().unwrap().clone();
                         if !fen.is_empty() {
                             if let Some(payload) = resolve_line(&fen, &info) {
@@ -312,9 +332,18 @@ pub fn start(app: AppHandle, path: &str, tab_id: u32) -> Result<EngineHandle, St
         child,
         stdin,
         current_fen,
+        awaiting_restart,
         supports_hash,
         current_hash_mb: None,
     })
+}
+
+/// Premiere ligne de la NOUVELLE recherche apres une demande d'analyse : le
+/// "bestmove" qui cloture la recherche arretee, ou une ligne de profondeur 1
+/// (une recherche repart toujours de la profondeur 1 ; couvre le cas ou
+/// aucune recherche n'etait en cours, donc sans "bestmove" a attendre).
+fn is_search_restart(line: &str) -> bool {
+    line.starts_with("bestmove") || parse_info_line(line).is_some_and(|info| info.depth == Some(1))
 }
 
 /// Nom d'une option dans une ligne "option name <nom> type ..." de la
@@ -543,6 +572,7 @@ impl Drop for BatchEngine {
 
 impl EngineHandle {
     pub fn analyze(&mut self, fen: &str, depth: u32, multipv: u32, threads: u32, hash_mb: u32) -> Result<(), String> {
+        self.awaiting_restart.store(true, Ordering::SeqCst);
         *self.current_fen.lock().unwrap() = fen.to_string();
         write_line(&mut self.stdin, "stop")?;
         if self.supports_hash && self.current_hash_mb != Some(hash_mb) {
@@ -648,6 +678,16 @@ mod tests {
         assert_eq!(uci_option_name("option name UCI_ShowWDL type check default false"), Some("UCI_ShowWDL".to_string()));
         assert_eq!(uci_option_name("option name Clear Hash type button"), Some("Clear Hash".to_string()));
         assert_eq!(uci_option_name("id name Stockfish 17"), None);
+    }
+
+    #[test]
+    fn leftover_lines_of_the_previous_search_are_recognised() {
+        // lignes encore en transit de la recherche arretee : a ignorer
+        assert!(!is_search_restart("info depth 24 seldepth 30 multipv 1 score cp 80 nodes 5000000 pv e2e4"));
+        assert!(!is_search_restart("info depth 24 currmove e2e4 currmovenumber 1"));
+        // fin de l'ancienne recherche, ou debut de la nouvelle
+        assert!(is_search_restart("bestmove e2e4 ponder e7e5"));
+        assert!(is_search_restart("info depth 1 seldepth 2 multipv 1 score cp 20 nodes 20 pv e2e4"));
     }
 
     #[test]
