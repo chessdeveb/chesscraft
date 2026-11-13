@@ -834,6 +834,72 @@ body.explorer-splitting {
 .board-panel-board {
   flex: 1;
   min-height: 0;
+  position: relative;
+}
+
+/* Barre d'evaluation du moteur a gauche de l'echiquier : 28px reserves
+   (meme valeur que EVAL_BAR_SPACE, DockPanels.tsx), l'echiquier reste centre
+   dans la place restante et la barre se colle a son bord. */
+.board-panel-board--with-bar {
+  padding-left: 28px;
+  box-sizing: border-box;
+}
+
+.eval-bar {
+  position: absolute;
+  width: 20px;
+  box-sizing: border-box;
+  background: #403d39;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  overflow: hidden;
+}
+
+.eval-bar-white {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: #f4f1ea;
+  transition: height 0.3s ease;
+}
+
+/* echiquier retourne : les Blancs sont en haut */
+.eval-bar--flipped .eval-bar-white {
+  bottom: auto;
+  top: 0;
+}
+
+/* score ecrit du cote du camp qui a l'avantage, sur sa couleur */
+.eval-bar-label {
+  position: absolute;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1.6;
+  letter-spacing: -0.03em;
+}
+
+.eval-bar--white-ahead .eval-bar-label {
+  bottom: 0;
+  color: #2b2925;
+}
+
+.eval-bar--black-ahead .eval-bar-label {
+  top: 0;
+  color: #f4f1ea;
+}
+
+.eval-bar--flipped.eval-bar--white-ahead .eval-bar-label {
+  bottom: auto;
+  top: 0;
+}
+
+.eval-bar--flipped.eval-bar--black-ahead .eval-bar-label {
+  top: auto;
+  bottom: 0;
 }
 
 .board-clock-row {
@@ -2001,6 +2067,23 @@ body.explorer-splitting {
   cursor: pointer;
 }
 
+.engine-hash-row {
+  display: flex;
+  gap: 4px;
+}
+
+/* raccourci vers les tailles courantes, a cote du champ libre */
+.engine-field select.engine-hash-presets {
+  width: 2.6em;
+  padding-left: 4px;
+  padding-right: 0;
+}
+
+/* Memoire en Mo : jusqu'a 5 chiffres */
+.engine-field input[type="number"].engine-hash-input {
+  width: 6.5em;
+}
+
 .engine-field input[type="number"] {
   /* Profondeur en saisie libre (pas de plafond arbitraire -- voir retour
      utilisateur : laisser tourner le moteur toute une nuit sur une
@@ -2045,6 +2128,42 @@ body.explorer-splitting {
 .engine-line {
   margin: 0;
   opacity: 0.85;
+}
+
+/* Ligne d'etat : profondeur, vitesse, noeuds, remplissage de la table */
+.engine-status {
+  margin: 0;
+  font-size: 0.8em;
+  font-family: var(--font-mono, monospace);
+  color: var(--ink-2);
+}
+
+.engine-status--hash-full {
+  color: #c77d1a;
+}
+
+/* Petite barre gain blanc / nulle / gain noir a cote du score */
+.engine-wdl {
+  display: inline-flex;
+  width: 64px;
+  height: 8px;
+  margin-right: 8px;
+  vertical-align: middle;
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.engine-wdl-white {
+  background: #f4f1ea;
+}
+
+.engine-wdl-draw {
+  background: #9a958c;
+}
+
+.engine-wdl-black {
+  background: #403d39;
 }
 
 .engine-line--paused {

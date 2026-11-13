@@ -1091,11 +1091,12 @@ fn analyze_position(
     depth: u32,
     multipv: u32,
     threads: u32,
+    hash_mb: u32,
 ) -> Result<(), String> {
     let mut sessions = state.sessions.lock().unwrap();
     let session = sessions.get_mut(&tab_id).ok_or_else(|| "onglet introuvable".to_string())?;
     match session.engine.as_mut() {
-        Some(handle) => handle.analyze(&fen, depth, multipv, threads),
+        Some(handle) => handle.analyze(&fen, depth, multipv, threads, hash_mb.max(1)),
         None => Err("le moteur n'est pas démarré".to_string()),
     }
 }
@@ -1105,6 +1106,51 @@ fn logical_cpu_count() -> u32 {
     std::thread::available_parallelism()
         .map(|n| n.get() as u32)
         .unwrap_or(1)
+}
+
+/// Memoire vive installee, en Mo -- sert a plafonner la table de hachage du
+/// moteur (voir EnginePanel.tsx). None si le systeme ne la donne pas.
+#[tauri::command]
+fn total_memory_mb() -> Option<u64> {
+    total_memory_bytes().map(|bytes| bytes / (1024 * 1024))
+}
+
+#[cfg(windows)]
+fn total_memory_bytes() -> Option<u64> {
+    #[repr(C)]
+    struct MemoryStatusEx {
+        length: u32,
+        memory_load: u32,
+        total_phys: u64,
+        avail_phys: u64,
+        total_page_file: u64,
+        avail_page_file: u64,
+        total_virtual: u64,
+        avail_virtual: u64,
+        avail_extended_virtual: u64,
+    }
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GlobalMemoryStatusEx(status: *mut MemoryStatusEx) -> i32;
+    }
+    let mut status = MemoryStatusEx {
+        length: std::mem::size_of::<MemoryStatusEx>() as u32,
+        memory_load: 0,
+        total_phys: 0,
+        avail_phys: 0,
+        total_page_file: 0,
+        avail_page_file: 0,
+        total_virtual: 0,
+        avail_virtual: 0,
+        avail_extended_virtual: 0,
+    };
+    let ok = unsafe { GlobalMemoryStatusEx(&mut status) };
+    (ok != 0 && status.total_phys > 0).then_some(status.total_phys)
+}
+
+#[cfg(not(windows))]
+fn total_memory_bytes() -> Option<u64> {
+    None
 }
 
 #[tauri::command]
@@ -2964,6 +3010,7 @@ pub fn run() {
             opening_explorer_games,
             opening_explorer_preview_game,
             logical_cpu_count,
+            total_memory_mb,
             list_bases,
             create_base,
             add_existing_base,

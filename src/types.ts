@@ -55,6 +55,15 @@ export interface EngineInfo {
   scoreCp: number | null;
   scoreMate: number | null;
   pv: PvMove[];
+  /** gain / nulle / perte pour mille, du point de vue des Blancs -- null si
+      le moteur ne fournit pas ces probabilites (voir engine.rs). */
+  wdl: [number, number, number] | null;
+  /** statistiques de recherche (ligne d'etat du panneau Moteur), chacune
+      null si le moteur ne l'envoie pas ; hashfull est en pour mille. */
+  seldepth: number | null;
+  nodes: number | null;
+  nps: number | null;
+  hashfull: number | null;
 }
 
 export interface PositionEval {

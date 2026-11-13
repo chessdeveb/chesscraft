@@ -13,7 +13,8 @@ import { GameTypeButton } from "./components/GameTypeButton";
 import { Notation } from "./components/Notation";
 import { OpeningExplorer } from "./components/OpeningExplorer";
 import { TrainingPanel } from "./components/TrainingPanel";
-import type { TreeDto } from "./types";
+import { shortScore, whiteShare } from "./evalBar";
+import type { EngineInfo, TreeDto } from "./types";
 
 const EXPLORER_GAMES_PAGE_SIZE = 20;
 
@@ -90,6 +91,10 @@ function clocksAtNode(tree: TreeDto, nodeId: number): { white: string | null; bl
   return { white, black };
 }
 
+// largeur reservee a gauche de l'echiquier pour la barre d'evaluation (voir
+// .board-panel-board--with-bar dans App.css, meme valeur)
+const EVAL_BAR_SPACE = 28;
+
 export function BoardPanel() {
   const { t } = useTranslation();
   const {
@@ -104,8 +109,23 @@ export function BoardPanel() {
     handleShapesChange,
     onStep,
     handleNewChess960,
+    engineRunning,
+    engineLines,
+    trainingOnBoard,
   } = useAppContext();
   const [fenCopied, setFenCopied] = useState(false);
+  // Barre d'evaluation : meilleure ligne du moteur. La derniere valeur connue
+  // est conservee entre deux positions (les lignes sont videes a chaque
+  // coup, voir GameTab.tsx) pour que la barre glisse au lieu de disparaitre
+  // puis reapparaitre.
+  const bestLine = engineLines.find((l) => l.multipv === 1) ?? null;
+  const lastBestLineRef = useRef<EngineInfo | null>(null);
+  if (bestLine) lastBestLineRef.current = bestLine;
+  if (!engineRunning) lastBestLineRef.current = null;
+  // masquee pendant un exercice d'entrainement, comme l'analyse du panneau
+  // Moteur : elle trahirait la valeur du coup a trouver.
+  const showEvalBar = engineRunning && !trainingOnBoard;
+  const evalLine = lastBestLineRef.current;
   // largeur reelle (px) de l'echiquier, remontee par Board via onSizeChange :
   // l'echiquier est un carre centre dans .board-panel-board (qui, lui, fait
   // toute la largeur du panneau), donc s'aligner sur la largeur du PANNEAU
@@ -128,7 +148,16 @@ export function BoardPanel() {
 
   const showClocks = tree ? hasAnyClock(tree) : false;
   const clocks = showClocks && tree ? clocksAtNode(tree, currentNodeId) : { white: null, black: null };
-  const clockRowStyle = { width: boardSize, marginLeft: "auto", marginRight: "auto" };
+  // la barre d'evaluation reserve EVAL_BAR_SPACE px a gauche de l'echiquier :
+  // les pendules, alignees sur l'echiquier, se decalent d'autant.
+  const clockRowStyle = {
+    width: boardSize,
+    marginLeft: "auto",
+    marginRight: "auto",
+    transform: showEvalBar ? `translateX(${EVAL_BAR_SPACE / 2}px)` : undefined,
+  };
+  const evalShare = evalLine ? whiteShare(evalLine) : 0.5;
+  const evalLabel = evalLine ? shortScore(evalLine) : "";
   // en haut = camp affiche en haut de l'echiquier : Noirs normalement,
   // Blancs une fois l'echiquier retourne.
   const topClock = boardFlipped ? clocks.white : clocks.black;
@@ -141,7 +170,32 @@ export function BoardPanel() {
           {topClock && <span className="board-clock">🕐{topClock}</span>}
         </div>
       )}
-      <div className="board-panel-board">
+      <div className={"board-panel-board" + (showEvalBar ? " board-panel-board--with-bar" : "")}>
+        {showEvalBar && (
+          <div
+            className={
+              "eval-bar" + (boardFlipped ? " eval-bar--flipped" : "") + (evalShare >= 0.5 ? " eval-bar--white-ahead" : " eval-bar--black-ahead")
+            }
+            style={{
+              // centree verticalement comme l'echiquier, collee a son bord gauche
+              left: `calc(${EVAL_BAR_SPACE}px + (100% - ${EVAL_BAR_SPACE}px - ${boardSize}px) / 2 - ${EVAL_BAR_SPACE - 4}px)`,
+              top: `calc(50% - ${boardSize / 2}px)`,
+              height: boardSize,
+            }}
+            title={
+              evalLine?.wdl
+                ? t("engine.wdlTitle", {
+                    white: Math.round(evalLine.wdl[0] / 10),
+                    draw: Math.round(evalLine.wdl[1] / 10),
+                    black: Math.round(evalLine.wdl[2] / 10),
+                  })
+                : evalLabel
+            }
+          >
+            <div className="eval-bar-white" style={{ height: `${evalShare * 100}%` }} />
+            <span className="eval-bar-label">{evalLabel}</span>
+          </div>
+        )}
         <Board
           fen={currentNode.fen}
           turnColor={currentNode.turn as Color}
@@ -393,6 +447,9 @@ export function EnginePanelView(props: IDockviewPanelProps) {
     setEngineMultiPv,
     engineThreads,
     setEngineThreads,
+    engineHash,
+    setEngineHash,
+    maxEngineHash,
     maxThreads,
     engineLines,
     engineError,
@@ -432,6 +489,9 @@ export function EnginePanelView(props: IDockviewPanelProps) {
         onMultiPvChange={setEngineMultiPv}
         threads={engineThreads}
         onThreadsChange={setEngineThreads}
+        hashMb={engineHash}
+        onHashChange={setEngineHash}
+        maxHashMb={maxEngineHash}
         maxThreads={maxThreads}
         lines={engineLines}
         error={engineError}

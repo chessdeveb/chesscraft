@@ -505,6 +505,14 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
   const [engineMultiPv, setEngineMultiPv] = useState(() => Number(localStorage.getItem("stockfishMultiPv")) || 1);
   const [maxThreads, setMaxThreads] = useState(1);
   const [engineThreads, setEngineThreads] = useState(() => Number(localStorage.getItem("stockfishThreads")) || 1);
+  // Taille de la table de hachage de Stockfish, en Mo (son defaut, 16 Mo,
+  // est bien trop petit pour une analyse longue).
+  const [engineHash, setEngineHash] = useState(() => Number(localStorage.getItem("stockfishHash")) || 256);
+  // Plafond de la table de hachage : 75 % de la memoire du PC (au-dela,
+  // Windows se met a utiliser le disque et le moteur ralentit au lieu
+  // d'accelerer). null tant que la memoire n'est pas connue (ou si le
+  // systeme ne la donne pas) : pas de plafond dans ce cas.
+  const [maxEngineHash, setMaxEngineHash] = useState<number | null>(null);
   const [engineLines, setEngineLines] = useState<EngineInfo[]>([]);
   const [engineError, setEngineError] = useAutoDismissError();
 
@@ -533,6 +541,22 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
   useEffect(() => {
     localStorage.setItem("stockfishThreads", String(engineThreads));
   }, [engineThreads]);
+
+  useEffect(() => {
+    localStorage.setItem("stockfishHash", String(engineHash));
+  }, [engineHash]);
+
+  useEffect(() => {
+    invoke<number | null>("total_memory_mb")
+      .then((totalMb) => {
+        if (!totalMb) return;
+        const max = Math.max(16, Math.floor(totalMb * 0.75));
+        setMaxEngineHash(max);
+        // valeur enregistree sur un autre PC, ou avant ce plafond
+        setEngineHash((current) => Math.min(current, max));
+      })
+      .catch(() => {});
+  }, []);
 
   const handleStartEngine = useCallback(async () => {
     if (!enginePath) return;
@@ -1083,8 +1107,9 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
       depth: engineDepth,
       multipv: engineMultiPv,
       threads: engineThreads,
+      hashMb: engineHash,
     }).catch((e) => setEngineError(String(e)));
-  }, [tabId, engineRunning, enginePaused, currentNode?.fen, engineDepth, engineMultiPv, engineThreads]);
+  }, [tabId, engineRunning, enginePaused, currentNode?.fen, engineDepth, engineMultiPv, engineThreads, engineHash]);
 
   // --- Explorateur d'ouvertures ---
   const [explorerStats, setExplorerStats] = useState<OpeningMoveStat[]>([]);
@@ -1624,6 +1649,9 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
     setEngineMultiPv,
     engineThreads,
     setEngineThreads,
+    engineHash,
+    setEngineHash,
+    maxEngineHash,
     maxThreads,
     engineLines,
     engineError,

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useTranslation } from "react-i18next";
@@ -19,6 +19,11 @@ interface EnginePanelProps {
   threads: number;
   onThreadsChange: (threads: number) => void;
   maxThreads: number;
+  /** Table de hachage du moteur, en Mo. */
+  hashMb: number;
+  onHashChange: (hashMb: number) => void;
+  /** Plafond en Mo (75 % de la memoire du PC), null s'il est inconnu. */
+  maxHashMb: number | null;
   lines: EngineInfo[];
   error: string | null;
   /** FEN de la position analysee : sert uniquement a numeroter les coups de
@@ -38,6 +43,9 @@ interface EnginePanelProps {
 }
 
 const NO_DESTS: Dests = new Map();
+// tailles de table de hachage suggerees (Mo) -- la saisie reste libre
+const HASH_SIZES_MB = [64, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768];
+const MIN_HASH_MB = 16;
 
 interface HoverPreview {
   fen: string;
@@ -126,6 +134,9 @@ export function EnginePanel({
   threads,
   onThreadsChange,
   maxThreads,
+  hashMb,
+  onHashChange,
+  maxHashMb,
   lines,
   error,
   analyzedFen,
@@ -138,8 +149,36 @@ export function EnginePanel({
   onResume,
   onClose,
 }: EnginePanelProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [showSettings, setShowSettings] = useState(() => !enginePath);
+  // Saisie libre de la memoire : validee a la sortie du champ ou sur Entree
+  // seulement, pas a chaque chiffre tape -- chaque changement de taille fait
+  // realouer et vider la table de hachage du moteur.
+  const [hashInput, setHashInput] = useState(String(hashMb));
+  useEffect(() => setHashInput(String(hashMb)), [hashMb]);
+  function commitHash() {
+    const typed = Math.floor(Number(hashInput));
+    if (!Number.isFinite(typed) || typed <= 0) {
+      setHashInput(String(hashMb));
+      return;
+    }
+    const clamped = Math.min(Math.max(typed, MIN_HASH_MB), maxHashMb ?? typed);
+    setHashInput(String(clamped));
+    if (clamped !== hashMb) onHashChange(clamped);
+  }
+  // Ligne d'etat : statistiques de recherche de la meilleure ligne (les
+  // memes pour toutes les lignes d'une meme iteration).
+  const statusLine = lines.find((l) => l.multipv === 1) ?? lines[0] ?? null;
+  const compact = new Intl.NumberFormat(i18n.language, { notation: "compact", maximumFractionDigits: 1 });
+  const statusParts: string[] = [];
+  if (statusLine) {
+    statusParts.push(
+      t("engine.statusDepth", { depth: statusLine.seldepth !== null ? `${statusLine.depth}/${statusLine.seldepth}` : String(statusLine.depth) })
+    );
+    if (statusLine.nps !== null) statusParts.push(t("engine.statusNps", { value: compact.format(statusLine.nps) }));
+    if (statusLine.nodes !== null) statusParts.push(t("engine.statusNodes", { value: compact.format(statusLine.nodes) }));
+    if (statusLine.hashfull !== null) statusParts.push(t("engine.statusHash", { value: Math.round(statusLine.hashfull / 10) }));
+  }
   const [hover, setHover] = useState<HoverPreview | null>(null);
 
   async function handleBrowse() {
@@ -254,6 +293,48 @@ export function EnginePanel({
                 ))}
               </select>
             </label>
+            <label className="engine-field" title={t("engine.hashHint")}>
+              {maxHashMb !== null ? t("engine.hashMax", { max: maxHashMb }) : t("engine.hash")}
+              <div className="engine-hash-row">
+                <input
+                  type="number"
+                  className="engine-hash-input"
+                  min={MIN_HASH_MB}
+                  max={maxHashMb ?? undefined}
+                  step={64}
+                  value={hashInput}
+                  onChange={(e) => setHashInput(e.currentTarget.value)}
+                  onBlur={commitHash}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") commitHash();
+                  }}
+                />
+                {/* Tailles courantes dans une vraie liste deroulante : la
+                    <datalist> d'un champ numerique ne s'ouvre pas dans la
+                    WebView de Windows (rapporte par l'utilisateur). Toujours
+                    sur l'entree vide : sert de raccourci, la valeur en cours
+                    se lit dans le champ. */}
+                <select
+                  className="engine-hash-presets"
+                  value=""
+                  aria-label={t("engine.hashPresets")}
+                  title={t("engine.hashPresets")}
+                  onChange={(e) => {
+                    const size = Number(e.currentTarget.value);
+                    if (size > 0 && size !== hashMb) onHashChange(size);
+                  }}
+                >
+                  <option value="" disabled hidden>
+                    …
+                  </option>
+                  {HASH_SIZES_MB.filter((size) => maxHashMb === null || size <= maxHashMb).map((size) => (
+                    <option key={size} value={size}>
+                      {size}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </label>
           </div>
         </div>
       )}
@@ -264,9 +345,31 @@ export function EnginePanel({
         <div className="engine-lines">
           {paused && <p className="engine-line engine-line--paused">{t("engine.paused")}</p>}
           {lines.length === 0 && !paused && <p className="engine-line">{t("engine.analyzing")}</p>}
+          {statusParts.length > 0 && (
+            <p
+              className={"engine-status" + (statusLine?.hashfull !== null && statusLine?.hashfull !== undefined && statusLine.hashfull >= 900 ? " engine-status--hash-full" : "")}
+              title={t("engine.statusHint")}
+            >
+              {statusParts.join(" · ")}
+            </p>
+          )}
           {lines.map((info) => (
             <div key={info.multipv} className="engine-result">
               <span className="engine-score">{formatScore(info)}</span>
+              {info.wdl && (
+                <span
+                  className="engine-wdl"
+                  title={t("engine.wdlTitle", {
+                    white: Math.round(info.wdl[0] / 10),
+                    draw: Math.round(info.wdl[1] / 10),
+                    black: Math.round(info.wdl[2] / 10),
+                  })}
+                >
+                  <span className="engine-wdl-white" style={{ width: `${info.wdl[0] / 10}%` }} />
+                  <span className="engine-wdl-draw" style={{ width: `${info.wdl[1] / 10}%` }} />
+                  <span className="engine-wdl-black" style={{ width: `${info.wdl[2] / 10}%` }} />
+                </span>
+              )}
               <span className="engine-line" onMouseLeave={() => setHover(null)}>
                 {renderPv(info.pv, analyzedFen, handleMoveHover, onPlayPvLine)}
               </span>

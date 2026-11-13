@@ -12,6 +12,11 @@ pub struct EngineHandle {
     child: Child,
     stdin: ChildStdin,
     current_fen: Arc<Mutex<String>>,
+    /// Le moteur annonce une option "Hash" (voir read_uci_options).
+    supports_hash: bool,
+    /// Derniere taille de table envoyee : "setoption name Hash" vide la table
+    /// de hachage, a ne renvoyer que si la valeur change vraiment.
+    current_hash_mb: Option<u32>,
 }
 
 /// Un coup de la ligne principale, avec la position qui en resulte -- pour
@@ -40,6 +45,17 @@ pub struct EngineInfoPayload {
     pub score_cp: Option<i32>,
     pub score_mate: Option<i32>,
     pub pv: Vec<PvMove>,
+    /// Probabilites gain / nulle / perte pour mille, du point de vue des
+    /// BLANCS (comme le score) -- absent si le moteur ne connait pas
+    /// UCI_ShowWDL (voir start).
+    pub wdl: Option<[u32; 3]>,
+    /// Statistiques de recherche de la ligne d'etat du panneau Moteur.
+    /// Chacune est absente si le moteur ne l'envoie pas.
+    pub seldepth: Option<u32>,
+    pub nodes: Option<u64>,
+    pub nps: Option<u64>,
+    /// Remplissage de la table de hachage, pour mille.
+    pub hashfull: Option<u32>,
 }
 
 struct ParsedInfo {
@@ -51,6 +67,12 @@ struct ParsedInfo {
     /// qui echoue haut ou bas, pas une evaluation definitive.
     bound: bool,
     pv: Vec<String>,
+    /// gain / nulle / perte pour mille, du point de vue du camp au trait
+    wdl: Option<[u32; 3]>,
+    seldepth: Option<u32>,
+    nodes: Option<u64>,
+    nps: Option<u64>,
+    hashfull: Option<u32>,
 }
 
 impl ParsedInfo {
@@ -78,12 +100,40 @@ fn parse_info_line(line: &str) -> Option<ParsedInfo> {
     let mut score_mate = None;
     let mut bound = false;
     let mut pv = Vec::new();
+    let mut wdl = None;
+    let mut seldepth = None;
+    let mut nodes = None;
+    let mut nps = None;
+    let mut hashfull = None;
     let mut i = 0;
     while i < tokens.len() {
         match tokens[i] {
             "depth" => {
                 depth = tokens.get(i + 1).and_then(|s| s.parse().ok());
                 i += 2;
+            }
+            "seldepth" => {
+                seldepth = tokens.get(i + 1).and_then(|s| s.parse().ok());
+                i += 2;
+            }
+            "nodes" => {
+                nodes = tokens.get(i + 1).and_then(|s| s.parse().ok());
+                i += 2;
+            }
+            "nps" => {
+                nps = tokens.get(i + 1).and_then(|s| s.parse().ok());
+                i += 2;
+            }
+            "hashfull" => {
+                hashfull = tokens.get(i + 1).and_then(|s| s.parse().ok());
+                i += 2;
+            }
+            "wdl" => {
+                let part = |k: usize| tokens.get(i + k).and_then(|s| s.parse::<u32>().ok());
+                if let (Some(w), Some(d), Some(l)) = (part(1), part(2), part(3)) {
+                    wdl = Some([w, d, l]);
+                }
+                i += 4;
             }
             "multipv" => {
                 multipv = tokens
@@ -124,6 +174,11 @@ fn parse_info_line(line: &str) -> Option<ParsedInfo> {
         score_mate,
         bound,
         pv,
+        wdl,
+        seldepth,
+        nodes,
+        nps,
+        hashfull,
     })
 }
 
@@ -175,6 +230,11 @@ fn resolve_line(fen: &str, info: &ParsedInfo) -> Option<EngineInfoPayload> {
         score_cp: info.score_cp.map(|v| v * sign),
         score_mate: info.score_mate.map(|v| v * sign),
         pv,
+        wdl: info.wdl.map(|[w, d, l]| if white_to_move { [w, d, l] } else { [l, d, w] }),
+        seldepth: info.seldepth,
+        nodes: info.nodes,
+        nps: info.nps,
+        hashfull: info.hashfull,
     })
 }
 
@@ -212,7 +272,13 @@ pub fn start(app: AppHandle, path: &str, tab_id: u32) -> Result<EngineHandle, St
     let mut reader = BufReader::new(stdout);
 
     write_line(&mut stdin, "uci")?;
-    wait_for(&mut reader, "uciok")?;
+    // Options annoncees par CE moteur : UCI_ShowWDL et Hash ne sont demandes
+    // que s'il les connait (versions anciennes de Stockfish, autre moteur UCI).
+    let options = read_uci_options(&mut reader)?;
+    if options.iter().any(|o| o == "UCI_ShowWDL") {
+        write_line(&mut stdin, "setoption name UCI_ShowWDL value true")?;
+    }
+    let supports_hash = options.iter().any(|o| o == "Hash");
     write_line(&mut stdin, "isready")?;
     wait_for(&mut reader, "readyok")?;
     write_line(&mut stdin, "ucinewgame")?;
@@ -246,7 +312,39 @@ pub fn start(app: AppHandle, path: &str, tab_id: u32) -> Result<EngineHandle, St
         child,
         stdin,
         current_fen,
+        supports_hash,
+        current_hash_mb: None,
     })
+}
+
+/// Nom d'une option dans une ligne "option name <nom> type ..." de la
+/// reponse a "uci" (le nom peut contenir des espaces).
+fn uci_option_name(line: &str) -> Option<String> {
+    let rest = line.trim().strip_prefix("option name ")?;
+    let name = rest.split(" type ").next()?.trim();
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+/// Lit la reponse a "uci" jusqu'a "uciok" et renvoie les noms des options
+/// que le moteur declare.
+fn read_uci_options(reader: &mut BufReader<std::process::ChildStdout>) -> Result<Vec<String>, String> {
+    let mut options = Vec::new();
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => return Err("le moteur s'est arrêté de manière inattendue".to_string()),
+            Ok(_) => {
+                if line.trim() == "uciok" {
+                    return Ok(options);
+                }
+                if let Some(name) = uci_option_name(&line) {
+                    options.push(name);
+                }
+            }
+            Err(e) => return Err(e.to_string()),
+        }
+    }
 }
 
 fn wait_for(reader: &mut BufReader<std::process::ChildStdout>, token: &str) -> Result<(), String> {
@@ -444,9 +542,13 @@ impl Drop for BatchEngine {
 }
 
 impl EngineHandle {
-    pub fn analyze(&mut self, fen: &str, depth: u32, multipv: u32, threads: u32) -> Result<(), String> {
+    pub fn analyze(&mut self, fen: &str, depth: u32, multipv: u32, threads: u32, hash_mb: u32) -> Result<(), String> {
         *self.current_fen.lock().unwrap() = fen.to_string();
         write_line(&mut self.stdin, "stop")?;
+        if self.supports_hash && self.current_hash_mb != Some(hash_mb) {
+            write_line(&mut self.stdin, &format!("setoption name Hash value {hash_mb}"))?;
+            self.current_hash_mb = Some(hash_mb);
+        }
         write_line(
             &mut self.stdin,
             &format!("setoption name MultiPV value {multipv}"),
@@ -507,6 +609,45 @@ mod tests {
         ] {
             assert!(!parse_info_line(line).unwrap().is_complete_line(), "{line}");
         }
+    }
+
+    #[test]
+    fn search_statistics_and_wdl_are_read() {
+        let info = parse_info_line(
+            "info depth 28 seldepth 41 multipv 1 score cp 35 wdl 120 850 30 nodes 812345678 nps 2500000 hashfull 453 tbhits 0 time 324000 pv e2e4 e7e5",
+        )
+        .unwrap();
+        assert!(info.is_complete_line());
+        let payload = resolve_line(START_FEN, &info).unwrap();
+        assert_eq!(payload.score_cp, Some(35));
+        assert_eq!(payload.wdl, Some([120, 850, 30]));
+        assert_eq!((payload.seldepth, payload.nodes, payload.nps, payload.hashfull), (Some(41), Some(812345678), Some(2500000), Some(453)));
+        assert_eq!(payload.pv.len(), 2);
+    }
+
+    // comme le score, le WDL est donne par le moteur du point de vue du camp
+    // au trait : ramene aux Blancs quand ce sont les Noirs qui jouent.
+    #[test]
+    fn wdl_is_given_from_whites_point_of_view() {
+        let black_to_move = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1";
+        let info = parse_info_line("info depth 20 multipv 1 score cp -30 wdl 40 800 160 pv e7e5").unwrap();
+        let payload = resolve_line(black_to_move, &info).unwrap();
+        assert_eq!(payload.score_cp, Some(30));
+        assert_eq!(payload.wdl, Some([160, 800, 40]));
+    }
+
+    #[test]
+    fn engine_without_wdl_leaves_it_empty() {
+        let info = parse_info_line("info depth 20 multipv 1 score cp 12 pv e2e4").unwrap();
+        assert_eq!(resolve_line(START_FEN, &info).unwrap().wdl, None);
+    }
+
+    #[test]
+    fn option_names_are_read_from_the_uci_reply() {
+        assert_eq!(uci_option_name("option name Hash type spin default 16 min 1 max 33554432"), Some("Hash".to_string()));
+        assert_eq!(uci_option_name("option name UCI_ShowWDL type check default false"), Some("UCI_ShowWDL".to_string()));
+        assert_eq!(uci_option_name("option name Clear Hash type button"), Some("Clear Hash".to_string()));
+        assert_eq!(uci_option_name("id name Stockfish 17"), None);
     }
 
     #[test]

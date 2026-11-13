@@ -119,6 +119,11 @@ export interface AppContextValue {
   setEngineMultiPv: (multiPv: number) => void;
   engineThreads: number;
   setEngineThreads: (threads: number) => void;
+  // table de hachage du moteur, en Mo
+  engineHash: number;
+  setEngineHash: (hashMb: number) => void;
+  // plafond (75 % de la memoire du PC), null s'il est inconnu
+  maxEngineHash: number | null;
   maxThreads: number;
   engineLines: EngineInfo[];
   engineError: string | null;
