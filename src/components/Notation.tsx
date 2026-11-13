@@ -43,6 +43,9 @@ interface NotationProps {
   gameReportProgress?: GameReportProgress | null;
   gameReportError?: string | null;
   gameReportSummary?: GameReportSummary | null;
+  /** Mode entrainement : ce coup de la ligne et toute sa suite sont
+      remplaces par "…" (les coups a deviner), ses variantes restent. */
+  hideFromId?: number | null;
   /** Theme de l'echiquier, pour les diagrammes persistants (NAG $220/221)
       inseres dans la notation -- absent en lecture seule (pas de barre
       d'annotation, donc pas moyen d'en ajouter, mais un diagramme deja
@@ -175,6 +178,7 @@ export function Notation({
   gameReportError,
   gameReportSummary,
   boardTheme,
+  hideFromId,
 }: NotationProps) {
   const { t } = useTranslation();
   const byId = new Map(tree.nodes.map((n) => [n.id, n]));
@@ -297,6 +301,22 @@ export function Notation({
 
       const [mainChildId, ...variationIds] = node.children;
       if (mainChildId === undefined) break;
+      if (mainChildId === hideFromId) {
+        out.push(
+          <span key="training-hidden" className="notation-hidden" title={t("training.hiddenMoves")}>
+            …{" "}
+          </span>
+        );
+        for (const varId of variationIds) {
+          out.push(
+            <span key={`var-${varId}`} className="variation">
+              ({renderLine(varId, true)})
+            </span>
+          );
+          out.push(" ");
+        }
+        break;
+      }
       node = byId.get(mainChildId);
       showEllipsis = variationIds.length > 0;
       pendingVariations = variationIds;

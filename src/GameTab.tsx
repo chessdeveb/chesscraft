@@ -105,7 +105,8 @@ interface GamePanelPrefs {
 const GAME_PANELS_KEY = "gamePanels";
 const GAME_LAYOUT_KEY = "gameDockviewLayout";
 const GAME_LAYOUT_KEY_PREP = "gameDockviewLayoutPrep";
-const GAME_PANEL_IDS = ["board", "notation", "explorer", "engine", "training"];
+const NO_TRAINING_DESTS: Dests = new Map();
+const GAME_PANEL_IDS =["board", "notation", "explorer", "engine", "training"];
 
 function loadGamePanelPrefs(): GamePanelPrefs {
   const defaults: GamePanelPrefs = { notation: true, explorer: false, engine: false, training: false };
@@ -617,12 +618,18 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
   );
 
   // --- Mode entrainement ---
-  // Position courante de l'exercice, independante de currentNodeId (la
-  // navigation normale de l'echiquier/notation) : l'utilisateur doit pouvoir
-  // continuer a parcourir la partie normalement pendant qu'un entrainement
-  // est en pause sur une autre position, voir ExplorerPreview pour le meme
-  // principe (previewNodeId separe de currentNodeId).
+  // Position courante de l'exercice. L'exercice se joue sur l'echiquier
+  // PRINCIPAL (plus d'echiquier propre au panneau Entrainement, demande de
+  // l'utilisateur) : currentNodeId suit trainingNodeId a chaque avancee (voir
+  // l'effet de synchronisation plus bas), mais les deux restent distincts
+  // pour que l'utilisateur puisse parcourir librement la partie pendant
+  // l'exercice puis y revenir (voir handleTrainingResume).
   const [trainingNodeId, setTrainingNodeId] = useState<number | null>(null);
+  // Noeud affiche sur l'echiquier pendant qu'un retour est en attente : le
+  // coup essaye (insere comme variante) ou le coup de la partie rejoue. Sert
+  // a verrouiller l'echiquier sur cette position (voir boardDests) et a y
+  // revenir depuis handleTrainingResume.
+  const [trainingShownNodeId, setTrainingShownNodeId] = useState<number | null>(null);
   // camp pour lequel l'exercice a demarre (voir handleStartTraining) : fixe
   // pour toute la duree de l'exercice, les coups de l'autre camp sont
   // rejoues automatiquement depuis la partie sans etre juges (l'utilisateur
@@ -692,7 +699,10 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
       const node = tree?.nodes.find((n) => n.id === nodeId);
       if (!node) return;
       setTrainingNodeId(nodeId);
+      setTrainingShownNodeId(null);
       setTrainingSide(node.turn);
+      // l'exercice se joue du point de vue du camp entraine
+      setBoardFlipped(node.turn === "black");
       setTrainingFeedback(null);
       setTrainingError(null);
       setTrainingRounds([]);
@@ -706,6 +716,7 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
 
   const handleStopTraining = useCallback(() => {
     setTrainingNodeId(null);
+    setTrainingShownNodeId(null);
     setTrainingSide(null);
     setTrainingFeedback(null);
     setTrainingRounds([]);
@@ -734,6 +745,15 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
       .then((moves) => setTrainingDests(buildDests(moves)))
       .catch(() => setTrainingDests(new Map()));
   }, [tabId, trainingNode, trainingSide, trainingFeedback, trainingBusy]);
+
+  // L'echiquier principal suit l'exercice : chaque avancee de la position
+  // d'entrainement (coup de la partie rejoue, "Continuer", coup automatique
+  // de l'autre camp) y amene aussi la navigation normale.
+  useEffect(() => {
+    if (trainingNodeId === null) return;
+    setCurrentNodeId(trainingNodeId);
+    setVariationChoice(null);
+  }, [trainingNodeId]);
 
   // rejoue automatiquement le coup de l'autre camp (celui que l'utilisateur
   // ne controle pas dans cet exercice) : petit delai pour qu'il reste
@@ -859,11 +879,17 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
           gameMoveClassification: prefetched?.gameMoveClassification ?? null,
           pendingNodeId: gameChild.id,
         });
+        // montre tout de suite le coup joue sur l'echiquier principal (qui
+        // reste verrouille sur cette position tant que le retour est affiche)
+        setTrainingShownNodeId(gameChild.id);
+        setCurrentNodeId(gameChild.id);
+        setVariationChoice(null);
         if (!betterGameMoveSan) {
           // coup de la partie deja optimal : avancee automatique, rien de
           // plus a lire. Sinon on attend "Continuer" (voir handleTrainingContinue).
           setTimeout(() => {
             setTrainingFeedback(null);
+            setTrainingShownNodeId(null);
             setTrainingNodeId(gameChild.id);
           }, 500);
         }
@@ -881,10 +907,15 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
         // judge_training_move (qui ne fait que l'evaluer, sans toucher a la
         // session), l'utilisateur doit pouvoir retrouver ses essais ensuite
         // dans la Notation, pas seulement un verdict ephemere ici.
-        await invoke<number>("play_move", { tabId, nodeId: trainingNode.id, from, to, promotion });
+        const triedId = await invoke<number>("play_move", { tabId, nodeId: trainingNode.id, from, to, promotion });
         const newTree = await invoke<TreeDto>("get_tree", { tabId });
         setTree(newTree);
         setIsDirty(true);
+        // l'echiquier principal montre le coup essaye (dans sa variante)
+        // jusqu'a "Continuer", qui revient au coup de la partie.
+        setTrainingShownNodeId(triedId);
+        setCurrentNodeId(triedId);
+        setVariationChoice(null);
 
         // Reutilise le pre-chauffage de cette position s'il a deja abouti ;
         // sinon judge_training_move refait le calcul complet (3 positions)
@@ -924,7 +955,38 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
       setTrainingNodeId(trainingFeedback.pendingNodeId);
     }
     setTrainingFeedback(null);
+    setTrainingShownNodeId(null);
   }, [trainingFeedback]);
+
+  // Exercice en cours (ni termine, ni en fin de ligne) : tant qu'il l'est,
+  // l'echiquier principal sert a jouer les coups de l'exercice.
+  const trainingLive = trainingNodeId !== null && !trainingSummary && !trainingAtEnd;
+  // position que l'echiquier doit afficher pour l'exercice : le coup montre
+  // pendant un retour, sinon la position ou le trainee doit jouer.
+  const trainingBoardNodeId = trainingLive ? (trainingShownNodeId ?? trainingNodeId) : null;
+  // l'utilisateur est parti naviguer ailleurs dans la partie : l'echiquier
+  // y redevient normal, le panneau propose de revenir a l'exercice.
+  const trainingAway = trainingLive && currentNodeId !== trainingBoardNodeId;
+  const handleTrainingResume = useCallback(() => {
+    if (trainingBoardNodeId === null) return;
+    setCurrentNodeId(trainingBoardNodeId);
+    setVariationChoice(null);
+  }, [trainingBoardNodeId]);
+  // Coups jouables sur l'echiquier principal : ceux de l'exercice sur la
+  // position d'entrainement, aucun sur le coup montre pendant un retour (il
+  // faut d'abord "Continuer"), les coups normaux partout ailleurs.
+  const trainingOnBoard = trainingLive && !trainingAway;
+  const boardDests = !trainingOnBoard ? dests : trainingShownNodeId === null ? trainingDests : NO_TRAINING_DESTS;
+  const boardMove = trainingOnBoard ? handleTrainingMove : handleMove;
+  // Suite de la partie masquee dans la Notation pendant l'exercice (sinon
+  // les coups a deviner y sont lisibles) : tout ce qui suit la position a
+  // jouer -- ou le coup de la partie qu'on vient de rejouer, tant que son
+  // retour est affiche. Les coups essayes (variantes) restent visibles.
+  const trainingHiddenBase =
+    trainingNode && trainingShownNodeId !== null && trainingShownNodeId === trainingNode.children[0]
+      ? (tree?.nodes.find((n) => n.id === trainingShownNodeId) ?? trainingNode)
+      : trainingNode;
+  const trainingHiddenFromId = trainingLive ? (trainingHiddenBase?.children[0] ?? null) : null;
 
   const setPanelVisible = useCallback((id: "board" | "notation" | "explorer" | "engine" | "training", visible: boolean) => {
     if (id === "explorer") setExplorerVisible(visible);
@@ -1455,6 +1517,10 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
       }
       if (tryRestoreDockviewLayout(api, GAME_LAYOUT_KEY)) {
         if (!api.getPanel("board")) setPanelVisible("board", true);
+        // une partie s'ouvre toujours sur la Notation, quel que soit
+        // l'onglet (Explorateur, Entrainement...) actif dans la disposition
+        // memorisee -- demande de l'utilisateur.
+        api.getPanel("notation")?.api.setActive();
         watchExplorerPanel();
         syncPanelCheckedStates(api, GAME_PANEL_IDS);
         gameLayoutCleanupRef.current = persistDockviewLayout(api, GAME_LAYOUT_KEY, GAME_PANEL_IDS);
@@ -1501,12 +1567,12 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
     tree,
     currentNode: currentNode ?? null,
     currentNodeId,
-    dests,
+    dests: boardDests,
     boardTheme,
     setBoardTheme,
     boardFlipped,
     setBoardFlipped,
-    handleMove,
+    handleMove: boardMove,
     handlePlayPvLine,
     handleShapesChange,
     handleSelect,
@@ -1573,7 +1639,9 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
     trainingNodeId,
     trainingSide,
     trainingFen,
-    trainingDests,
+    trainingAway,
+    trainingOnBoard,
+    trainingHiddenFromId,
     trainingFeedback,
     trainingBusy,
     trainingError,
@@ -1586,7 +1654,7 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
     setTrainingThreadsSetting,
     handleStartTraining,
     handleStopTraining,
-    handleTrainingMove,
+    handleTrainingResume,
     handleTrainingContinue,
   };
 

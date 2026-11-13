@@ -485,6 +485,14 @@ pub fn run(
     if !decompress(manifest, &archive, &output, on_progress, should_stop)? {
         return Ok(Outcome::Stopped);
     }
+    // Restes d'une megabase precedente supprimee a la main (megabase.sqlite
+    // efface, mais pas son -wal/-shm) : SQLite rejouerait ce journal etranger
+    // sur la nouvelle base des sa premiere ouverture et la corromprait.
+    for suffix in ["-wal", "-shm"] {
+        let mut stale = target.clone().into_os_string();
+        stale.push(suffix);
+        let _ = fs::remove_file(PathBuf::from(stale));
+    }
     fs::rename(&output, &target).map_err(MegabaseError::io)?;
     let _ = fs::remove_file(&archive);
     let _ = fs::remove_file(pending_file(app_data_dir));

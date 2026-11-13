@@ -47,10 +47,6 @@ const FIDE_TABLE_COLUMNS = [
   { key: "flag", default: 90 },
 ];
 
-const GAMES_PAGE_SIZE = 200;
-const PLAYERS_PAGE_SIZE = 200;
-const FIDE_PAGE_SIZE = 200;
-const TOURNAMENTS_PAGE_SIZE = 200;
 
 export function BasesPanelView() {
   const { t } = useTranslation();
@@ -160,6 +156,9 @@ export function PartiesPanelView() {
     gamesTotal,
     gamesLoading,
     gamesPage,
+    pageSize,
+    pageSizes,
+    onPageSizeChange,
     gamesSearchInput,
     onGamesSearchChange,
     onGamesPageChange,
@@ -263,7 +262,9 @@ export function PartiesPanelView() {
           </button>
           <PageNav
             page={gamesPage}
-            pageSize={GAMES_PAGE_SIZE}
+            pageSize={pageSize}
+            pageSizes={pageSizes}
+            onPageSizeChange={onPageSizeChange}
             total={gamesTotal}
             loading={gamesLoading}
             onPageChange={onGamesPageChange}
@@ -364,6 +365,9 @@ export function PlayersPanelView() {
     playersTotal,
     playersLoading,
     playersPage,
+    pageSize,
+    pageSizes,
+    onPageSizeChange,
     playersSearchInput,
     onPlayersSearchChange,
     onPlayersPageChange,
@@ -401,7 +405,9 @@ export function PlayersPanelView() {
         </button>
         <PageNav
           page={playersPage}
-          pageSize={PLAYERS_PAGE_SIZE}
+          pageSize={pageSize}
+          pageSizes={pageSizes}
+          onPageSizeChange={onPageSizeChange}
           total={playersTotal}
           loading={playersLoading}
           onPageChange={onPlayersPageChange}
@@ -504,6 +510,9 @@ export function TournamentsPanelView() {
     tournamentsTotal,
     tournamentsLoading,
     tournamentsPage,
+    pageSize,
+    pageSizes,
+    onPageSizeChange,
     tournamentsSearchInput,
     onTournamentsSearchChange,
     onTournamentsPageChange,
@@ -552,7 +561,9 @@ export function TournamentsPanelView() {
         </button>
         <PageNav
           page={tournamentsPage}
-          pageSize={TOURNAMENTS_PAGE_SIZE}
+          pageSize={pageSize}
+          pageSizes={pageSizes}
+          onPageSizeChange={onPageSizeChange}
           total={tournamentsTotal}
           loading={tournamentsLoading}
           onPageChange={onTournamentsPageChange}
@@ -632,6 +643,9 @@ export function FidePanelView() {
     fideTotal,
     fideLoading,
     fidePage,
+    pageSize,
+    pageSizes,
+    onPageSizeChange,
     fideSearchInput,
     onFideSearchChange,
     onFidePageChange,
@@ -692,7 +706,9 @@ export function FidePanelView() {
         </button>
         <PageNav
           page={fidePage}
-          pageSize={FIDE_PAGE_SIZE}
+          pageSize={pageSize}
+          pageSizes={pageSizes}
+          onPageSizeChange={onPageSizeChange}
           total={fideTotal}
           loading={fideLoading}
           onPageChange={onFidePageChange}
@@ -827,7 +843,7 @@ export function FidePanelView() {
             <tbody>
               {fidePlayers.map((p, index) => (
                 <tr key={p.fideId}>
-                  <td>{fidePage * FIDE_PAGE_SIZE + index + 1}</td>
+                  <td>{fidePage * pageSize + index + 1}</td>
                   <td>
                     <span className="player-link" title={t("notation.openFidePage")} onClick={() => openFidePage(p.fideId)}>
                       {p.name}

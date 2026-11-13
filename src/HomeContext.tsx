@@ -102,6 +102,10 @@ export interface HomeContextValue {
   gamesTotal: number;
   gamesLoading: boolean;
   gamesPage: number;
+  // lignes par page, commun aux quatre listes paginees de l'Accueil
+  pageSize: number;
+  pageSizes: number[];
+  onPageSizeChange: (size: number) => void;
   gamesSearchInput: string;
   onGamesSearchChange: (v: string) => void;
   onGamesPageChange: (p: number) => void;

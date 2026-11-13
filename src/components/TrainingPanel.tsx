@@ -10,7 +10,7 @@ import type { TrainingFeedback, TrainingSessionSummary } from "../AppContext";
 interface TrainingPanelProps {
   fen: string | null;
   side: "white" | "black" | null;
-  dests: Dests;
+  away: boolean;
   feedback: TrainingFeedback | null;
   busy: boolean;
   error: string | null;
@@ -26,7 +26,7 @@ interface TrainingPanelProps {
   currentNodeId: number;
   onStart: (nodeId: number) => void;
   onStop: () => void;
-  onMove: (from: Key, to: Key, promotion: string | null) => void;
+  onResume: () => void;
   onContinue: () => void;
 }
 
@@ -83,7 +83,7 @@ function renderRefutation(moves: PvMove[], fenBefore: string, onHover: (move: Pv
 export function TrainingPanel({
   fen,
   side,
-  dests,
+  away,
   feedback,
   busy,
   error,
@@ -99,7 +99,7 @@ export function TrainingPanel({
   currentNodeId,
   onStart,
   onStop,
-  onMove,
+  onResume,
   onContinue,
 }: TrainingPanelProps) {
   const { t } = useTranslation();
@@ -180,18 +180,9 @@ export function TrainingPanel({
 
   return (
     <div className="dock-panel-content training-panel">
-      <div className="training-panel-board">
-        <Board
-          fen={fen}
-          turnColor={side as Color}
-          dests={dests}
-          shapes={[]}
-          theme={boardTheme}
-          orientation={side as Color}
-          onMove={onMove}
-          onShapesChange={() => {}}
-        />
-      </div>
+      {/* Pas d'echiquier ici : l'exercice se joue sur l'echiquier principal
+          (voir boardDests/boardMove, GameTab.tsx), ce panneau n'affiche que
+          les informations de la session. */}
       <div className="training-panel-side">
         {settingsRow}
         {accuracy !== null && (
@@ -201,6 +192,14 @@ export function TrainingPanel({
           {error && <p className="error">{error}</p>}
           {busy && <p className="status-message">{t("training.analyzing")}</p>}
           {!busy && !feedback && atEnd && <p className="notation-empty">{t("training.lineEnd")}</p>}
+          {away && (
+            <p className="training-away">
+              {t("training.away")} <button onClick={onResume}>{t("training.resume")}</button>
+            </p>
+          )}
+          {!busy && !feedback && !atEnd && !away && (
+            <p className="status-message">{t(side === "white" ? "training.yourMoveWhite" : "training.yourMoveBlack")}</p>
+          )}
           {feedback && (
             <div className="training-feedback-card">
               {feedback.matchesGame ? (

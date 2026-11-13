@@ -61,7 +61,63 @@ fn map_explorer_game_summary_row(row: &rusqlite::Row) -> rusqlite::Result<Explor
 }
 
 pub fn open(path: &Path) -> Result<Connection, String> {
-    let mut conn = Connection::open(path).map_err(|e| e.to_string())?;
+    let conn = Connection::open(path).map_err(|e| readable_open_error(path, &e.to_string()))?;
+    prepare(conn).map_err(|e| readable_open_error(path, &e))
+}
+
+/// Delai maximum de open_quick.
+const QUICK_OPEN_LIMIT: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// Comme open(), mais abandonne avec une erreur lisible si la preparation de
+/// la base (creation d'index, precalculs de migration) depasse
+/// QUICK_OPEN_LIMIT. A utiliser depuis les commandes synchrones (explorateur,
+/// listes de l'Accueil, ouverture d'une partie) : sur une base endommagee --
+/// cas rapporte : un fichier -wal residuel rejoue sur une megabase
+/// reinstallee -- ces precalculs repartaient de zero sur des millions de
+/// parties et l'application tournait dans le vide, sans la moindre erreur.
+/// Les taches de fond avec progression (import, outils) gardent open(), ou
+/// une preparation longue est legitime.
+pub fn open_quick(path: &Path) -> Result<Connection, String> {
+    let conn = Connection::open(path).map_err(|e| readable_open_error(path, &e.to_string()))?;
+    let handle = conn.get_interrupt_handle();
+    let (done, waiting) = std::sync::mpsc::channel::<()>();
+    let watchdog = std::thread::spawn(move || {
+        if waiting.recv_timeout(QUICK_OPEN_LIMIT) == Err(std::sync::mpsc::RecvTimeoutError::Timeout) {
+            handle.interrupt();
+        }
+    });
+    let result = prepare(conn);
+    let _ = done.send(());
+    let _ = watchdog.join();
+    result.map_err(|e| {
+        if e.to_lowercase().contains("interrupt") {
+            format!(
+                "ouverture de la base trop longue (plus de {} s), interrompue : « {} » est peut-être endommagée (fichier -wal résiduel ?) ou demande une mise à niveau longue. Lancez Outils › Recalculer les stats de l'explorateur sur cette base, ou réinstallez-la.",
+                QUICK_OPEN_LIMIT.as_secs(),
+                path.display()
+            )
+        } else {
+            readable_open_error(path, &e)
+        }
+    })
+}
+
+/// Traduit les erreurs SQLite d'un fichier illisible en message
+/// comprehensible ; les autres erreurs sont renvoyees telles quelles.
+fn readable_open_error(path: &Path, error: &str) -> String {
+    let lower = error.to_lowercase();
+    if lower.contains("malformed") || lower.contains("not a database") || lower.contains("disk i/o error") {
+        format!(
+            "base endommagée ou illisible : « {} » ({error}). Si un fichier -wal ou -shm traîne à côté d'une base réinstallée, supprimez-le ; sinon réinstallez la base.",
+            path.display()
+        )
+    } else {
+        error.to_string()
+    }
+}
+
+/// Reglages de connexion, schema et migrations communs a open/open_quick.
+fn prepare(mut conn: Connection) -> Result<Connection, String> {
     // le mode WAL permet a d'autres connexions de lire pendant qu'un import de
     // masse ecrit ; le busy_timeout evite un echec immediat ("database is
     // locked") en cas de bref chevauchement d'ecriture.

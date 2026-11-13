@@ -207,6 +207,7 @@ export function NotationPanelView() {
     gameReportSummary,
     handleStartGameReport,
     boardTheme,
+    trainingHiddenFromId,
   } = useAppContext();
   if (!tree) return null;
   return (
@@ -244,6 +245,7 @@ export function NotationPanelView() {
         gameReportError={gameReportError}
         gameReportSummary={gameReportSummary}
         boardTheme={boardTheme}
+        hideFromId={trainingHiddenFromId}
       />
     </div>
   );
@@ -402,7 +404,19 @@ export function EnginePanelView(props: IDockviewPanelProps) {
     currentNode,
     boardTheme,
     boardFlipped,
+    trainingOnBoard,
   } = useAppContext();
+  const { t } = useTranslation();
+
+  // Exercice en cours sur l'echiquier principal : l'analyse de cette
+  // position donnerait le coup a trouver.
+  if (trainingOnBoard) {
+    return (
+      <div className="dock-panel-content">
+        <p className="notation-empty">{t("training.engineHidden")}</p>
+      </div>
+    );
+  }
 
   return (
     <div className="dock-panel-content">
@@ -443,7 +457,7 @@ export function TrainingPanelView() {
     currentNodeId,
     trainingFen,
     trainingSide,
-    trainingDests,
+    trainingAway,
     trainingFeedback,
     trainingBusy,
     trainingError,
@@ -458,7 +472,7 @@ export function TrainingPanelView() {
     boardTheme,
     handleStartTraining,
     handleStopTraining,
-    handleTrainingMove,
+    handleTrainingResume,
     handleTrainingContinue,
   } = useAppContext();
 
@@ -466,7 +480,7 @@ export function TrainingPanelView() {
     <TrainingPanel
       fen={trainingFen}
       side={trainingSide}
-      dests={trainingDests}
+      away={trainingAway}
       feedback={trainingFeedback}
       busy={trainingBusy}
       error={trainingError}
@@ -482,7 +496,7 @@ export function TrainingPanelView() {
       currentNodeId={currentNodeId}
       onStart={handleStartTraining}
       onStop={handleStopTraining}
-      onMove={handleTrainingMove}
+      onResume={handleTrainingResume}
       onContinue={handleTrainingContinue}
     />
   );

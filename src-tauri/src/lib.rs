@@ -936,7 +936,7 @@ fn list_tournaments_in_base(
     offset: u32,
     limit: u32,
 ) -> Result<TournamentsPage, String> {
-    let conn = db::open(Path::new(&path))?;
+    let conn = db::open_quick(Path::new(&path))?;
     let total = db::count_tournaments(&conn, &search)?;
     let tournaments = db::list_tournaments_page(&conn, &search, &sort_by, &sort_dir, limit, offset)?;
     Ok(TournamentsPage { tournaments, total })
@@ -948,7 +948,7 @@ fn list_tournaments_in_base(
 /// jour, pour que l'interface puisse le signaler.
 #[tauri::command]
 fn set_tournament_cadence(path: String, tournament_id: i64, time_control: String) -> Result<u32, String> {
-    let mut conn = db::open(Path::new(&path))?;
+    let mut conn = db::open_quick(Path::new(&path))?;
     db::set_tournament_time_control(&mut conn, tournament_id, &time_control)
 }
 
@@ -1861,7 +1861,7 @@ fn ensure_reference_conn(app: &AppHandle, state: &State<AppState>) -> Result<(),
     let mut conn_cache = state.reference_conn.lock().unwrap();
     let needs_reopen = !matches!(conn_cache.as_ref(), Some((path, _)) if *path == reference.path);
     if needs_reopen {
-        let conn = db::open(Path::new(&reference.path))?;
+        let conn = db::open_quick(Path::new(&reference.path))?;
         maybe_start_check_suffix_cleanup(app, state, &conn, &reference.path);
         *conn_cache = Some((reference.path.clone(), conn));
         state.explorer_cache.lock().unwrap().clear();
@@ -2140,7 +2140,7 @@ fn delete_base(app: AppHandle, path: String, delete_file: bool) -> Result<(), St
 
 #[tauri::command]
 fn add_existing_base(app: AppHandle, path: String) -> Result<BaseInfo, String> {
-    let conn = db::open(Path::new(&path))?;
+    let conn = db::open_quick(Path::new(&path))?;
     let name = Path::new(&path)
         .file_stem()
         .and_then(|s| s.to_str())
@@ -2278,7 +2278,7 @@ fn spawn_megabase_job(app: AppHandle, state: &State<AppState>) -> Result<(), meg
 /// selectionnees du panneau Parties ; None s'il n'y a rien d'exploitable.
 #[tauri::command]
 fn games_performance(path: String, ids: Vec<i64>) -> Result<Option<performance::Performance>, String> {
-    let conn = db::open(Path::new(&path))?;
+    let conn = db::open_quick(Path::new(&path))?;
     let games = db::load_games_for_performance(&conn, &ids)?;
     Ok(performance::compute(&games))
 }
@@ -2332,7 +2332,7 @@ fn list_games_in_base(
     offset: u32,
     limit: u32,
 ) -> Result<GamesPage, String> {
-    let conn = db::open(Path::new(&path))?;
+    let conn = db::open_quick(Path::new(&path))?;
     let filter: db::GamesFilter = filter.into();
     let total = db::count_games(&conn, &filter)?;
     let games = db::list_games_page(&conn, &filter, &sort_by, &sort_dir, limit, offset)?;
@@ -2355,7 +2355,7 @@ fn list_players_in_base(
     offset: u32,
     limit: u32,
 ) -> Result<PlayersPage, String> {
-    let conn = db::open(Path::new(&path))?;
+    let conn = db::open_quick(Path::new(&path))?;
     let total = db::count_players(&conn, &search)?;
     let players = db::list_players_page(&conn, &search, &sort_by, &sort_dir, limit, offset)?;
     Ok(PlayersPage { players, total })
@@ -2363,7 +2363,7 @@ fn list_players_in_base(
 
 #[tauri::command]
 fn delete_game(state: State<AppState>, path: String, id: i64) -> Result<(), String> {
-    let conn = db::open(Path::new(&path))?;
+    let conn = db::open_quick(Path::new(&path))?;
     db::delete_game(&conn, id)?;
     let mut sessions = state.sessions.lock().unwrap();
     for session in sessions.values_mut() {
@@ -2383,8 +2383,8 @@ fn move_game(
     copy: bool,
     force: bool,
 ) -> Result<db::SaveResult, String> {
-    let source = db::open(Path::new(&from_path))?;
-    let target = db::open(Path::new(&to_path))?;
+    let source = db::open_quick(Path::new(&from_path))?;
+    let target = db::open_quick(Path::new(&to_path))?;
 
     let (tags, pgn_text, mainline_sans) = db::load_game_for_move(&source, id)?
         .ok_or_else(|| "partie introuvable".to_string())?;
@@ -2418,7 +2418,7 @@ fn move_game(
 /// s'ouvre a la racine, comme avant.
 #[tauri::command]
 fn open_game(state: State<AppState>, path: String, id: i64, moves: Option<Vec<String>>, start_fen: Option<String>) -> Result<TabDto, String> {
-    let conn = db::open(Path::new(&path))?;
+    let conn = db::open_quick(Path::new(&path))?;
     let pgn_text = db::load_game_pgn(&conn, id)?.ok_or_else(|| "partie introuvable".to_string())?;
     let parsed = pgn::parse_game(&pgn_text)?;
     let initial_node_id = moves
@@ -2437,7 +2437,7 @@ fn open_game(state: State<AppState>, path: String, id: i64, moves: Option<Vec<St
 
 #[tauri::command]
 fn save_game_to(state: State<AppState>, tab_id: u32, path: String, force: bool) -> Result<db::SaveResult, String> {
-    let conn = db::open(Path::new(&path))?;
+    let conn = db::open_quick(Path::new(&path))?;
     let mut sessions = state.sessions.lock().unwrap();
     let session = sessions.get_mut(&tab_id).ok_or_else(|| "onglet introuvable".to_string())?;
 
@@ -2665,7 +2665,15 @@ fn build_menu(app: &AppHandle, home_panels: bool, game_panels: bool, lang: &str,
         .build()?;
 
     let about_item = MenuItemBuilder::with_id("about", t("menu.help.about")).accelerator("F1").build(app)?;
-    let help_menu = SubmenuBuilder::new(app, t("menu.help")).item(&about_item).build()?;
+    // liens externes, ouverts dans le navigateur par defaut (voir on_menu_event)
+    let report_bug_item = MenuItemBuilder::with_id("report_bug", t("menu.help.reportBug")).build(app)?;
+    let support_item = MenuItemBuilder::with_id("support", t("menu.help.support")).build(app)?;
+    let help_menu = SubmenuBuilder::new(app, t("menu.help"))
+        .item(&about_item)
+        .separator()
+        .item(&report_bug_item)
+        .item(&support_item)
+        .build()?;
 
     Menu::with_items(app, &[&file_menu, &display_menu, &tools_menu, &preferences_menu, &help_menu])
 }
@@ -2849,6 +2857,20 @@ pub fn run() {
                 }
                 if let Some(lang) = id.strip_prefix("lang-") {
                     let _ = apply_language_change(app_handle, lang);
+                    return;
+                }
+                // Aide > Signaler un bug / Soutenir : ouverts directement d'ici,
+                // sans passer par une fenetre (le menu est partage par toutes).
+                let external_url = match id {
+                    "report_bug" => Some("https://chesscraft.fr/contact.html"),
+                    "support" => Some("https://ko-fi.com/chessdeveb"),
+                    _ => None,
+                };
+                if let Some(url) = external_url {
+                    use tauri_plugin_opener::OpenerExt;
+                    if let Err(e) = app_handle.opener().open_url(url, None::<&str>) {
+                        eprintln!("open_url {url}: {e}");
+                    }
                     return;
                 }
                 let event_name = match id {

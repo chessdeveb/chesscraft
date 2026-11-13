@@ -136,7 +136,15 @@ export interface AppContextValue {
   trainingNodeId: number | null;
   trainingSide: "white" | "black" | null;
   trainingFen: string | null;
-  trainingDests: Dests;
+  // l'utilisateur a quitte la position de l'exercice (navigation libre sur
+  // l'echiquier principal, partage avec l'exercice) : voir GameTab.tsx.
+  trainingAway: boolean;
+  // l'echiquier principal sert en ce moment a l'exercice : le panneau Moteur
+  // masque alors son analyse (elle donnerait le coup a trouver).
+  trainingOnBoard: boolean;
+  // premier coup de la suite de la partie a masquer dans la Notation
+  // pendant l'exercice (null hors exercice), voir GameTab.tsx.
+  trainingHiddenFromId: number | null;
   trainingFeedback: TrainingFeedback | null;
   trainingBusy: boolean;
   trainingError: string | null;
@@ -155,7 +163,7 @@ export interface AppContextValue {
   setTrainingThreadsSetting: (threads: number) => void;
   handleStartTraining: (nodeId: number) => void;
   handleStopTraining: () => void;
-  handleTrainingMove: (from: Key, to: Key, promotion?: string | null) => void;
+  handleTrainingResume: () => void;
   handleTrainingContinue: () => void;
 }
 

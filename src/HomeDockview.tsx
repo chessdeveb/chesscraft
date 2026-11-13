@@ -101,10 +101,7 @@ function baseNameFromPath(path: string): string {
   return fileName.replace(/\.sqlite$/i, "");
 }
 
-const GAMES_PAGE_SIZE = 200;
-const PLAYERS_PAGE_SIZE = 200;
-const FIDE_PAGE_SIZE = 200;
-const TOURNAMENTS_PAGE_SIZE = 200;
+const PAGE_SIZES = [200, 500, 1000];
 
 // La FIDE publie une nouvelle liste de classement le 1er de chaque mois :
 // last_updated (epoch secondes, voir get_fide_status) date donc du mois en
@@ -158,6 +155,12 @@ export function HomeDockview({
   const [games, setGames] = useState<GameSummary[]>([]);
   const [gamesTotal, setGamesTotal] = useState(0);
   const [gamesLoading, setGamesLoading] = useState(false);
+  // Nombre de lignes par page, commun aux onglets Parties / Joueurs /
+  // Joueurs FIDE / Tournois (choix dans PageNav), memorise entre sessions.
+  const [pageSize, setPageSize] = useState(() => {
+    const saved = Number(localStorage.getItem("homePageSize"));
+    return PAGE_SIZES.includes(saved) ? saved : 200;
+  });
   const [gamesPage, setGamesPage] = useState(0);
   const [gamesSearchInput, setGamesSearchInput] = useState("");
   const [gamesSearch, setGamesSearch] = useState("");
@@ -203,6 +206,16 @@ export function HomeDockview({
   const [fideTotal, setFideTotal] = useState(0);
   const [fideLoading, setFideLoading] = useState(false);
   const [fidePage, setFidePage] = useState(0);
+  // changer la taille de page ramene chaque liste a sa premiere page (le
+  // numero de page courant ne designe plus les memes lignes).
+  const handlePageSizeChange = useCallback((size: number) => {
+    setPageSize(size);
+    localStorage.setItem("homePageSize", String(size));
+    setGamesPage(0);
+    setPlayersPage(0);
+    setTournamentsPage(0);
+    setFidePage(0);
+  }, []);
   const [fideSearchInput, setFideSearchInput] = useState("");
   const [fideSearch, setFideSearch] = useState("");
   const [fideAdvancedOpen, setFideAdvancedOpen] = useState(false);
@@ -563,8 +576,8 @@ export function HomeDockview({
         : { search: gamesSearch },
       sortBy: gamesSort?.column ?? "",
       sortDir: gamesSort?.dir ?? "",
-      offset: gamesPage * GAMES_PAGE_SIZE,
-      limit: GAMES_PAGE_SIZE,
+      offset: gamesPage * pageSize,
+      limit: pageSize,
     })
       .then((res) => {
         if (gamesRequestIdRef.current !== requestId) return;
@@ -578,7 +591,7 @@ export function HomeDockview({
       .finally(() => {
         if (gamesRequestIdRef.current === requestId) setGamesLoading(false);
       });
-  }, [activeBasePath, activeBaseMissing, gamesSearch, gamesAdvancedOpen, gamesAdvancedFilter, gamesPage, gamesSort]);
+  }, [activeBasePath, activeBaseMissing, gamesSearch, gamesAdvancedOpen, gamesAdvancedFilter, gamesPage, gamesSort, pageSize]);
 
   const activePgnPath = activeSource?.kind === "pgn" ? activeSource.pgn.path : null;
 
@@ -610,8 +623,8 @@ export function HomeDockview({
       search: playersSearch,
       sortBy: playersSort?.column ?? "",
       sortDir: playersSort?.dir ?? "",
-      offset: playersPage * PLAYERS_PAGE_SIZE,
-      limit: PLAYERS_PAGE_SIZE,
+      offset: playersPage * pageSize,
+      limit: pageSize,
     })
       .then((res) => {
         if (playersRequestIdRef.current !== requestId) return;
@@ -625,7 +638,7 @@ export function HomeDockview({
       .finally(() => {
         if (playersRequestIdRef.current === requestId) setPlayersLoading(false);
       });
-  }, [activeBasePath, activeBaseMissing, playersSearch, playersPage, playersSort]);
+  }, [activeBasePath, activeBaseMissing, playersSearch, playersPage, playersSort, pageSize]);
 
   const tournamentsRequestIdRef = useRef(0);
   useEffect(() => {
@@ -642,8 +655,8 @@ export function HomeDockview({
       search: tournamentsSearch,
       sortBy: tournamentsSort?.column ?? "",
       sortDir: tournamentsSort?.dir ?? "",
-      offset: tournamentsPage * TOURNAMENTS_PAGE_SIZE,
-      limit: TOURNAMENTS_PAGE_SIZE,
+      offset: tournamentsPage * pageSize,
+      limit: pageSize,
     })
       .then((res) => {
         if (tournamentsRequestIdRef.current !== requestId) return;
@@ -657,7 +670,7 @@ export function HomeDockview({
       .finally(() => {
         if (tournamentsRequestIdRef.current === requestId) setTournamentsLoading(false);
       });
-  }, [activeBasePath, activeBaseMissing, tournamentsSearch, tournamentsPage, tournamentsSort, tournamentsVersion]);
+  }, [activeBasePath, activeBaseMissing, tournamentsSearch, tournamentsPage, tournamentsSort, tournamentsVersion, pageSize]);
 
   // Modifier la cadence rejoue immediatement la liste (le nombre de parties
   // mises a jour figure dans la reponse, mais seule la cadence affichee doit
@@ -713,8 +726,8 @@ export function HomeDockview({
       search: fideSearch,
       sortBy: fideSort?.column ?? "",
       sortDir: fideSort?.dir ?? "",
-      offset: fidePage * FIDE_PAGE_SIZE,
-      limit: FIDE_PAGE_SIZE,
+      offset: fidePage * pageSize,
+      limit: pageSize,
       fed: fideAdvancedFilter.fed.trim() === "" ? undefined : fideAdvancedFilter.fed.trim(),
       title: fideAdvancedFilter.title.trim() === "" ? undefined : fideAdvancedFilter.title.trim(),
       sex: fideAdvancedFilter.sex.trim() === "" ? undefined : fideAdvancedFilter.sex.trim(),
@@ -734,7 +747,7 @@ export function HomeDockview({
       .finally(() => {
         if (fideRequestIdRef.current === requestId) setFideLoading(false);
       });
-  }, [fideSearch, fideAdvancedFilter, fidePage, fideSort]);
+  }, [fideSearch, fideAdvancedFilter, fidePage, fideSort, pageSize]);
 
   useEffect(() => {
     const unlistenPromises = [
@@ -1160,6 +1173,9 @@ export function HomeDockview({
     gamesSearchInput,
     onGamesSearchChange: setGamesSearchInput,
     onGamesPageChange: setGamesPage,
+    pageSize,
+    pageSizes: PAGE_SIZES,
+    onPageSizeChange: handlePageSizeChange,
     gamesSort,
     onGamesSortChange,
     gamesAdvancedOpen,

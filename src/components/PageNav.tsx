@@ -4,13 +4,17 @@ import { useTranslation } from "react-i18next";
 interface PageNavProps {
   page: number;
   pageSize: number;
+  /** Tailles de page proposees ; le selecteur n'est affiche que si
+      onPageSizeChange est fourni. */
+  pageSizes?: number[];
+  onPageSizeChange?: (size: number) => void;
   total: number;
   loading: boolean;
   onPageChange: (page: number) => void;
   emptyLabel: string;
 }
 
-export function PageNav({ page, pageSize, total, loading, onPageChange, emptyLabel }: PageNavProps) {
+export function PageNav({ page, pageSize, pageSizes, onPageSizeChange, total, loading, onPageChange, emptyLabel }: PageNavProps) {
   const { t } = useTranslation();
   const [rowInput, setRowInput] = useState("");
 
@@ -58,6 +62,18 @@ export function PageNav({ page, pageSize, total, loading, onPageChange, emptyLab
             }}
           />
         </span>
+      )}
+      {onPageSizeChange && pageSizes && (
+        <label className="page-size">
+          {t("home.rowsPerPage")}
+          <select value={pageSize} disabled={loading} onChange={(e) => onPageSizeChange(Number(e.currentTarget.value))}>
+            {pageSizes.map((size) => (
+              <option key={size} value={size}>
+                {size}
+              </option>
+            ))}
+          </select>
+        </label>
       )}
     </Fragment>
   );
