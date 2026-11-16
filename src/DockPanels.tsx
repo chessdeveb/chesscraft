@@ -262,6 +262,9 @@ export function NotationPanelView() {
     handleToggleNag,
     handlePromoteVariation,
     handleDeleteVariation,
+    handleDeleteFollowingMoves,
+    handleDeletePreviousMoves,
+    handleClearAnnotations,
     maxThreads,
     gameReportRunning,
     gameReportProgress,
@@ -300,6 +303,9 @@ export function NotationPanelView() {
         onToggleNag={handleToggleNag}
         onPromoteVariation={handlePromoteVariation}
         onDeleteVariation={handleDeleteVariation}
+        onDeleteFollowingMoves={handleDeleteFollowingMoves}
+        onDeletePreviousMoves={handleDeletePreviousMoves}
+        onClearAnnotations={handleClearAnnotations}
         maxThreads={maxThreads}
         onStartGameReport={handleStartGameReport}
         gameReportRunning={gameReportRunning}

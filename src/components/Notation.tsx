@@ -3,6 +3,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { useTranslation } from "react-i18next";
 import type { Dests } from "@lichess-org/chessground/types";
 import { NAG_CLUSTERS, PREFIX_NAG_CODES, nagSymbol } from "../nag";
+import { EDIT_ACTION_SYMBOLS } from "../annotationShortcuts";
 import type { GameReportProgress, GameReportSummary, NodeDto, OpenTabRef, TreeDto } from "../types";
 import { Board } from "./Board";
 import { GameLinkPicker } from "./GameLinkPicker";
@@ -32,6 +33,14 @@ interface NotationProps {
   onPromoteVariation?: () => void;
   /** Supprime la branche du coup courant (bouton a gauche des NAG). */
   onDeleteVariation?: () => void;
+  /** Supprime tout ce qui suit le coup courant, variantes comprises. */
+  onDeleteFollowingMoves?: () => void;
+  /** Supprime tout ce qui precede le coup courant : la partie repart de la
+      position atteinte, affichee en diagramme au debut de la notation. */
+  onDeletePreviousMoves?: () => void;
+  /** Retire tous les commentaires, symboles et fleches de la partie (coups
+      et variantes conserves), apres confirmation. */
+  onClearAnnotations?: () => void;
   /** Aperçu en lecture seule (Explorateur) : pas de barre d'annotation. */
   readOnly?: boolean;
   /** Nombre de coeurs logiques disponibles, pour le reglage du rapport de
@@ -170,6 +179,9 @@ export function Notation({
   onToggleNag,
   onPromoteVariation,
   onDeleteVariation,
+  onDeleteFollowingMoves,
+  onDeletePreviousMoves,
+  onClearAnnotations,
   readOnly,
   maxThreads,
   onStartGameReport,
@@ -211,9 +223,15 @@ export function Notation({
   }
 
   function renderMove(node: NodeDto, showEllipsis: boolean): ReactNode {
+    // Trait et numero du coup lus dans la position qui le precede (FEN du
+    // parent), pas deduits de la profondeur : une partie qui demarre d'une
+    // position (Nouvelle position, etude, coups precedents supprimes) peut
+    // commencer au trait des Noirs ou a un numero de coup superieur a 1 --
+    // meme convention que l'export PGN (voir pgn.rs::move_number_at).
+    const parentFen = node.parent !== null ? byId.get(node.parent)?.fen.split(" ") : undefined;
     const depth = depthOf(node.id);
-    const isWhite = depth % 2 === 1;
-    const moveNumber = Math.ceil(depth / 2);
+    const isWhite = parentFen ? parentFen[1] !== "b" : depth % 2 === 1;
+    const moveNumber = (parentFen && Number(parentFen[5])) || Math.ceil(depth / 2);
     const label = isWhite ? `${moveNumber}.` : showEllipsis ? `${moveNumber}...` : "";
     // Les NAG "editoriaux" (avec l'idee de..., mieux vaut..., diagramme...)
     // introduisent ce qui suit plutot que de qualifier le coup lui-meme --
@@ -273,7 +291,9 @@ export function Notation({
       // flux de texte, comme dans un livre d'echecs imprime) -- pas besoin
       // de rien stocker de plus, la position est deja connue via node.fen.
       const diagramNag = node.nags.find((n) => n in DIAGRAM_ORIENTATION);
-      if (node.san !== null && diagramNag !== undefined) {
+      // Sur la racine : la position de depart d'une partie qui ne commence
+      // pas au premier coup (pose par "supprimer les coups precedents").
+      if (diagramNag !== undefined) {
         out.push(
           <div className="notation-diagram" key={`diagram-${node.id}`}>
             <Board
@@ -417,7 +437,7 @@ export function Notation({
         </div>
       )}
       <div className="notation">
-        {rootNode && rootNode.children.length > 0 ? (
+        {rootNode && (rootNode.children.length > 0 || rootNode.nags.length > 0) ? (
           renderLine(tree.root, true)
         ) : (
           <p className="notation-empty">{t("notation.empty")}</p>
@@ -444,6 +464,36 @@ export function Notation({
               onClick={() => onDeleteVariation?.()}
             >
               🗑️
+            </button>
+            <button
+              className="annotate-icon"
+              title={t("notation.deleteFollowingMoves")}
+              aria-label={t("notation.deleteFollowingMoves")}
+              disabled={currentNode.children.length === 0}
+              onClick={() => onDeleteFollowingMoves?.()}
+            >
+              {EDIT_ACTION_SYMBOLS.deleteFollowingMoves}
+            </button>
+            <button
+              className="annotate-icon"
+              title={t("notation.deletePreviousMoves")}
+              aria-label={t("notation.deletePreviousMoves")}
+              disabled={currentNode.parent === null}
+              onClick={() => onDeletePreviousMoves?.()}
+            >
+              {EDIT_ACTION_SYMBOLS.deletePreviousMoves}
+            </button>
+            <button
+              className="annotate-icon"
+              title={t("notation.clearAnnotations")}
+              aria-label={t("notation.clearAnnotations")}
+              onClick={() => {
+                // un commentaire en cours de saisie reecrirait son texte
+                setEditing(null);
+                onClearAnnotations?.();
+              }}
+            >
+              {EDIT_ACTION_SYMBOLS.clearAnnotations}
             </button>
             <span className="annotate-toolbar-sep" />
             {NAG_CLUSTERS.map((cluster) => (

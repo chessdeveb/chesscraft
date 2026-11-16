@@ -1642,6 +1642,129 @@ body.explorer-splitting {
   gap: 10px;
 }
 
+/* Preferences > Raccourcis d'annotation (ShortcutsWindow.tsx) : seule la
+   liste defile, titre et bouton "valeurs par defaut" restent visibles. */
+.shortcuts-window {
+  height: 100%;
+  box-sizing: border-box;
+}
+
+.shortcuts-window h2 {
+  margin: 0;
+}
+
+.shortcuts-intro {
+  margin: 0;
+  font-size: var(--t-sm);
+  color: var(--ink-2);
+}
+
+.shortcuts-notice {
+  margin: 0;
+  min-height: 1.4em;
+  font-size: var(--t-sm);
+  font-weight: 600;
+  color: var(--ink-1);
+}
+
+.shortcuts-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background-color: var(--panel);
+}
+
+.shortcuts-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.shortcuts-table td {
+  padding: 3px 8px;
+  border-top: 1px solid var(--line);
+  vertical-align: middle;
+}
+
+.shortcuts-group-row th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 8px 8px 4px;
+  text-align: left;
+  font-size: var(--t-xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  background-color: var(--panel);
+}
+
+.shortcuts-symbol {
+  width: 2.6em;
+  text-align: center;
+  font-size: 1.1em;
+}
+
+.shortcuts-label {
+  color: var(--ink-1);
+}
+
+.shortcuts-auto-side {
+  color: var(--ink-3);
+  font-size: var(--t-sm);
+}
+
+.shortcuts-combo {
+  width: 1%;
+  white-space: nowrap;
+  text-align: right;
+}
+
+.shortcuts-capture {
+  min-width: 10em;
+  cursor: pointer;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--ink-2);
+  padding: 3px 10px;
+  font: inherit;
+  font-size: var(--t-sm);
+  text-align: center;
+}
+
+.shortcuts-capture kbd {
+  color: var(--ink-1);
+}
+
+.shortcuts-capture:hover {
+  background-color: var(--accent-weak);
+}
+
+.shortcuts-capture--active {
+  border-color: var(--accent);
+  background-color: var(--accent-weak);
+  color: var(--ink-1);
+}
+
+.shortcuts-clear {
+  width: 2em;
+}
+
+.shortcuts-clear button {
+  cursor: pointer;
+  border: 0;
+  background: transparent;
+  color: var(--ink-3);
+  padding: 2px 6px;
+  font: inherit;
+}
+
+.shortcuts-clear button:hover {
+  color: var(--danger);
+}
+
 .picker-path {
   font-size: 0.8em;
   opacity: 0.6;
@@ -2539,6 +2662,38 @@ body.explorer-splitting {
 .megabase-dialog .modal-actions button:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+/* Nouvelle version proposee a l'ouverture (UpdatePrompt.tsx). */
+.update-prompt {
+  width: min(480px, 90vw);
+}
+
+.update-prompt p {
+  margin: 0;
+  line-height: 1.45;
+}
+
+/* les notes de version peuvent etre longues : elles defilent, les boutons
+   restent visibles */
+.update-prompt-notes {
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+.update-prompt-hint {
+  font-size: var(--t-sm);
+  color: var(--ink-2);
+}
+
+.update-prompt .modal-actions {
+  gap: 8px;
+}
+
+.update-prompt .modal-actions button.update-prompt-primary {
+  background-color: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
 }
 
 .megabase-badge {

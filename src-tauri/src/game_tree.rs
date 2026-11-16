@@ -115,6 +115,18 @@ fn position_fen(position: &Chess) -> String {
     Fen::from_position(position, EnPassantMode::Legal).to_string()
 }
 
+/// Les annotations de pendule "[%clk ...]" d'un commentaire, telles quelles.
+fn clock_tags(comment: &str) -> Vec<String> {
+    let mut tags = Vec::new();
+    let mut rest = comment;
+    while let Some(start) = rest.find("[%clk") {
+        let Some(len) = rest[start..].find(']') else { break };
+        tags.push(rest[start..=start + len].to_string());
+        rest = &rest[start + len + 1..];
+    }
+    tags
+}
+
 /// FEN de depart pour la position Chess960 (Fischer Random) numero `n`
 /// (0..=959), selon le schema de numerotation standard (Scharnagl) --
 /// utilise aussi par lichess/chess.com/FIDE, donc un numero donne toujours
@@ -471,6 +483,106 @@ impl GameTree {
         Ok(parent_id)
     }
 
+    /// Retire tout ce qui suit `node_id` (suite de la ligne ET variantes
+    /// partant de ce coup) : il devient le dernier coup de sa ligne. Bouton
+    /// "supprimer les coups suivants" du panneau Notation. Comme pour
+    /// delete_variation, les noeuds detaches restent dans self.nodes mais ne
+    /// sont plus atteignables depuis la racine.
+    pub fn delete_following_moves(&mut self, node_id: u32) -> Result<(), String> {
+        let node = self
+            .nodes
+            .get_mut(node_id as usize)
+            .ok_or_else(|| "nœud introuvable".to_string())?;
+        node.children.clear();
+        Ok(())
+    }
+
+    /// Retire tout ce qui precede `node_id` : la partie commence desormais a
+    /// la position atteinte apres ce coup. Bouton "supprimer les coups
+    /// precedents" du panneau Notation.
+    ///
+    /// La racine doit rester le noeud 0 (voir to_dto, mainline_sans,
+    /// pgn::write_game...) et l'id d'un noeud son indice dans self.nodes :
+    /// l'arbre est donc reconstruit a partir du sous-arbre de `node_id`,
+    /// renumerote dans l'ordre de parcours. La nouvelle racine reprend la
+    /// position du coup, son commentaire "apres" (il decrit la position
+    /// atteinte, pas le coup) et ses fleches ; le coup lui-meme, son
+    /// commentaire "avant" et ses annotations disparaissent avec ce qui
+    /// precede. Elle porte le NAG $220 (diagramme) : la notation affiche a la
+    /// place des coups supprimes un echiquier de la position de depart (voir
+    /// Notation.tsx). Les tags FEN/SetUp suivent (meme raison que from_fen),
+    /// et avec eux le trait et le numero du premier coup restant.
+    pub fn delete_previous_moves(&mut self, node_id: u32) -> Result<(), String> {
+        const DIAGRAM_NAG: u8 = 220;
+        let start = self.node(node_id).ok_or_else(|| "nœud introuvable".to_string())?;
+        if start.parent.is_none() {
+            return Err("aucun coup précédent à supprimer".to_string());
+        }
+
+        // parcours en largeur du sous-arbre : anciens ids dans leur nouvel ordre
+        let mut order: Vec<u32> = vec![node_id];
+        let mut index = 0;
+        while index < order.len() {
+            let children = self.nodes[order[index] as usize].children.clone();
+            order.extend(children);
+            index += 1;
+        }
+        let new_id: std::collections::HashMap<u32, u32> =
+            order.iter().enumerate().map(|(i, &old)| (old, i as u32)).collect();
+
+        let mut old_nodes: Vec<Option<Node>> = std::mem::take(&mut self.nodes).into_iter().map(Some).collect();
+        let mut nodes: Vec<Node> = Vec::with_capacity(order.len());
+        for (i, &old_id) in order.iter().enumerate() {
+            let mut node = old_nodes[old_id as usize].take().expect("chaque noeud n'est visite qu'une fois");
+            node.id = i as u32;
+            node.children = node.children.iter().map(|c| new_id[c]).collect();
+            if i == 0 {
+                node.parent = None;
+                node.san = None;
+                node.from = None;
+                node.to = None;
+                node.promotion = None;
+                node.comment_before = None;
+                node.nags = vec![DIAGRAM_NAG];
+            } else {
+                node.parent = node.parent.map(|p| new_id[&p]);
+            }
+            nodes.push(node);
+        }
+
+        self.tags.insert("FEN".to_string(), position_fen(&nodes[0].position));
+        self.tags.insert("SetUp".to_string(), "1".to_string());
+        self.nodes = nodes;
+        Ok(())
+    }
+
+    /// Retire toutes les annotations de la partie, en gardant tous les coups
+    /// et toutes les variantes : commentaires, symboles (NAG) et fleches /
+    /// cases colorees. Bouton "supprimer toutes les annotations" du panneau
+    /// Notation. Deux choses restent, parce que ce ne sont pas des
+    /// annotations de l'utilisateur :
+    /// - les temps de pendule ("[%clk ...]", ranges dans les commentaires
+    ///   par lichess/chess.com, voir Notation.tsx::parseClock) ;
+    /// - le diagramme de depart de la racine, qui tient lieu des coups
+    ///   retires par delete_previous_moves.
+    pub fn clear_annotations(&mut self) {
+        for node in &mut self.nodes {
+            let clocks = [node.comment_before.take(), node.comment_after.take()]
+                .iter()
+                .flatten()
+                .flat_map(|comment| clock_tags(comment))
+                .collect::<Vec<String>>()
+                .join(" ");
+            node.comment_after = if clocks.is_empty() { None } else { Some(clocks) };
+            if node.parent.is_none() {
+                node.nags.retain(|nag| matches!(*nag, 220 | 221));
+            } else {
+                node.nags.clear();
+            }
+            node.shapes.clear();
+        }
+    }
+
     pub fn set_tags(&mut self, tags: BTreeMap<String, String>) {
         for (key, value) in tags {
             if value.is_empty() {
@@ -732,5 +844,129 @@ mod tests {
     fn delete_variation_on_the_root_fails() {
         let mut tree = GameTree::new();
         assert!(tree.delete_variation(0).is_err());
+    }
+
+    #[test]
+    fn delete_following_moves_cuts_the_line_and_its_variations_after_the_move() {
+        let mut tree = GameTree::new();
+        let e4 = tree.play_move(0, "e2", "e4", None).unwrap();
+        let d4 = tree.play_move(0, "d2", "d4", None).unwrap();
+        let e5 = tree.play_move(e4, "e7", "e5", None).unwrap();
+        tree.play_move(e4, "c7", "c5", None).unwrap();
+        tree.play_move(e5, "g1", "f3", None).unwrap();
+
+        tree.delete_following_moves(e4).unwrap();
+        assert!(tree.node(e4).unwrap().children.is_empty());
+        // le coup lui-meme et les variantes qui le precedent restent
+        assert_eq!(tree.node(0).unwrap().children, vec![e4, d4]);
+        assert_eq!(tree.mainline_sans(), vec!["e4".to_string()]);
+    }
+
+    #[test]
+    fn delete_previous_moves_restarts_the_game_from_the_position_after_the_move() {
+        let mut tree = GameTree::new();
+        let e4 = tree.play_move(0, "e2", "e4", None).unwrap();
+        tree.play_move(0, "d2", "d4", None).unwrap();
+        let e5 = tree.play_move(e4, "e7", "e5", None).unwrap();
+        let nf3 = tree.play_move(e5, "g1", "f3", None).unwrap();
+        let nc3 = tree.play_move(e5, "b1", "c3", None).unwrap();
+        let nc6 = tree.play_move(nf3, "b8", "c6", None).unwrap();
+        tree.set_comment(e5, Some("avant".to_string()), Some("position critique".to_string())).unwrap();
+        tree.set_nags(e5, vec![1]).unwrap();
+        tree.set_comment(nc6, None, Some("fin".to_string())).unwrap();
+        let fen_after_e5 = tree.node_fen(e5).unwrap();
+        let _ = nc3;
+
+        tree.delete_previous_moves(e5).unwrap();
+
+        // nouvelle racine : la position apres 1...e5, sans coup, avec le
+        // commentaire qui decrivait cette position et le diagramme
+        let root = tree.node(0).unwrap();
+        assert_eq!(root.parent, None);
+        assert_eq!(root.san, None);
+        assert_eq!(root.comment_before, None);
+        assert_eq!(root.comment_after.as_deref(), Some("position critique"));
+        assert_eq!(root.nags, vec![220]);
+        assert_eq!(tree.node_fen(0).unwrap(), fen_after_e5);
+        assert_eq!(tree.tags.get("FEN"), Some(&fen_after_e5));
+        assert_eq!(tree.tags.get("SetUp").map(|s| s.as_str()), Some("1"));
+
+        // la suite et ses variantes sont conservees, renumerotees depuis 0
+        assert_eq!(tree.mainline_sans(), vec!["Nf3".to_string(), "Nc6".to_string()]);
+        let children = root.children.clone();
+        assert_eq!(children.len(), 2);
+        assert_eq!(tree.node(children[1]).unwrap().san.as_deref(), Some("Nc3"));
+        for (index, id) in tree.mainline_node_ids().into_iter().enumerate() {
+            let node = tree.node(id).unwrap();
+            assert_eq!(node.id, id);
+            if index > 0 {
+                assert!(tree.node(node.parent.unwrap()).unwrap().children.contains(&id));
+            }
+        }
+        let last = *tree.mainline_node_ids().last().unwrap();
+        assert_eq!(tree.node(last).unwrap().comment_after.as_deref(), Some("fin"));
+
+        // l'arbre reste jouable et s'exporte avec la bonne numerotation
+        let reply = tree.play_move(last, "f1", "b5", None).unwrap();
+        assert_eq!(tree.node(reply).unwrap().san.as_deref(), Some("Bb5"));
+        let pgn = crate::pgn::write_game(&tree);
+        assert!(pgn.contains("2. Nf3"), "{pgn}");
+        let reparsed = crate::pgn::parse_game(&pgn).unwrap();
+        assert_eq!(reparsed.mainline_sans(), tree.mainline_sans());
+        assert_eq!(reparsed.node(0).unwrap().nags, vec![220], "le diagramme de depart survit a l'enregistrement : {pgn}");
+        assert_eq!(reparsed.node(0).unwrap().comment_after.as_deref(), Some("position critique"));
+    }
+
+    #[test]
+    fn clear_annotations_keeps_every_move_and_variation_but_no_comment_nag_or_shape() {
+        let mut tree = GameTree::new();
+        let e4 = tree.play_move(0, "e2", "e4", None).unwrap();
+        let d4 = tree.play_move(0, "d2", "d4", None).unwrap();
+        let e5 = tree.play_move(e4, "e7", "e5", None).unwrap();
+        tree.set_comment(0, None, Some("introduction".to_string())).unwrap();
+        tree.set_comment(e4, Some("avant".to_string()), Some("[%clk 1:29:55] le meilleur".to_string())).unwrap();
+        tree.set_comment(d4, None, Some("variante".to_string())).unwrap();
+        tree.set_nags(e4, vec![1, 14]).unwrap();
+        tree.set_nags(e5, vec![220]).unwrap();
+        tree.set_shapes(e5, vec![ShapeDto { orig: "e5".to_string(), dest: None, brush: "green".to_string() }]).unwrap();
+
+        tree.clear_annotations();
+
+        assert_eq!(tree.node(0).unwrap().children, vec![e4, d4]);
+        assert_eq!(tree.mainline_sans(), vec!["e4".to_string(), "e5".to_string()]);
+        for id in [0, e4, d4, e5] {
+            let node = tree.node(id).unwrap();
+            assert_eq!(node.comment_before, None);
+            assert!(node.nags.is_empty());
+            assert!(node.shapes.is_empty());
+        }
+        assert_eq!(tree.node(0).unwrap().comment_after, None);
+        assert_eq!(tree.node(d4).unwrap().comment_after, None);
+        // le temps de pendule reste, sans le texte qui l'accompagnait
+        assert_eq!(tree.node(e4).unwrap().comment_after.as_deref(), Some("[%clk 1:29:55]"));
+    }
+
+    #[test]
+    fn clear_annotations_keeps_the_start_diagram_left_by_delete_previous_moves() {
+        let mut tree = GameTree::new();
+        let e4 = tree.play_move(0, "e2", "e4", None).unwrap();
+        let e5 = tree.play_move(e4, "e7", "e5", None).unwrap();
+        tree.set_comment(e4, None, Some("position critique".to_string())).unwrap();
+        tree.delete_previous_moves(e4).unwrap();
+        let _ = e5;
+
+        tree.clear_annotations();
+
+        assert_eq!(tree.node(0).unwrap().nags, vec![220]);
+        assert_eq!(tree.node(0).unwrap().comment_after, None);
+        assert_eq!(tree.mainline_sans(), vec!["e5".to_string()]);
+    }
+
+    #[test]
+    fn delete_previous_moves_on_the_root_fails() {
+        let mut tree = GameTree::new();
+        tree.play_move(0, "e2", "e4", None).unwrap();
+        assert!(tree.delete_previous_moves(0).is_err());
+        assert_eq!(tree.mainline_sans(), vec!["e4".to_string()]);
     }
 }

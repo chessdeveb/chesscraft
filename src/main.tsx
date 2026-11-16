@@ -5,6 +5,7 @@ import { GamePickerWindow } from "./GamePickerWindow";
 import { HomeWindow } from "./HomeWindow";
 import { PositionEditorWindow } from "./PositionEditorWindow";
 import { AboutWindow } from "./AboutWindow";
+import { ShortcutsWindow } from "./ShortcutsWindow";
 import "./i18n";
 import { installModalFocus } from "./modalFocus";
 
@@ -16,6 +17,7 @@ function Root() {
   if (windowParam === "game-picker") return <GamePickerWindow />;
   if (windowParam === "position-editor") return <PositionEditorWindow />;
   if (windowParam === "about") return <AboutWindow />;
+  if (windowParam === "shortcuts") return <ShortcutsWindow />;
   if (windowParam === "game") return <App />;
   return <HomeWindow />;
 }

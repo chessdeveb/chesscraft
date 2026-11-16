@@ -9,6 +9,14 @@ import { AppContext, type AppContextValue, type TrainingFeedback, type TrainingS
 import { dockviewComponents } from "./DockPanels";
 import { persistDockviewLayout, syncPanelCheckedStates, tryRestoreDockviewLayout, useDockviewTheme } from "./dockviewPersistence";
 import { nagExclusivityGroup } from "./nag";
+import {
+  actionForCombo,
+  comboFromEvent,
+  editActionFor,
+  isEditableTarget,
+  nagCodeForAction,
+  useAnnotationShortcuts,
+} from "./annotationShortcuts";
 import { SaveBasePicker } from "./components/SaveBasePicker";
 import { useAutoDismissError } from "./useAutoDismissError";
 import { useLatestFetch } from "./useLatestFetch";
@@ -138,6 +146,7 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
   const [dests, setDests] = useState<Dests>(new Map());
   const [error, setError] = useAutoDismissError();
   const [variationChoice, setVariationChoice] = useState<NodeDto[] | null>(null);
+  const annotationShortcuts = useAnnotationShortcuts();
   const [highlightedIndex, setHighlightedIndex] = useState(0);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const dockviewApiRef = useRef<DockviewApi | null>(null);
@@ -756,6 +765,62 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
     trainingPrefetchRequestedRef.current = null;
     trainingPendingJudgeRef.current = null;
   }, []);
+
+  // Boutons "supprimer les coups suivants / precedents" de la barre
+  // d'annotation. Les deux changent la ligne sur laquelle portent un
+  // exercice d'entrainement et un rapport de partie (dont les coups sont
+  // reperes par leur identifiant de noeud) : l'exercice s'arrete et le
+  // rapport est efface. Rien n'est ecrit dans la base avant un Enregistrer.
+  const handleDeleteFollowingMoves = useCallback(async () => {
+    try {
+      await invoke("delete_following_moves", { tabId, nodeId: currentNodeId });
+      handleStopTraining();
+      setGameReportSummary(null);
+      setVariationChoice(null);
+      await refreshTree();
+      setIsDirty(true);
+    } catch (e) {
+      setError(String(e));
+    }
+  }, [tabId, currentNodeId, refreshTree, handleStopTraining]);
+
+  // La partie repart de la position du coup courant, devenue la racine :
+  // tous les identifiants de noeuds changent (voir
+  // GameTree::delete_previous_moves), on se replace donc au debut.
+  const handleDeletePreviousMoves = useCallback(async () => {
+    try {
+      await invoke("delete_previous_moves", { tabId, nodeId: currentNodeId });
+      handleStopTraining();
+      setGameReportSummary(null);
+      setVariationChoice(null);
+      const newTree = await invoke<TreeDto>("get_tree", { tabId });
+      setTree(newTree);
+      setCurrentNodeId(newTree.root);
+      setIsDirty(true);
+    } catch (e) {
+      setError(String(e));
+    }
+  }, [tabId, currentNodeId, handleStopTraining]);
+
+  // Bouton "supprimer toutes les annotations" : commentaires, symboles et
+  // fleches de TOUTE la partie (coups et variantes conserves, voir
+  // GameTree::clear_annotations). Contrairement aux suppressions de coups
+  // ci-dessus, demande confirmation : un clic a cote dans la barre
+  // effacerait d'un coup tout un travail d'annotation.
+  const handleClearAnnotations = useCallback(async () => {
+    const proceed = await ask(t("gameTab.clearAnnotationsConfirm"), {
+      title: t("gameTab.clearAnnotationsConfirmTitle"),
+      kind: "warning",
+    });
+    if (!proceed) return;
+    try {
+      await invoke("clear_annotations", { tabId });
+      await refreshTree();
+      setIsDirty(true);
+    } catch (e) {
+      setError(String(e));
+    }
+  }, [tabId, refreshTree, t]);
 
   // coups legaux de l'exercice : uniquement quand c'est au trainee de jouer
   // (sinon le coup suivant est rejoue automatiquement, voir l'effet
@@ -1473,6 +1538,45 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
         return;
       }
 
+      // Raccourcis d'annotation (Preferences > Raccourcis d'annotation) :
+      // meme bascule qu'un clic dans la barre d'annotation, sur le coup
+      // courant -- jamais pendant la saisie d'un commentaire ou dans un
+      // champ, ni sur la position de depart (pas de coup a annoter). Les
+      // quatre boutons d'edition suivent les memes conditions que dans la
+      // barre (voir Notation.tsx, attribut disabled de chacun).
+      if (!e.repeat && !isEditableTarget(e.target)) {
+        const combo = comboFromEvent(e);
+        const actionId = combo ? actionForCombo(annotationShortcuts, combo) : null;
+        if (actionId) {
+          e.preventDefault();
+          const byId = new Map(tree.nodes.map((n) => [n.id, n]));
+          const node = byId.get(currentNodeId);
+          if (!node) return;
+          const hasMove = node.parent !== null;
+          const editAction = editActionFor(actionId);
+          if (editAction === "promoteVariation") {
+            // rien a promouvoir sur la ligne principale
+            let onMainline = true;
+            for (let n: NodeDto | undefined = node; n && n.parent !== null; n = byId.get(n.parent)) {
+              if (byId.get(n.parent)?.children[0] !== n.id) onMainline = false;
+            }
+            if (hasMove && !onMainline) handlePromoteVariation();
+          } else if (editAction === "deleteVariation") {
+            if (hasMove) handleDeleteVariation();
+          } else if (editAction === "deleteFollowingMoves") {
+            if (node.children.length > 0) handleDeleteFollowingMoves();
+          } else if (editAction === "deletePreviousMoves") {
+            if (hasMove) handleDeletePreviousMoves();
+          } else if (editAction === "clearAnnotations") {
+            handleClearAnnotations();
+          } else if (hasMove) {
+            const code = nagCodeForAction(actionId, node.turn === "black");
+            if (code !== null) handleToggleNag(code);
+          }
+          return;
+        }
+      }
+
       if (e.key === "ArrowLeft") {
         e.preventDefault();
         handleStep("prev");
@@ -1483,7 +1587,24 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [active, tree, currentNodeId, variationChoice, highlightedIndex, chooseVariation, handleStep, handleSave, handleExport]);
+  }, [
+    active,
+    tree,
+    currentNodeId,
+    variationChoice,
+    highlightedIndex,
+    chooseVariation,
+    handleStep,
+    handleSave,
+    handleExport,
+    annotationShortcuts,
+    handleToggleNag,
+    handlePromoteVariation,
+    handleDeleteVariation,
+    handleDeleteFollowingMoves,
+    handleDeletePreviousMoves,
+    handleClearAnnotations,
+  ]);
 
   const onDockviewReady = useCallback(
     (event: DockviewReadyEvent) => {
@@ -1618,6 +1739,9 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
     handleToggleNag,
     handlePromoteVariation,
     handleDeleteVariation,
+    handleDeleteFollowingMoves,
+    handleDeletePreviousMoves,
+    handleClearAnnotations,
     handleNewChess960,
     explorerStats,
     explorerStatsLoading,

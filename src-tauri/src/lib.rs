@@ -304,6 +304,31 @@ fn delete_variation(state: State<AppState>, tab_id: u32, node_id: u32) -> Result
 }
 
 #[tauri::command]
+fn delete_following_moves(state: State<AppState>, tab_id: u32, node_id: u32) -> Result<(), String> {
+    let mut sessions = state.sessions.lock().unwrap();
+    let session = sessions.get_mut(&tab_id).ok_or_else(|| "onglet introuvable".to_string())?;
+    session.tree.delete_following_moves(node_id)
+}
+
+/// La partie repart de la position apres `node_id` : tous les identifiants
+/// de noeuds changent (voir GameTree::delete_previous_moves), l'appelant
+/// doit recharger l'arbre et se replacer sur la racine.
+#[tauri::command]
+fn delete_previous_moves(state: State<AppState>, tab_id: u32, node_id: u32) -> Result<(), String> {
+    let mut sessions = state.sessions.lock().unwrap();
+    let session = sessions.get_mut(&tab_id).ok_or_else(|| "onglet introuvable".to_string())?;
+    session.tree.delete_previous_moves(node_id)
+}
+
+#[tauri::command]
+fn clear_annotations(state: State<AppState>, tab_id: u32) -> Result<(), String> {
+    let mut sessions = state.sessions.lock().unwrap();
+    let session = sessions.get_mut(&tab_id).ok_or_else(|| "onglet introuvable".to_string())?;
+    session.tree.clear_annotations();
+    Ok(())
+}
+
+#[tauri::command]
 fn set_shapes(state: State<AppState>, tab_id: u32, node_id: u32, shapes: Vec<ShapeDto>) -> Result<(), String> {
     let mut sessions = state.sessions.lock().unwrap();
     let session = sessions.get_mut(&tab_id).ok_or_else(|| "onglet introuvable".to_string())?;
@@ -2703,9 +2728,13 @@ fn build_menu(app: &AppHandle, home_panels: bool, game_panels: bool, lang: &str,
         .item(&lang_fr_item)
         .item(&lang_en_item)
         .build()?;
+    let annotation_shortcuts_item =
+        MenuItemBuilder::with_id("annotation_shortcuts", t("menu.preferences.annotationShortcuts")).build(app)?;
     let preferences_menu = SubmenuBuilder::new(app, t("menu.preferences"))
         .item(&board_colors_menu)
         .item(&appearance_menu)
+        .separator()
+        .item(&annotation_shortcuts_item)
         .separator()
         .item(&language_menu)
         .build()?;
@@ -2935,6 +2964,7 @@ pub fn run() {
                     "export_pgn" => "menu-export-pgn",
                     "save_game" => "menu-save-game",
                     "about" => "menu-show-about",
+                    "annotation_shortcuts" => "menu-annotation-shortcuts",
                     "panel_bases" => "menu-toggle-panel-bases",
                     "panel_pgn" => "menu-toggle-panel-pgn",
                     "panel_parties" => "menu-toggle-panel-parties",
@@ -2976,6 +3006,9 @@ pub fn run() {
             set_nags,
             promote_variation,
             delete_variation,
+            delete_following_moves,
+            delete_previous_moves,
+            clear_annotations,
             set_shapes,
             set_tags,
             list_pgn_games,

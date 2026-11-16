@@ -78,6 +78,9 @@ export interface AppContextValue {
   handleToggleNag: (code: number) => void;
   handlePromoteVariation: () => void;
   handleDeleteVariation: () => void;
+  handleDeleteFollowingMoves: () => void;
+  handleDeletePreviousMoves: () => void;
+  handleClearAnnotations: () => void;
   handleNewChess960: (positionNumber: number) => void;
   explorerStats: OpeningMoveStat[];
   explorerStatsLoading: boolean;

@@ -8,6 +8,7 @@ import { HomeDockview } from "./HomeDockview";
 import { AccountImportDialog, type AccountImportParams } from "./components/AccountImportDialog";
 import { ImportBasePicker } from "./components/ImportBasePicker";
 import { ToolBasePicker } from "./components/ToolBasePicker";
+import { UpdatePrompt } from "./components/UpdatePrompt";
 import i18n, { useSyncLanguage } from "./i18n";
 import { useSyncBoardTheme } from "./boardTheme";
 import { useSyncColorScheme } from "./colorScheme";
@@ -263,6 +264,19 @@ export function HomeWindow() {
       width: 460,
       height: 440,
       resizable: false,
+    });
+    win.once("tauri://error", (e) => setError(String(e.payload)));
+  }, [t]);
+
+  const handleShowShortcuts = useCallback(async () => {
+    if (await focusIfAlreadyOpen("shortcuts")) return;
+    const win = new WebviewWindow("shortcuts", {
+      url: "/?window=shortcuts",
+      title: t("homeWindow.shortcutsWindowTitle"),
+      width: 560,
+      height: 640,
+      minWidth: 440,
+      minHeight: 360,
     });
     win.once("tauri://error", (e) => setError(String(e.payload)));
   }, [t]);
@@ -552,6 +566,7 @@ export function HomeWindow() {
         setToolPickerOpen(true);
       }),
       listen("menu-show-about", () => handleShowAbout()),
+      listen("menu-annotation-shortcuts", () => handleShowShortcuts()),
     ];
     return () => {
       unlistenPromises.forEach((p) => p.then((unlisten) => unlisten()));
@@ -564,6 +579,7 @@ export function HomeWindow() {
     handleLichessImportClick,
     handleChesscomImportClick,
     handleShowAbout,
+    handleShowShortcuts,
   ]);
 
   // --- Raccourcis clavier ---
@@ -613,6 +629,7 @@ export function HomeWindow() {
         onPrepareAgainstPlayer={handlePrepareAgainstPlayer}
         onImportExternalUpdates={handleImportExternalUpdates}
       />
+      <UpdatePrompt />
       {bulkImportPgnPath && (
         <ImportBasePicker
           sourceLabel={bulkImportPgnPath}

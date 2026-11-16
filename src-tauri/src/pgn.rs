@@ -130,6 +130,15 @@ fn write_line(tree: &GameTree, start_id: u32, force_number: bool, root_white: bo
                 out.push_str(&format!(" ${nag}"));
             }
             out.push(' ');
+        } else {
+            // Annotations de la racine, ecrites avant le premier coup : en
+            // pratique le diagramme de depart ($220/$221) pose par
+            // GameTree::delete_previous_moves. A la relecture,
+            // GameVisitor::nag les rattache au noeud courant, encore la
+            // racine a cet endroit.
+            for nag in &node.nags {
+                out.push_str(&format!("${nag} "));
+            }
         }
 
         if let Some(after) = node.comment_after.as_deref().filter(|s| !s.is_empty()) {
