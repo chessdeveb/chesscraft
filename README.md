@@ -11,7 +11,7 @@ Gestionnaire de parties d'échecs pour Windows : des bases de plusieurs millions
 - **Explorateur d'ouvertures** : résultats Blancs / nulle / Noirs, code ECO, filtres par joueur, classement et année. La recherche par position retrouve aussi les transpositions, y compris en Chess960.
 - **Analyse avec Stockfish** : jusqu'à 10 lignes en parallèle, profondeur libre, aperçu de la position au survol de chaque coup. Barre d'évaluation à côté de l'échiquier, probabilités gain / nulle / perte pour chaque ligne, mémoire du moteur réglable et ligne d'état (profondeur, vitesse, nœuds, remplissage de la mémoire). Le rapport de partie calcule précision, gaffes et courbe d'évaluation.
 - **Mode entraînement** : rejouer une partie en cherchant les coups directement sur l'échiquier, la suite de la partie et l'analyse du moteur étant masquées, avec précision en direct et résumé de séance.
-- **Annotation complète** : variantes, commentaires, les 165 symboles NAG, diagrammes et citations d'autres parties, enregistrés en PGN standard.
+- **Annotation complète** : variantes, commentaires, les 165 symboles NAG, diagrammes et citations d'autres parties, enregistrés en PGN standard. Raccourcis clavier réglables pour chaque annotation (Préférences › Raccourcis d'annotation).
 - **Joueurs FIDE** : liste FIDE locale pour unifier les noms à l'import, performance Elo d'une sélection, préparation d'adversaire par couleur, fiche FIDE en un clic.
 - Et aussi : Chess960, éditeur de position et FEN, pendules lues dans le PGN, thèmes clair et sombre, raccourcis clavier, interface en français et en anglais.
 
