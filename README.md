@@ -6,14 +6,14 @@ Gestionnaire de parties d'échecs pour Windows : des bases de plusieurs millions
 
 ## Fonctionnalités
 
-- **Bases de parties** : import de PGN en masse et des comptes Lichess et chess.com, base de référence tenue à jour depuis TWIC et les retransmissions Lichess (revue tournoi par tournoi avant chaque import, doublons écartés).
+- **Bases de parties** : import de PGN en masse et des comptes Lichess et chess.com, base de référence tenue à jour depuis TWIC et les retransmissions Lichess (revue tournoi par tournoi avant chaque import, doublons écartés). Alt+clic (ou barre d'espace) sur une partie de la liste : aperçu sur un petit échiquier qui la rejoue.
 - **Megabase prête à l'emploi** : plus de 10 millions de parties, construite à partir de [Lumbra's GigaBase](https://lumbrasgigabase.com/en/) (CC BY-NC 4.0), à installer depuis l'application (Fichier › Télécharger la megabase…). Le téléchargement de 15,6 Go reprend après une coupure, puis la base est vérifiée et définie comme base de référence. Facultative : chacun peut importer la base PGN de son choix.
 - **Explorateur d'ouvertures** : résultats Blancs / nulle / Noirs, code ECO, filtres par joueur, classement et année. La recherche par position retrouve aussi les transpositions, y compris en Chess960.
 - **Analyse avec Stockfish** : jusqu'à 10 lignes en parallèle, profondeur libre, aperçu de la position au survol de chaque coup. Barre d'évaluation à côté de l'échiquier, probabilités gain / nulle / perte pour chaque ligne, mémoire du moteur réglable et ligne d'état (profondeur, vitesse, nœuds, remplissage de la mémoire). Le rapport de partie calcule précision, gaffes et courbe d'évaluation.
 - **Mode entraînement** : rejouer une partie en cherchant les coups directement sur l'échiquier, la suite de la partie et l'analyse du moteur étant masquées, avec précision en direct et résumé de séance.
 - **Annotation complète** : variantes, commentaires, les 165 symboles NAG, diagrammes et citations d'autres parties, enregistrés en PGN standard. Raccourcis clavier réglables pour chaque annotation (Préférences › Raccourcis d'annotation).
 - **Joueurs FIDE** : liste FIDE locale pour unifier les noms à l'import, performance Elo d'une sélection, préparation d'adversaire par couleur, fiche FIDE en un clic.
-- Et aussi : Chess960, éditeur de position et FEN, pendules lues dans le PGN, thèmes clair et sombre, raccourcis clavier, interface en français et en anglais.
+- Et aussi : Chess960, éditeur de position et FEN, pendules lues dans le PGN, thèmes clair et sombre, raccourcis clavier, interface en français et en anglais (langue de Windows au premier lancement).
 
 ## Télécharger
 
