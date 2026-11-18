@@ -12,6 +12,7 @@ import { UpdatePrompt } from "./components/UpdatePrompt";
 import i18n, { useSyncLanguage } from "./i18n";
 import { useSyncBoardTheme } from "./boardTheme";
 import { useSyncColorScheme } from "./colorScheme";
+import { visiblePlacement } from "./windowPlacement";
 import { useAutoDismissError } from "./useAutoDismissError";
 import type { BulkImportSummary, PgnGameSummary, TabDto } from "./types";
 import "./App.css";
@@ -99,8 +100,7 @@ async function openTabInGameWindow(tab: TabDto): Promise<void> {
   const win = new WebviewWindow("game", {
     url: `/?window=game&tabId=${tab.tabId}${tab.isPlayerPrep ? "&prep=1" : ""}`,
     title: i18n.t("homeWindow.gameWindowTitle"),
-    width: 1100,
-    height: 750,
+    ...(await visiblePlacement(1100, 750)),
     dragDropEnabled: false,
   });
   win.once("tauri://error", (e) => console.error(e.payload));
@@ -211,8 +211,7 @@ export function HomeWindow() {
     const editor = new WebviewWindow("position-editor", {
       url: "/?window=position-editor",
       title: t("homeWindow.positionEditorWindowTitle"),
-      width: 620,
-      height: 560,
+      ...(await visiblePlacement(620, 560)),
       resizable: false,
     });
     editor.once("tauri://error", (e) => setError(String(e.payload)));
@@ -245,8 +244,7 @@ export function HomeWindow() {
       const picker = new WebviewWindow("game-picker", {
         url: `/?window=game-picker&path=${encodeURIComponent(path)}`,
         title: t("homeWindow.pickerWindowTitle"),
-        width: 720,
-        height: 480,
+        ...(await visiblePlacement(720, 480)),
       });
       picker.once("tauri://error", (e) => setError(String(e.payload)));
     } catch (e) {
@@ -261,8 +259,7 @@ export function HomeWindow() {
     const win = new WebviewWindow("about", {
       url: "/?window=about",
       title: t("homeWindow.aboutWindowTitle"),
-      width: 460,
-      height: 440,
+      ...(await visiblePlacement(460, 440)),
       resizable: false,
     });
     win.once("tauri://error", (e) => setError(String(e.payload)));
@@ -273,8 +270,7 @@ export function HomeWindow() {
     const win = new WebviewWindow("shortcuts", {
       url: "/?window=shortcuts",
       title: t("homeWindow.shortcutsWindowTitle"),
-      width: 560,
-      height: 640,
+      ...(await visiblePlacement(560, 640)),
       minWidth: 440,
       minHeight: 360,
     });

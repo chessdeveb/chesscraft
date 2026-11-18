@@ -545,6 +545,100 @@ body.explorer-splitting {
   overflow-y: auto;
 }
 
+/* Apercu Alt+clic d'une partie de l'onglet Parties (GamePreview.tsx). */
+.game-preview {
+  position: fixed;
+  z-index: 900;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  background-color: var(--panel);
+  color: var(--ink-1);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-pop);
+}
+
+.game-preview-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.game-preview-names {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.game-preview-close {
+  cursor: pointer;
+  border: 0;
+  background: transparent;
+  color: var(--ink-3);
+  padding: 0 4px;
+  font: inherit;
+}
+
+.game-preview-close:hover {
+  color: var(--ink-1);
+}
+
+.game-preview-meta {
+  font-size: var(--t-sm);
+  color: var(--ink-2);
+  min-height: 1.2em;
+}
+
+.game-preview-board {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+}
+
+.game-preview-move {
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: var(--t-base);
+  min-height: 1.4em;
+}
+
+.game-preview-controls {
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+}
+
+.game-preview-controls button,
+.game-preview-footer button {
+  cursor: pointer;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: inherit;
+  padding: 3px 9px;
+  font-family: inherit;
+  font-size: var(--t-sm);
+  line-height: 1.4;
+}
+
+.game-preview-controls button:hover,
+.game-preview-footer button:hover {
+  background-color: var(--accent-weak);
+}
+
+.game-preview-play {
+  min-width: 2.6em;
+}
+
+.game-preview-footer {
+  display: flex;
+  justify-content: flex-end;
+}
+
 .explorer-table-row--drop-target {
   outline: 2px dashed var(--accent);
   outline-offset: -2px;

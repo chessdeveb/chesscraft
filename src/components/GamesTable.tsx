@@ -1,6 +1,7 @@
-import { Fragment, useRef, useState, type DragEvent, type MouseEvent } from "react";
+import { Fragment, useEffect, useRef, useState, type DragEvent, type MouseEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
+import { isEditableTarget } from "../annotationShortcuts";
 import { GAME_DRAG_MIME } from "../dnd";
 import type { GamesSort, GamesSortColumn } from "../HomeContext";
 import { ColumnResizeHandle, useColumnWidths } from "../useColumnWidths";
@@ -30,6 +31,20 @@ interface GamesTableProps {
   selectedKeys?: Set<number>;
   onSelectionChange?: (keys: Set<number>) => void;
   buildContextMenuItems?: (ids: number[]) => ContextMenuItem[];
+  /** Alt+clic sur une ligne : apercu de la partie (voir GamePreview). Absent
+      = pas d'apercu, Alt+clic se comporte comme un clic ordinaire. */
+  onPreview?: (key: number, anchor: { x: number; y: number }) => void;
+}
+
+// Sous Windows, relacher Alt seul active la barre de menu native. Apres un
+// Alt+clic (apercu), on empeche ce relachement-la d'y arriver : un seul
+// keyup d'Alt, dans les secondes qui suivent.
+function swallowNextAltKeyUp() {
+  const stop = (e: KeyboardEvent) => {
+    if (e.key === "Alt") e.preventDefault();
+  };
+  window.addEventListener("keyup", stop, true);
+  setTimeout(() => window.removeEventListener("keyup", stop, true), 5000);
 }
 
 function SortableHeader({
@@ -92,17 +107,53 @@ export function GamesTable({
   selectedKeys,
   onSelectionChange,
   buildContextMenuItems,
+  onPreview,
 }: GamesTableProps) {
   const { t } = useTranslation();
   const lastIndexRef = useRef<number | null>(null);
   const [menu, setMenu] = useState<{ x: number; y: number; ids: number[] } | null>(null);
   const { widths, startResize, totalWidth } = useColumnWidths("gamesTable", GAMES_TABLE_COLUMNS);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+
+  // Barre d'espace : meme apercu que l'Alt+clic, pour la ligne selectionnee
+  // (la derniere cliquee si plusieurs le sont). Sans effet pendant une saisie
+  // ou sur un bouton, et quand l'onglet est masque (ses lignes n'ont alors
+  // aucune taille a l'ecran). Quand un apercu est deja ouvert, c'est lui qui
+  // prend la barre d'espace (lecture/pause) avant ce ecouteur.
+  useEffect(() => {
+    if (!onPreview) return;
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key !== " " || e.defaultPrevented || e.repeat || e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return;
+      const target = e.target;
+      if (isEditableTarget(target)) return;
+      if (target instanceof HTMLElement && target.closest("button, a, summary, [role=button]")) return;
+      if (!selectedKeys || selectedKeys.size === 0) return;
+      const lastKey = lastIndexRef.current !== null ? games[lastIndexRef.current]?.key : undefined;
+      const key = lastKey !== undefined && selectedKeys.has(lastKey) ? lastKey : selectedKeys.values().next().value;
+      const row = wrapRef.current?.querySelector<HTMLElement>(`tr[data-game-key="${key}"]`);
+      if (key === undefined || !row) return;
+      row.scrollIntoView({ block: "nearest" });
+      const rect = row.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return;
+      e.preventDefault();
+      onPreview!(key, { x: rect.left + Math.min(rect.width / 2, 200), y: rect.bottom });
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onPreview, selectedKeys, games]);
 
   if (games.length === 0) {
     return <p className="notation-empty">{t("gamesTable.empty")}</p>;
   }
 
   function handleRowClick(e: MouseEvent, key: number, index: number) {
+    // apercu : ne touche pas a la selection
+    if (e.altKey && onPreview) {
+      e.preventDefault();
+      swallowNextAltKeyUp();
+      onPreview(key, { x: e.clientX, y: e.clientY });
+      return;
+    }
     if (!onSelectionChange) return;
     if (e.shiftKey && lastIndexRef.current !== null) {
       const [from, to] = [lastIndexRef.current, index].sort((a, b) => a - b);
@@ -142,7 +193,7 @@ export function GamesTable({
 
   return (
     <Fragment>
-      <div className="resizable-table-wrap">
+      <div className="resizable-table-wrap" ref={wrapRef}>
       <table
         className="explorer-table resizable-table"
         style={{ width: totalWidth + (onDelete || onMove ? GAMES_TABLE_ACTIONS_WIDTH : 0) }}
@@ -198,8 +249,10 @@ export function GamesTable({
           return (
             <tr
               key={g.key}
+              data-game-key={g.key}
               className={selected ? "explorer-table-row--selected" : ""}
               draggable={!!sourcePath}
+              title={onPreview ? t("gamesTable.previewHint") : undefined}
               onDragStart={(e) => handleDragStart(e, g.key, selected)}
               onClick={(e) => handleRowClick(e, g.key, index)}
               onDoubleClick={() => onOpen(g.key)}

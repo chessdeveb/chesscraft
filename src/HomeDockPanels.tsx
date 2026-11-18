@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { useHomeContext } from "./HomeContext";
 import { BasesTable } from "./components/BasesTable";
 import { ContextMenu, type ContextMenuItem } from "./components/ContextMenu";
+import { GamePreview } from "./components/GamePreview";
 import { GamesTable, type GameRow } from "./components/GamesTable";
 import { PageNav } from "./components/PageNav";
 import { SelectionPerformance } from "./components/SelectionPerformance";
@@ -150,6 +151,9 @@ export function PgnPanelView() {
 
 export function PartiesPanelView() {
   const { t } = useTranslation();
+  // Apercu Alt+clic (GamePreview) : seulement sur la liste des parties d'une
+  // base, pas sur celle d'un fichier PGN ni ailleurs.
+  const [preview, setPreview] = useState<{ id: number; x: number; y: number } | null>(null);
   const {
     activeSource,
     games,
@@ -351,7 +355,21 @@ export function PartiesPanelView() {
         selectedKeys={selectedGameIds}
         onSelectionChange={onGamesSelectionChange}
         buildContextMenuItems={buildContextMenuItems}
+        onPreview={(id, anchor) => setPreview({ id, ...anchor })}
       />
+      {preview && rows.some((r) => r.key === preview.id) && (
+        <GamePreview
+          basePath={base.path}
+          gameId={preview.id}
+          info={rows.find((r) => r.key === preview.id)!}
+          anchor={{ x: preview.x, y: preview.y }}
+          onOpenGame={() => {
+            setPreview(null);
+            onOpenBaseGame(preview.id);
+          }}
+          onClose={() => setPreview(null)}
+        />
+      )}
       <SelectionPerformance basePath={base.path} selectedIds={selectedGameIds} />
     </div>
   );
@@ -393,7 +411,7 @@ export function PlayersPanelView() {
       <div className="games-pagination">
         <input
           type="search"
-          placeholder={t("home.searchNamePlaceholder")}
+          placeholder={t("home.searchNameStartsWithPlaceholder")}
           value={playersSearchInput}
           onChange={(e) => onPlayersSearchChange(e.target.value)}
           onKeyDown={(e) => {
@@ -549,7 +567,7 @@ export function TournamentsPanelView() {
       <div className="games-pagination">
         <input
           type="search"
-          placeholder={t("home.searchNamePlaceholder")}
+          placeholder={t("home.searchNameStartsWithPlaceholder")}
           value={tournamentsSearchInput}
           onChange={(e) => onTournamentsSearchChange(e.target.value)}
           onKeyDown={(e) => {
@@ -688,7 +706,7 @@ export function FidePanelView() {
         {!fideAdvancedOpen && (
           <input
             type="search"
-            placeholder={t("home.searchNamePlaceholder")}
+            placeholder={t("home.searchNameStartsWithPlaceholder")}
             value={fideSearchInput}
             onChange={(e) => onFideSearchChange(e.target.value)}
             onKeyDown={(e) => {

@@ -2172,6 +2172,28 @@ fn opening_explorer_preview_game(
     Ok(ExplorerPreviewGame { tree: tree.to_dto(), match_node_id })
 }
 
+/// Charge une partie d'une base quelconque (celle de l'onglet Parties, pas
+/// seulement la base de reference) sous forme d'arbre, en lecture seule et sans
+/// creer d'onglet -- pour l'apercu Alt+clic de la liste des parties. Reutilise
+/// la connexion de la base de reference quand c'est elle, sinon ouvre la base
+/// comme open_game.
+#[tauri::command]
+fn preview_game(state: State<AppState>, path: String, id: i64) -> Result<TreeDto, String> {
+    let pgn_text = {
+        let cache = state.reference_conn.lock().unwrap();
+        match cache.as_ref() {
+            Some((cached_path, conn)) if cached_path.as_str() == path => db::load_game_pgn(conn, id)?,
+            _ => {
+                drop(cache);
+                let conn = db::open_quick(Path::new(&path))?;
+                db::load_game_pgn(&conn, id)?
+            }
+        }
+    };
+    let pgn_text = pgn_text.ok_or_else(|| "partie introuvable".to_string())?;
+    Ok(pgn::parse_game(&pgn_text)?.to_dto())
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ExplorerPreviewGame {
@@ -3042,6 +3064,7 @@ pub fn run() {
             opening_explorer,
             opening_explorer_games,
             opening_explorer_preview_game,
+            preview_game,
             logical_cpu_count,
             total_memory_mb,
             list_bases,

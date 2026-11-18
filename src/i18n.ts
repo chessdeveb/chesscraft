@@ -13,13 +13,22 @@ export type SupportedLanguage = "fr" | "en";
 // fichier de langue simple a lire cote React ET cote Rust (embarque via
 // include_str! pour le menu natif), sans avoir a parser un JSON imbrique
 // des deux cotes pour retrouver une seule cle.
+// Sans choix enregistre : la langue de Windows (navigator.language), comme le
+// fait le cote Rust (voir i18n.rs::load_language, qui reste l'autorite et
+// resynchronise ensuite via useSyncLanguage) -- evite un bref affichage en
+// francais au demarrage pour un Windows en anglais.
+function systemLanguage(): SupportedLanguage {
+  return (navigator.language || "fr").toLowerCase().startsWith("fr") ? "fr" : "en";
+}
+
 export function loadStoredLanguage(): SupportedLanguage {
   try {
     const stored = localStorage.getItem(LANGUAGE_KEY);
-    return stored === "en" ? "en" : "fr";
+    if (stored === "en" || stored === "fr") return stored;
   } catch {
-    return "fr";
+    // ignore : retombe sur la langue du systeme
   }
+  return systemLanguage();
 }
 
 i18n.use(initReactI18next).init({
