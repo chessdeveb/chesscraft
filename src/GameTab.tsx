@@ -1183,6 +1183,50 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
     }).catch((e) => setEngineError(String(e)));
   }, [tabId, engineRunning, enginePaused, currentNode?.fen, engineDepth, engineMultiPv, engineThreads, engineHash]);
 
+  // Meilleure reponse du moteur a un coup envisage (fleche du geste "clic
+  // gauche maintenu + clic droit", voir Board.tsx). Calcul cote Rust sur un
+  // thread a part (reply_hint, lib.rs), resultat par evenement ; la
+  // profondeur est plafonnee pour que la fleche arrive en une fraction de
+  // seconde. Reglages de threads du mode entrainement, dont il partage le
+  // process moteur.
+  const replyHintCounterRef = useRef(0);
+  const requestReplyHint = useCallback(
+    async (fen: string, from: string, to: string, promotion: string | null) => {
+      if (!enginePath) return null;
+      const requestId = ++replyHintCounterRef.current;
+      const handle: { unlisten?: () => void; timer?: ReturnType<typeof setTimeout> } = {};
+      try {
+        return await new Promise<{ fen: string; from: string; to: string } | null>((resolve) => {
+          handle.timer = setTimeout(() => resolve(null), 20000);
+          listen<{ requestId: number; fen: string; from: string | null; to: string | null }>(`reply-hint-${tabId}`, (event) => {
+            if (event.payload.requestId !== requestId) return;
+            const { from: bestFrom, to: bestTo, fen: afterFen } = event.payload;
+            resolve(bestFrom && bestTo ? { fen: afterFen, from: bestFrom, to: bestTo } : null);
+          })
+            .then((fn) => {
+              handle.unlisten = fn;
+              return invoke("reply_hint", {
+                tabId,
+                requestId,
+                enginePath,
+                depth: Math.min(14, engineDepth),
+                threads: trainingThreadsSetting,
+                fen,
+                from,
+                to,
+                promotion,
+              });
+            })
+            .catch(() => resolve(null));
+        });
+      } finally {
+        if (handle.timer) clearTimeout(handle.timer);
+        handle.unlisten?.();
+      }
+    },
+    [tabId, enginePath, engineDepth, trainingThreadsSetting]
+  );
+
   // --- Explorateur d'ouvertures ---
   const [explorerStats, setExplorerStats] = useState<OpeningMoveStat[]>([]);
   // Distingue "en cours de chargement" de "vraiment aucune partie a cette
@@ -1769,6 +1813,7 @@ export const GameTab = forwardRef<GameTabHandle, GameTabProps>(function GameTab(
     onPreviewStep: handlePreviewStep,
     onOpenPreviewGame: handleOpenPreviewGame,
     onClosePreview: handleClosePreview,
+    requestReplyHint,
     enginePath,
     setEnginePath,
     engineRunning,

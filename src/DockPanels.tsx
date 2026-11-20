@@ -115,6 +115,7 @@ export function BoardPanel() {
     engineLines,
     engineDepth,
     trainingOnBoard,
+    requestReplyHint,
   } = useAppContext();
   const [fenCopied, setFenCopied] = useState(false);
   // Barre d'evaluation : meilleure ligne du moteur. La derniere valeur connue
@@ -164,6 +165,41 @@ export function BoardPanel() {
     marginRight: "auto",
     transform: showEvalBar ? `translateX(${EVAL_BAR_SPACE / 2}px)` : undefined,
   };
+  // Fleche du geste clic gauche maintenu + clic droit (voir Board.tsx).
+  // Coup en cours de glissement : meilleure reponse a ce coup, calculee a part
+  // (requestReplyHint). Sinon : meilleur coup actuel du moteur du panneau
+  // (ligne 1, la plus profonde disponible meme sous le seuil de la barre),
+  // qui est la reponse a un coup deja joue. Rien pendant un exercice
+  // d'entrainement ni sans moteur.
+  async function requestHint(
+    fen: string,
+    move: { from: Key; to: Key; promotion: string | null } | null
+  ): Promise<{ fen: string | null; from: Key; to: Key } | null> {
+    if (!engineRunning || trainingOnBoard) return null;
+    if (move) {
+      // Lignes deja calculees par le moteur du panneau : si l'une d'elles
+      // commence par ce coup (la 1re ligne ou une des autres variantes en
+      // multi-PV), sa suite donne directement la reponse, a la profondeur
+      // courante du moteur et sans nouveau calcul. La plus profonde l'emporte.
+      let known: EngineInfo | null = null;
+      for (const line of engineLines) {
+        const first = line.pv[0];
+        if (!first || line.pv.length < 2 || first.from !== move.from || first.to !== move.to) continue;
+        if ((first.promotion ?? null) !== (move.promotion ?? null)) continue;
+        if (!known || line.depth > known.depth) known = line;
+      }
+      if (known) {
+        return { fen: known.pv[0].fen, from: known.pv[1].from as Key, to: known.pv[1].to as Key };
+      }
+      const reply = await requestReplyHint(fen, move.from, move.to, move.promotion);
+      return reply ? { fen: reply.fen, from: reply.from as Key, to: reply.to as Key } : null;
+    }
+    let best: EngineInfo | null = null;
+    for (const line of engineLines) {
+      if (line.multipv === 1 && line.pv.length > 0 && (!best || line.depth > best.depth)) best = line;
+    }
+    return best ? { fen: null, from: best.pv[0].from as Key, to: best.pv[0].to as Key } : null;
+  }
   const evalShare = evalLine ? whiteShare(evalLine) : 0.5;
   const evalLabel = evalLine ? shortScore(evalLine) : "";
   // en haut = camp affiche en haut de l'echiquier : Noirs normalement,
@@ -215,6 +251,7 @@ export function BoardPanel() {
           onMove={handleMove}
           onShapesChange={handleShapesChange}
           onSizeChange={setBoardSize}
+          requestHint={requestHint}
         />
       </div>
       {showClocks && (

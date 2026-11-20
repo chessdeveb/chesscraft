@@ -1706,6 +1706,61 @@ fn stop_training_engine(state: State<AppState>, tab_id: u32) {
     state.training_engines.lock().unwrap().remove(&tab_id);
 }
 
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ReplyHint {
+    request_id: u32,
+    /// Position APRES le coup envisage (celle ou la reponse est jouee).
+    fen: String,
+    /// Meilleure reponse du moteur ; None si la partie est finie (mat/pat).
+    from: Option<String>,
+    to: Option<String>,
+}
+
+/// Meilleure reponse du moteur a un coup envisage mais pas encore joue (geste
+/// "clic gauche maintenu + clic droit" sur l'echiquier : la piece est en
+/// train d'etre glissee). Le moteur du panneau analyse la position affichee,
+/// pas celle d'apres ce coup : on evalue donc cette derniere avec le process
+/// d'entrainement (BatchEngine, meme principe et memes reglages de threads
+/// que le mode entrainement pour ne pas le relancer). Thread dedie et
+/// resultat par evenement "reply-hint-{tab_id}", comme
+/// prefetch_training_judgement -- jamais bloquant pour la fenetre.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+fn reply_hint(
+    app: AppHandle,
+    tab_id: u32,
+    request_id: u32,
+    engine_path: String,
+    depth: u32,
+    threads: u32,
+    fen: String,
+    from: String,
+    to: String,
+    promotion: Option<String>,
+) {
+    std::thread::spawn(move || {
+        let result = (|| -> Result<ReplyHint, String> {
+            let (after_fen, _) = GameTree::apply_move_to_fen(&fen, &from, &to, promotion.as_deref())?;
+            let app_state = app.state::<AppState>();
+            let mut engines = app_state.training_engines.lock().unwrap();
+            let eng = ensure_training_engine(&mut engines, tab_id, &engine_path, threads)?;
+            let (_, pv) = eng.analyze_with_pv(&after_fen, depth)?;
+            let best = pv.first();
+            Ok(ReplyHint {
+                request_id,
+                fen: after_fen,
+                from: best.map(|m| m.from.clone()),
+                to: best.map(|m| m.to.clone()),
+            })
+        })();
+        // en cas d'echec (moteur introuvable...) : reponse vide, la fleche
+        // n'apparait simplement pas
+        let payload = result.unwrap_or(ReplyHint { request_id, fen: String::new(), from: None, to: None });
+        let _ = app.emit(&format!("reply-hint-{tab_id}"), payload);
+    });
+}
+
 /// Mode entrainement (onglet dedie "Entraînement", voir
 /// TrainingPanelView/DockPanels.tsx) : juge un coup essaye par l'utilisateur
 /// depuis `fen_before` par rapport au coup reellement joue dans la partie, en
@@ -3059,6 +3114,7 @@ pub fn run() {
             judge_training_move,
             prefetch_training_judgement,
             stop_training_engine,
+            reply_hint,
             pause_engine,
             classify_opening,
             opening_explorer,

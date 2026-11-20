@@ -111,6 +111,16 @@ export interface AppContextValue {
   onOpenPreviewGame: () => void;
   onClosePreview: () => void;
 
+  /** Meilleure reponse du moteur a un coup envisage depuis `fen` (geste
+      "clic gauche maintenu + clic droit" de l'echiquier) ; null si le
+      moteur est indisponible. `fen` = position apres le coup envisage. */
+  requestReplyHint: (
+    fen: string,
+    from: string,
+    to: string,
+    promotion: string | null
+  ) => Promise<{ fen: string; from: string; to: string } | null>;
+
   enginePath: string;
   setEnginePath: (path: string) => void;
   engineRunning: boolean;
